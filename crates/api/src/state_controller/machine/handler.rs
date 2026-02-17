@@ -1303,7 +1303,6 @@ impl MachineStateHandler {
                                     .create_storage_volume(
                                         &create_boss_volume_context.boss_controller_id,
                                         "VD_0",
-                                        "RAID1",
                                     )
                                     .await
                                     .map_err(|e| StateHandlerError::RedfishError {
