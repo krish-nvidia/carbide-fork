@@ -959,16 +959,11 @@ impl MachineStateHandler {
             }
 
             ManagedHostState::Ready => {
-                // Check if scout is running. If not, emit metric.
-                if let Some(last_scout_contact) = mh_snapshot.host_snapshot.last_scout_contact_time
+                if let Some(outcome) = self
+                    .handle_scout_heartbeat_timeout(host_machine_id, mh_snapshot, ctx)
+                    .await?
                 {
-                    let since_last_contact = Utc::now().signed_duration_since(last_scout_contact);
-                    let timeout_threshold = self.reachability_params.scout_reporting_timeout;
-
-                    if since_last_contact > timeout_threshold {
-                        ctx.metrics.host_with_scout_heartbeat_timeout =
-                            Some(host_machine_id.to_string());
-                    }
+                    return Ok(outcome);
                 }
 
                 // Check if instance to be created.
@@ -1717,6 +1712,74 @@ impl MachineStateHandler {
                 }
             },
         }
+    }
+
+    async fn handle_scout_heartbeat_timeout(
+        &self,
+        host_machine_id: &MachineId,
+        mh_snapshot: &ManagedHostStateSnapshot,
+        ctx: &mut StateHandlerContext<'_, MachineStateHandlerContextObjects>,
+    ) -> Result<Option<StateHandlerOutcome<ManagedHostState>>, StateHandlerError> {
+        let Some(last_scout_contact) = mh_snapshot.host_snapshot.last_scout_contact_time else {
+            return Ok(None);
+        };
+
+        let since_last_contact = Utc::now().signed_duration_since(last_scout_contact);
+        let timeout_threshold = self.reachability_params.scout_reporting_timeout;
+        let scout_timeout_alert_exists = mh_snapshot
+            .host_snapshot
+            .health_report_overrides
+            .merges
+            .contains_key("scout");
+
+        if since_last_contact >= timeout_threshold {
+            ctx.metrics.host_with_scout_heartbeat_timeout = Some(host_machine_id.to_string());
+        }
+
+        if since_last_contact >= timeout_threshold && !scout_timeout_alert_exists {
+            let message = format!("Last scout heartbeat over {timeout_threshold} ago");
+            let health_report = HealthReport::heartbeat_timeout(
+                "scout".to_string(),
+                "scout".to_string(),
+                message,
+            );
+            let mut txn = ctx.services.db_pool.begin().await?;
+            db::machine::insert_health_report_override(
+                &mut txn,
+                host_machine_id,
+                OverrideMode::Merge,
+                &health_report,
+                false,
+            )
+            .await?;
+            tracing::warn!(
+                host_machine_id = %host_machine_id,
+                last_scout_contact = %last_scout_contact,
+                timeout_threshold = %timeout_threshold,
+                "Scout heartbeat timeout detected, adding health alert"
+            );
+            return Ok(Some(StateHandlerOutcome::do_nothing().with_txn(txn)));
+        }
+
+        if since_last_contact < timeout_threshold && scout_timeout_alert_exists {
+            let mut txn = ctx.services.db_pool.begin().await?;
+            db::machine::remove_health_report_override(
+                &mut txn,
+                host_machine_id,
+                OverrideMode::Merge,
+                "scout",
+            )
+            .await?;
+            tracing::info!(
+                host_machine_id = %host_machine_id,
+                last_scout_contact = %last_scout_contact,
+                timeout_threshold = %timeout_threshold,
+                "Scout heartbeat recovered, removing health alert"
+            );
+            return Ok(Some(StateHandlerOutcome::do_nothing().with_txn(txn)));
+        }
+
+        Ok(None)
     }
 
     async fn handle_restart_dpu_reprovision_assigned_state(
