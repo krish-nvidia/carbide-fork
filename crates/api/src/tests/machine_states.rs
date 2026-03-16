@@ -26,7 +26,7 @@ use common::api_fixtures::{
     TestManagedHost, create_managed_host, create_test_env, create_test_env_with_overrides,
     get_config,
 };
-use health_report::{HealthReport, OverrideMode};
+use health_report::HealthReport;
 use measured_boot::bundle::MeasurementBundle;
 use measured_boot::pcr::PcrRegisterValue;
 use measured_boot::records::MeasurementBundleState;
@@ -60,7 +60,7 @@ use crate::tests::common::api_fixtures::instance::{
 use crate::tests::common::api_fixtures::managed_host::ManagedHostConfig;
 use crate::tests::common::api_fixtures::{
     TestEnvOverrides, create_managed_host_with_ek, discovery_completed, forge_agent_control,
-    on_demand_machine_validation, send_health_report_override, update_time_params,
+    on_demand_machine_validation, update_time_params,
 };
 
 #[crate::sqlx_test]
@@ -1460,19 +1460,7 @@ async fn test_scout_heartbeat_timeout_alert_cleared_on_ready_transition(pool: sq
     .unwrap();
     txn.commit().await.unwrap();
 
-    let scout_heartbeat_timeout_alert = HealthReport::heartbeat_timeout(
-        "scout".to_string(),
-        "scout".to_string(),
-        "test scout_heartbeat_timeout alert".to_string(),
-        false,
-        true,
-    );
-    send_health_report_override(
-        &env,
-        &host_machine_id,
-        (scout_heartbeat_timeout_alert, OverrideMode::Merge),
-    )
-    .await;
+    env.run_machine_state_controller_iteration().await;
 
     on_demand_machine_validation(&env, host_machine_id, vec![], vec![], false, vec![]).await;
 
@@ -1523,19 +1511,7 @@ async fn test_scout_heartbeat_timeout_alert_cleared_on_instance_creation_transit
     .unwrap();
     txn.commit().await.unwrap();
 
-    let scout_heartbeat_timeout_alert = HealthReport::heartbeat_timeout(
-        "scout".to_string(),
-        "scout".to_string(),
-        "test scout_heartbeat_timeout alert for instance path".to_string(),
-        false,
-        true,
-    );
-    send_health_report_override(
-        &env,
-        &host_machine_id,
-        (scout_heartbeat_timeout_alert, OverrideMode::Merge),
-    )
-    .await;
+    env.run_machine_state_controller_iteration().await;
 
     env.api
         .allocate_instance(Request::new(rpc::forge::InstanceAllocationRequest {
@@ -1615,19 +1591,7 @@ async fn test_scout_heartbeat_timeout_alert_not_cleared_when_unhealthy_allocatio
     .unwrap();
     txn.commit().await.unwrap();
 
-    let scout_heartbeat_timeout_alert = HealthReport::heartbeat_timeout(
-        "scout".to_string(),
-        "scout".to_string(),
-        "test scout_heartbeat_timeout alert for blocked instance path".to_string(),
-        true,
-        false,
-    );
-    send_health_report_override(
-        &env,
-        &host_machine_id,
-        (scout_heartbeat_timeout_alert, OverrideMode::Merge),
-    )
-    .await;
+    env.run_machine_state_controller_iteration().await;
 
     let err = env
         .api
