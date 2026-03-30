@@ -576,6 +576,18 @@ pub(crate) async fn copy_bfb_to_dpu_rshim(
         })
         .transpose()?;
 
+    let dpu_in_managed_host =
+        crate::site_explorer::is_endpoint_in_managed_host(dpu_ip, &api.database_connection)
+            .await
+            .map_err(|e| CarbideError::internal(e.to_string()))?;
+    if dpu_in_managed_host {
+        return Err(CarbideError::InvalidArgument(format!(
+            "Cannot trigger BFB recovery: DPU {dpu_ip} is already ingested. \
+             Force-delete the managed host first.",
+        ))
+        .into());
+    }
+
     let dpu_endpoints = db::explored_endpoints::find_by_ips(&api.database_connection, vec![dpu_ip])
         .await
         .map_err(|e| CarbideError::internal(e.to_string()))?;
@@ -602,16 +614,18 @@ pub(crate) async fn copy_bfb_to_dpu_rshim(
             db::explored_endpoints::find_by_ips(&api.database_connection, vec![host_ip])
                 .await
                 .map_err(|e| CarbideError::internal(e.to_string()))?;
-        if let Some(host_ep) = host_endpoints.first() {
-            match &host_ep.preingestion_state {
-                PreingestionState::Complete | PreingestionState::Failed { .. } => {}
-                other => {
-                    return Err(CarbideError::InvalidArgument(format!(
-                        "Cannot power-cycle host: host {host_ip} is in state {other:?}. \
-                         Retry after host preingestion completes.",
-                    ))
-                    .into());
-                }
+        let host_ep = host_endpoints.first().ok_or(CarbideError::NotFoundError {
+            kind: "explored_endpoint",
+            id: host_ip.to_string(),
+        })?;
+        match &host_ep.preingestion_state {
+            PreingestionState::Complete | PreingestionState::Failed { .. } => {}
+            other => {
+                return Err(CarbideError::InvalidArgument(format!(
+                    "Cannot power-cycle host: host {host_ip} is in state {other:?}. \
+                     Retry after host preingestion completes.",
+                ))
+                .into());
             }
         }
     }
@@ -628,7 +642,7 @@ pub(crate) async fn copy_bfb_to_dpu_rshim(
                 .await?;
 
                 // Pause site explorer remediation on the host so it doesn't
-                // issue BMC resets during the DPU power-cycle.
+                // issue BMC resets during the platform power-cycle.
                 if let Some(host_ip) = host_bmc_ip {
                     db::explored_endpoints::set_pause_remediation(host_ip, true, txn).await?;
                 }
