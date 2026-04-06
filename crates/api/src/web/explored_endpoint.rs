@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -870,7 +869,7 @@ pub async fn disable_secure_boot(
 ) -> Response {
     let view_url = format!("/admin/explored-endpoint/{endpoint_ip}");
 
-    let redirect_url = if let Err(err) = state
+    let redirect_url = match state
         .disable_secure_boot(tonic::Request::new(rpc::forge::BmcEndpointRequest {
             ip_address: endpoint_ip.clone(),
             mac_address: None,
@@ -878,20 +877,21 @@ pub async fn disable_secure_boot(
         .await
         .map(|response| response.into_inner())
     {
-        tracing::error!(%err, endpoint_ip = %endpoint_ip, "disable_secure_boot");
-        ActionStatus {
-            action: action_status::Type::DisableSecureBoot,
-            class: action_status::Class::Error,
-            message: Cow::Owned(format!("{err}")),
-        }
-        .update_redirect_url(&view_url)
-    } else {
-        ActionStatus {
+        Ok(_) => ActionStatus {
             action: action_status::Type::DisableSecureBoot,
             class: action_status::Class::Success,
             message: "Secure boot disabled successfully".into(),
         }
-        .update_redirect_url(&view_url)
+        .update_redirect_url(&view_url),
+        Err(err) => {
+            tracing::error!(%err, endpoint_ip = %endpoint_ip, "disable_secure_boot");
+            ActionStatus {
+                action: action_status::Type::DisableSecureBoot,
+                class: action_status::Class::Error,
+                message: err.message().into(),
+            }
+            .update_redirect_url(&view_url)
+        }
     };
 
     Redirect::to(&redirect_url).into_response()
@@ -903,7 +903,7 @@ pub async fn disable_lockdown(
 ) -> Response {
     let view_url = format!("/admin/explored-endpoint/{endpoint_ip}");
 
-    let redirect_url = if let Err(err) = state
+    let redirect_url = match state
         .lockdown(tonic::Request::new(rpc::forge::LockdownRequest {
             bmc_endpoint_request: Some(BmcEndpointRequest {
                 ip_address: endpoint_ip.clone(),
@@ -915,20 +915,21 @@ pub async fn disable_lockdown(
         .await
         .map(|response| response.into_inner())
     {
-        tracing::error!(%err, endpoint_ip = %endpoint_ip, "disable_lockdown");
-        ActionStatus {
-            action: action_status::Type::DisableLockdown,
-            class: action_status::Class::Error,
-            message: Cow::Owned(format!("{err}")),
-        }
-        .update_redirect_url(&view_url)
-    } else {
-        ActionStatus {
+        Ok(_) => ActionStatus {
             action: action_status::Type::DisableLockdown,
             class: action_status::Class::Success,
             message: "Lockdown disabled successfully".into(),
         }
-        .update_redirect_url(&view_url)
+        .update_redirect_url(&view_url),
+        Err(err) => {
+            tracing::error!(%err, endpoint_ip = %endpoint_ip, "disable_lockdown");
+            ActionStatus {
+                action: action_status::Type::DisableLockdown,
+                class: action_status::Class::Error,
+                message: err.message().into(),
+            }
+            .update_redirect_url(&view_url)
+        }
     };
 
     Redirect::to(&redirect_url).into_response()
@@ -940,7 +941,7 @@ pub async fn enable_lockdown(
 ) -> Response {
     let view_url = format!("/admin/explored-endpoint/{endpoint_ip}");
 
-    let redirect_url = if let Err(err) = state
+    let redirect_url = match state
         .lockdown(tonic::Request::new(rpc::forge::LockdownRequest {
             bmc_endpoint_request: Some(BmcEndpointRequest {
                 ip_address: endpoint_ip.clone(),
@@ -952,20 +953,21 @@ pub async fn enable_lockdown(
         .await
         .map(|response| response.into_inner())
     {
-        tracing::error!(%err, endpoint_ip = %endpoint_ip, "enable_lockdown");
-        ActionStatus {
-            action: action_status::Type::EnableLockdown,
-            class: action_status::Class::Error,
-            message: Cow::Owned(format!("{err}")),
-        }
-        .update_redirect_url(&view_url)
-    } else {
-        ActionStatus {
+        Ok(_) => ActionStatus {
             action: action_status::Type::EnableLockdown,
             class: action_status::Class::Success,
             message: "Lockdown enabled successfully".into(),
         }
-        .update_redirect_url(&view_url)
+        .update_redirect_url(&view_url),
+        Err(err) => {
+            tracing::error!(%err, endpoint_ip = %endpoint_ip, "enable_lockdown");
+            ActionStatus {
+                action: action_status::Type::EnableLockdown,
+                class: action_status::Class::Error,
+                message: err.message().into(),
+            }
+            .update_redirect_url(&view_url)
+        }
     };
 
     Redirect::to(&redirect_url).into_response()
@@ -1055,7 +1057,7 @@ pub async fn set_dpu_first_boot_order(
         return Redirect::to(&redirect_url).into_response();
     }
 
-    let redirect_url = if let Err(err) = state
+    let redirect_url = match state
         .set_dpu_first_boot_order(tonic::Request::new(
             rpc::forge::SetDpuFirstBootOrderRequest {
                 machine_id: None,
@@ -1069,20 +1071,21 @@ pub async fn set_dpu_first_boot_order(
         .await
         .map(|response| response.into_inner())
     {
-        tracing::error!(%err, endpoint_ip = %endpoint_ip, "set_dpu_first_boot_order");
-        ActionStatus {
-            action: action_status::Type::SetFirstBootOrder,
-            class: action_status::Class::Error,
-            message: Cow::Owned(format!("{err}")),
-        }
-        .update_redirect_url(&view_url)
-    } else {
-        ActionStatus {
+        Ok(_) => ActionStatus {
             action: action_status::Type::SetFirstBootOrder,
             class: action_status::Class::Success,
             message: "Boot order updated successfully".into(),
         }
-        .update_redirect_url(&view_url)
+        .update_redirect_url(&view_url),
+        Err(err) => {
+            tracing::error!(%err, endpoint_ip = %endpoint_ip, "set_dpu_first_boot_order");
+            ActionStatus {
+                action: action_status::Type::SetFirstBootOrder,
+                class: action_status::Class::Error,
+                message: err.message().into(),
+            }
+            .update_redirect_url(&view_url)
+        }
     };
 
     Redirect::to(&redirect_url).into_response()
