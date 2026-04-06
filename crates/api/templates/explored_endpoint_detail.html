@@ -152,6 +152,7 @@
 				<div>
 					<form id="machine_setup" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/machine-setup">
 						<div style="display: flex; gap: 8px; align-items: center;">
+							<span class="action-spinner"></span>
 							{% if is_dell_endpoint %}
 							<input type="text" id="boot_interface_mac" name="boot_interface_mac" 
 								placeholder="Boot Interface MAC"
@@ -161,7 +162,6 @@
 							<input type="submit" value="Machine Setup">
 						</div>
 					</form>
-					{{ action_status::action_spinner_script("machine_setup")|safe }}
 				</div>
 				{% if let Some(status) = action_status %}
 				{% if status.action == action_status::Type::MachineSetup %}
@@ -183,6 +183,7 @@
 						<form id="clear_credentials" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/clear-credentials" class="config-card-action">
 							<div class="config-card-reminder">Deletes credentials from vault.</div>
 							<input type="submit" class="delete-button" value="Clear Credentials">
+							<span class="action-spinner"></span>
 						</form>
 					</div>
 					{% if !has_machine %}
@@ -199,15 +200,15 @@
 						<div class="config-card-reminder">Allows auto BMC resets.</div>
 						<input type="hidden" name="pause" value="false"/>
 						<input type="submit" value="Resume Remediation">
+						<span class="action-spinner"></span>
 					</form>
-					{{ action_status::action_spinner_script("resume_remediation")|safe }}
 					{% else %}
 					<form id="pause_remediation" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/pause-remediation" class="config-card-action">
 						<div class="config-card-reminder">Prevents auto BMC resets.</div>
 						<input type="hidden" name="pause" value="true"/>
 						<input type="submit" value="Pause Remediation" class="warning-button">
+						<span class="action-spinner"></span>
 					</form>
-					{{ action_status::action_spinner_script("pause_remediation")|safe }}
 					{% endif %}
 					</div>
 					{% endif %}
@@ -227,8 +228,8 @@
 					<form id="disable_secure_boot" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/disable-secure-boot" class="config-card-action">
 						<div class="config-card-reminder">Reboot required to take effect.</div>
 						<input type="submit" value="Disable Secure Boot" class="{% if secure_boot_status == "Unknown" %}disabled{% endif %}" {% if secure_boot_status == "Unknown" %}onclick="return false;"{% endif %}>
+						<span class="action-spinner"></span>
 					</form>
-					{{ action_status::action_spinner_script("disable_secure_boot")|safe }}
 					{% if let Some(status) = action_status %}
 					{% if status.action == action_status::Type::DisableSecureBoot %}
 					{{ status.action_result_script()|safe }}
@@ -254,14 +255,14 @@
 					<form id="enable_lockdown" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/enable-lockdown" class="config-card-action">
 						<div class="config-card-reminder">Reboot required to take effect.</div>
 						<input type="submit" value="Enable Lockdown">
+						<span class="action-spinner"></span>
 					</form>
-					{{ action_status::action_spinner_script("enable_lockdown")|safe }}
 					{% else %}
 					<form id="disable_lockdown" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/disable-lockdown" class="config-card-action">
 						<div class="config-card-reminder">Reboot required to take effect.</div>
 						<input type="submit" value="Disable Lockdown" class="{% if lockdown_status == "Unknown" %}disabled{% endif %}" {% if lockdown_status == "Unknown" %}onclick="return false;"{% endif %}>
+						<span class="action-spinner"></span>
 					</form>
-					{{ action_status::action_spinner_script("disable_lockdown")|safe }}
 					{% endif %}
 					{% if let Some(status) = action_status %}
 					{% if status.action == action_status::Type::EnableLockdown || status.action == action_status::Type::DisableLockdown %}
@@ -295,6 +296,7 @@
 				<div style="margin-bottom: 12px;">
 					<form id="set_first_boot_order" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/set-dpu-first-boot-order" onsubmit="action_reminder(event)">
 						<div style="display: flex; gap: 8px; align-items: center;">
+							<span class="action-spinner"></span>
 							<input type="text" name="boot_interface_mac" 
 							       placeholder="Boot Interface MAC"
 							       title="Enter a valid MAC address (e.g. 00:11:22:33:44:55)"
@@ -303,7 +305,6 @@
 							<input type="submit" value="Set First">
 						</div>
 					</form>
-					{{ action_status::action_spinner_script("set_first_boot_order")|safe }}
 				</div>
 				{% include "restart_reminder.html" %}
 				{% if let Some(status) = action_status %}

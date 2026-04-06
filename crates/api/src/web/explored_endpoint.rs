@@ -704,15 +704,24 @@ pub async fn power_control(
         .map(|response| response.into_inner())
     {
         Ok(response) => {
-            let message = response
+            let raw_msg = response
                 .msg
-                .unwrap_or_else(|| format!("Power action '{}' completed successfully", action));
-            // TODO: API should be more explicit about what is warning what is just info in message.
-            let class = if message.to_lowercase().contains("warning") {
+                .unwrap_or_else(|| "completed successfully".to_string());
+            let class = if raw_msg.to_lowercase().contains("warning") {
                 action_status::Class::Warning
             } else {
                 action_status::Class::Success
             };
+            let friendly_action = match action.as_str() {
+                "On" => "Power On",
+                "GracefulShutdown" => "Graceful Shutdown",
+                "ForceOff" => "Force Off",
+                "GracefulRestart" => "Graceful Restart",
+                "ForceRestart" => "Force Restart",
+                "ACPowercycle" => "AC Powercycle",
+                other => other,
+            };
+            let message = format!("{friendly_action} {raw_msg}");
             let redirect_url = ActionStatus {
                 action: action_status::Type::Power,
                 class,
@@ -767,10 +776,11 @@ pub async fn bmc_reset(
         .map(|response| response.into_inner())
     {
         Ok(_response) => {
+            let method = if use_ipmi { "IPMI" } else { "Redfish" };
             let redirect_url = ActionStatus {
                 action: action_status::Type::ResetBmc,
                 class: action_status::Class::Success,
-                message: "BMC reset initiated successfully".into(),
+                message: format!("BMC Reset ({method}) initiated successfully").into(),
             }
             .update_redirect_url(&view_url);
             Redirect::to(&redirect_url).into_response()

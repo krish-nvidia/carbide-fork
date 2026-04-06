@@ -20,16 +20,6 @@ use std::collections::HashMap;
 
 use itertools::Itertools;
 
-// Shows the full-screen overlay spinner on form submit.
-pub fn action_spinner_script(id: &str) -> String {
-    const HANDLER: &str = r#"function() {
-  if (typeof showOverlay === 'function') showOverlay();
-}"#;
-    format!(
-        "<script>document.getElementById('{id}').addEventListener('submit', {HANDLER});</script>"
-    )
-}
-
 #[derive(PartialEq, Eq)]
 pub(crate) enum Type {
     Power,
@@ -152,20 +142,20 @@ impl ActionStatus<'_> {
     pub fn action_result_script(&self) -> String {
         let cleanup = Self::url_cleanup_script();
         let name = self.action.display_name();
+        let escaped_msg = self
+            .message
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\n");
         match self.class {
-            Class::Success => {
+            Class::Success | Class::Warning => {
                 format!(
-                    "<script>document.addEventListener('DOMContentLoaded',function(){{showOverlaySuccess()}});</script>\n{cleanup}"
+                    "<script>document.addEventListener('DOMContentLoaded',function(){{showToast('{escaped_msg}')}});</script>\n{cleanup}"
                 )
             }
-            _ => {
-                let escaped = self
-                    .message
-                    .replace('\\', "\\\\")
-                    .replace('\'', "\\'")
-                    .replace('\n', "\\n");
+            Class::Error => {
                 format!(
-                    "<script>document.addEventListener('DOMContentLoaded',function(){{showOverlayError('{escaped}','{name} Failed')}});</script>\n{cleanup}"
+                    "<script>document.addEventListener('DOMContentLoaded',function(){{showErrorModal('{escaped_msg}','{name} Failed')}});</script>\n{cleanup}"
                 )
             }
         }

@@ -123,27 +123,19 @@
 		</nav>
 		<main>{% block content %}{% endblock %}</main>
 
-		<!-- Global action overlay -->
-		<div id="action-overlay" class="action-overlay" style="display:none" onclick="onOverlayBackdropClick(event)">
-			<div id="action-overlay-spinner" class="action-overlay-icon">
-				<div class="action-overlay-ring"></div>
-			</div>
-			<div id="action-overlay-success" class="action-overlay-icon" style="display:none">
-				<div class="action-overlay-done">
-					<div class="action-overlay-ring action-overlay-ring--done"></div>
-					<svg class="action-overlay-check" viewBox="0 0 52 52">
-						<path fill="none" d="M13 28l9 9 18-18"/>
-					</svg>
+		<!-- Toast container for action success/warning notifications -->
+		<div id="toast-container" class="action-toast-container"></div>
+
+		<!-- Error modal (with gray backdrop) -->
+		<div id="error-modal-wrapper" class="error-modal-wrapper" style="display:none" onclick="if(event.target===this)hideErrorModal()">
+			<div class="error-modal">
+				<div id="error-modal-title" class="error-modal-title">Action Failed</div>
+				<div class="error-modal-body">
+					<pre id="error-modal-msg"></pre>
 				</div>
-			</div>
-			<div id="action-overlay-error" class="action-overlay-modal" style="display:none">
-				<span id="action-overlay-error-title" class="bubble error" style="margin-bottom:0.75rem">Action Failed</span>
-				<div class="action-overlay-error-body">
-					<pre id="action-overlay-error-msg" class="action-overlay-error-msg"></pre>
-				</div>
-				<div class="action-overlay-modal-footer">
-					<button class="action-overlay-copy-btn" onclick="copyOverlayError()">Copy</button>
-					<button onclick="hideOverlay(true)">Dismiss</button>
+				<div class="error-modal-footer">
+					<button class="error-modal-copy-btn" onclick="copyErrorMsg()">Copy</button>
+					<button onclick="hideErrorModal()">Dismiss</button>
 				</div>
 			</div>
 		</div>
@@ -157,43 +149,50 @@
 		</script>
 		<script src="/admin/static/sortable.js"></script>
 		<script>
-			const overlay  = document.getElementById('action-overlay');
-			const spinner  = document.getElementById('action-overlay-spinner');
-			const successEl = document.getElementById('action-overlay-success');
-			const errorEl  = document.getElementById('action-overlay-error');
-			const errorTitle = document.getElementById('action-overlay-error-title');
-			const errorMsg = document.getElementById('action-overlay-error-msg');
-			const copyBtn  = document.querySelector('.action-overlay-copy-btn');
+			const toastContainer = document.getElementById('toast-container');
+			const errorWrapper = document.getElementById('error-modal-wrapper');
+			const errorTitleEl = document.getElementById('error-modal-title');
+			const errorMsgEl = document.getElementById('error-modal-msg');
 
-			function setOverlayPanel(panel) {
-				spinner.style.display   = panel === 'spinner' ? '' : 'none';
-				successEl.style.display = panel === 'success' ? '' : 'none';
-				errorEl.style.display   = panel === 'error'   ? '' : 'none';
-				if (panel !== 'error') errorEl.classList.remove('active');
-				overlay.style.display = '';
-				overlay.classList.add('visible');
+			let pendingScope = null;
+
+			document.addEventListener('submit', function(e) {
+				const form = e.target;
+				if (!form.querySelector('.action-spinner')) return;
+				form.classList.add('submitting');
+				const scope = form.closest('table') || form;
+				scope.classList.add('actions-busy');
+				scope.querySelectorAll('input[type="submit"], button[type="submit"]')
+					.forEach(function(b) { b.disabled = true; });
+				pendingScope = scope;
+			});
+
+			function hideActionSpinner() {
+				if (!pendingScope) return;
+				pendingScope.querySelector('.submitting')?.classList.remove('submitting');
+				pendingScope.classList.remove('actions-busy');
+				pendingScope.querySelectorAll('input[type="submit"], button[type="submit"]')
+					.forEach(function(b) { b.disabled = false; });
+				pendingScope = null;
 			}
 
 			window.addEventListener('pageshow', function(e) {
-				if (e.persisted) hideOverlay(true);
+				if (e.persisted) hideActionSpinner();
 			});
 
-			function showOverlay() {
-				setOverlayPanel('spinner');
-			}
-
-			function hideOverlay(instant) {
-				overlay.classList.remove('visible');
-				if (instant) {
-					overlay.style.display = 'none';
-				} else {
-					setTimeout(function() { overlay.style.display = 'none'; }, 450);
-				}
-			}
-
-			function showOverlaySuccess() {
-				setOverlayPanel('success');
-				setTimeout(hideOverlay, 2000);
+			function showToast(message) {
+				hideActionSpinner();
+				const toast = document.createElement('div');
+				toast.className = 'action-toast';
+				const text = document.createElement('span');
+				text.className = 'action-toast-text';
+				text.textContent = message;
+				toast.appendChild(text);
+				toastContainer.appendChild(toast);
+				setTimeout(function() {
+					toast.classList.add('dismissing');
+					setTimeout(function() { toast.remove(); }, 300);
+				}, 3000);
 			}
 
 			function prettifyErrorMsg(raw) {
@@ -213,25 +212,23 @@
 				return raw;
 			}
 
-			function showOverlayError(msg, title) {
-				errorTitle.textContent = title || 'Action Failed';
-				errorMsg.textContent = prettifyErrorMsg(msg);
-				setOverlayPanel('error');
-				void errorEl.offsetWidth;
-				errorEl.classList.add('active');
+			function showErrorModal(msg, title) {
+				hideActionSpinner();
+				errorTitleEl.textContent = title || 'Action Failed';
+				errorMsgEl.textContent = prettifyErrorMsg(msg);
+				errorWrapper.style.display = '';
 			}
 
-			function copyOverlayError() {
-				navigator.clipboard.writeText(errorMsg.textContent).then(function() {
-					copyBtn.textContent = 'Copied';
-					setTimeout(function() { copyBtn.textContent = 'Copy'; }, 1500);
+			function hideErrorModal() {
+				errorWrapper.style.display = 'none';
+			}
+
+			function copyErrorMsg() {
+				navigator.clipboard.writeText(errorMsgEl.textContent).then(function() {
+					const btn = document.querySelector('.error-modal-copy-btn');
+					btn.textContent = 'Copied';
+					setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
 				});
-			}
-
-			function onOverlayBackdropClick(e) {
-				if (e.target === e.currentTarget && errorEl.style.display !== 'none') {
-					hideOverlay(true);
-				}
 			}
 
 

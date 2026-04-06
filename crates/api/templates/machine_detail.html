@@ -239,6 +239,7 @@
 			<div></div>
 			<div>
 				<form id="set_dpu_first_boot_order" method="POST" action="/admin/machine/{{ id }}/set-dpu-first-boot-order" onsubmit="action_reminder(event)">
+					<span class="action-spinner"></span>
 					<input type="hidden" name="bmc_ip" value="{{ bmc_info.ip|option_fmt }}">
 					{% for interface in interfaces %}
 						{% if interface.primary == "true" %}
@@ -247,7 +248,6 @@
 					{% endfor %}
 					<input type="submit" value="Set DPU first">
 				</form>
-				{{ action_status::action_spinner_script("set_dpu_first_boot_order")|safe }}
 			</div>
 			{% include "restart_reminder.html" %}
 			{% if let Some(status) = action_status %}
