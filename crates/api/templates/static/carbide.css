@@ -1364,34 +1364,39 @@ pre:not(div[style*="overflow: auto"] > pre):not(td > div > pre) {
   border-top-color: #fff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* Animated checkmark */
-.action-overlay-check {
+.action-overlay-done {
+  position: relative;
   width: 56px;
   height: 56px;
 }
 
-.action-overlay-check circle {
-  stroke: #fff;
-  stroke-width: 3.71;
-  stroke-dasharray: 166;
-  stroke-dashoffset: 166;
-  animation: overlay-circle 0.5s ease forwards;
+.action-overlay-ring--done {
+  animation: none;
+  border-color: #fff;
+}
+
+/* Animated checkmark */
+.action-overlay-check {
+  position: absolute;
+  top: 15%;
+  left: 15%;
+  width: 70%;
+  height: 70%;
 }
 
 .action-overlay-check path {
   stroke: #fff;
-  stroke-width: 3.71;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 48;
-  stroke-dashoffset: 48;
-  animation: overlay-check 0.35s 0.3s ease forwards;
-}
-
-@keyframes overlay-circle {
-  to { stroke-dashoffset: 0; }
+  stroke-width: 5;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-dasharray: 52;
+  stroke-dashoffset: 52;
+  animation: overlay-check 0.35s 0.15s ease forwards;
 }
 
 @keyframes overlay-check {
