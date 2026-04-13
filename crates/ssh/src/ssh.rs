@@ -214,9 +214,9 @@ async fn scp_cmd_write(
         return Ok(());
     }
 
-    Err(io_ssh_error(std::io::Error::other(
-        format!("scp failed with {status} and no signs of successful transfer"),
-    )))
+    Err(io_ssh_error(std::io::Error::other(format!(
+        "scp failed with {status} and no signs of successful transfer"
+    ))))
 }
 
 fn io_ssh_error(e: std::io::Error) -> SshError {
