@@ -1525,6 +1525,23 @@ select.disabled {
 }
 
 /* ------------------------------------------------------------------------
+   Refresh Endpoint Icon
+   ------------------------------------------------------------------------ */
+.refresh-icon {
+  vertical-align: middle;
+}
+
+@keyframes refresh-spin {
+  0%   { transform: rotate(0deg); }
+  75%  { transform: rotate(360deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.refresh-spinning .refresh-icon {
+  animation: refresh-spin 1s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------------
    Tab System
    ------------------------------------------------------------------------ */
 

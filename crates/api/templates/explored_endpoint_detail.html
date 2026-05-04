@@ -11,6 +11,14 @@
     {% endif %}
     <a id="logs-link" href="" target="_blank">Logs</a>
     <a id="json-link" href="">JSON</a>
+    <a id="refresh-endpoint" href="#" title="Refresh endpoint report">
+        <svg class="refresh-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6"/>
+            <path d="M2.5 22v-6h6"/>
+            <path d="M2.5 11.5a10 10 0 0 1 18.8-4.3"/>
+            <path d="M21.5 12.5a10 10 0 0 1-18.8 4.2"/>
+        </svg>
+    </a>
 </div>
 
 <form id="delete-form" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/delete" hidden>
@@ -91,20 +99,6 @@
 			</td>
 		</tr>
 		{% endif %}
-		<tr>
-			<th>Exploration Requested</th>
-			<td class="action-cell">
-				<div><span class="bubble {% if endpoint.exploration_requested %}warning{% endif %}">{{ endpoint.exploration_requested }}</span></div>
-				{% if !endpoint.exploration_requested %}
-				<div>
-					<form id="reexplore_action" method="POST" action="/admin/explored-endpoint/{{ endpoint.address }}/reexplore">
-						<input type="hidden" name="if_version_match" value="{{ endpoint.report_version }}"/>
-						<input type="submit" value="Request re-exploration">
-					</form>
-				</div>
-				{% endif %}
-			</td>
-		</tr>
 		<tr>
 			<th>Power Actions</th>
 			<td class="action-cell">
@@ -486,6 +480,27 @@
 document.addEventListener('DOMContentLoaded', function() {
 	const bmcIp = "{{ endpoint.address }}";
 	document.getElementById('logs-link').href = buildGrafanaLogsUrl(bmcIp);
+
+	var refreshMsg = sessionStorage.getItem('refreshToast');
+	if (refreshMsg) {
+		sessionStorage.removeItem('refreshToast');
+		showToast(refreshMsg);
+	}
+
+	var refreshBtn = document.getElementById('refresh-endpoint');
+	if (refreshBtn) {
+		refreshBtn.addEventListener('click', function(e) {
+			e.preventDefault();
+			if (refreshBtn.classList.contains('refresh-spinning')) return;
+			refreshBtn.classList.add('refresh-spinning');
+			fetch('/admin/explored-endpoint/' + encodeURIComponent(bmcIp) + '/refresh', { method: 'POST' })
+				.then(function(res) {
+					if (res.ok) sessionStorage.setItem('refreshToast', 'Report Refreshed');
+					window.location.reload();
+				})
+				.catch(function() { window.location.reload(); });
+		});
+	}
 });
 </script>
 

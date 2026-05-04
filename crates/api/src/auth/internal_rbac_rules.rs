@@ -254,6 +254,7 @@ impl InternalRBACRules {
         x.perm("IsBmcInManagedHost", vec![ForgeAdminCLI]);
         x.perm("Explore", vec![ForgeAdminCLI, Rla]);
         x.perm("ReExploreEndpoint", vec![ForgeAdminCLI, Rla]);
+        x.perm("RefreshEndpointReport", vec![ForgeAdminCLI, Rla]);
         x.perm("DeleteExploredEndpoint", vec![ForgeAdminCLI]);
         x.perm("PauseExploredEndpointRemediation", vec![ForgeAdminCLI]);
         x.perm("FindExploredEndpointIds", vec![ForgeAdminCLI, Rla]);

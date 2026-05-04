@@ -15,11 +15,13 @@
  * limitations under the License.
  */
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use ::rpc::forge::{self as rpc, IsBmcInManagedHostResponse};
 use config_version::ConfigVersion;
+use model::expected_entity::ExpectedEntity;
+use model::machine::MachineInterfaceSnapshot;
 use tokio::net::lookup_host;
 use tonic::{Request, Response, Status};
 
@@ -336,4 +338,130 @@ pub(crate) async fn delete_explored_endpoint(
             "Successfully deleted explored endpoint with IP {bmc_ip}"
         )),
     }))
+}
+
+pub(crate) async fn refresh_endpoint_report(
+    api: &Api,
+    request: Request<rpc::RefreshEndpointReportRequest>,
+) -> Result<Response<::rpc::site_explorer::ExploredEndpoint>, tonic::Status> {
+    log_request_data(&request);
+    let req = request.into_inner();
+
+    let bmc_ip = IpAddr::from_str(&req.ip_address).map_err(CarbideError::from)?;
+    let if_version_match = req
+        .if_version_match
+        .map(|v| v.parse::<ConfigVersion>())
+        .transpose()
+        .map_err(CarbideError::from)?;
+
+    let bmc_addr = SocketAddr::new(bmc_ip, 443);
+
+    let mut txn = api.txn_begin().await?;
+
+    let existing = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
+    let existing_ep = existing.first().ok_or_else(|| CarbideError::NotFoundError {
+        kind: "explored_endpoint",
+        id: bmc_ip.to_string(),
+    })?;
+
+    if let Some(v) = if_version_match {
+        if v != existing_ep.report_version {
+            return Err(CarbideError::ConcurrentModificationError(
+                "explored_endpoint",
+                v.to_string(),
+            )
+            .into());
+        }
+    }
+    let boot_interface_mac = existing_ep.boot_interface_mac;
+
+    let bmc_interface = db::machine_interface::find_by_ip(&mut txn, bmc_ip)
+        .await?
+        .ok_or_else(|| CarbideError::NotFoundError {
+            kind: "machine_interface",
+            id: bmc_ip.to_string(),
+        })?;
+
+    txn.commit().await?;
+
+    let machine_interface = MachineInterfaceSnapshot::mock_with_mac(bmc_interface.mac_address);
+
+    let expected = if let Some(expected_machine) =
+        crate::handlers::expected_machine::query(api, bmc_interface.mac_address).await?
+    {
+        Some(ExpectedEntity::Machine(expected_machine))
+    } else if let Some(expected_switch) =
+        crate::handlers::expected_switch::query(api, bmc_interface.mac_address).await?
+    {
+        Some(ExpectedEntity::Switch(expected_switch))
+    } else {
+        crate::handlers::expected_power_shelf::query(api, bmc_interface.mac_address)
+            .await?
+            .map(ExpectedEntity::PowerShelf)
+    };
+
+    let start = std::time::Instant::now();
+    let result = api
+        .endpoint_explorer
+        .explore_endpoint(
+            bmc_addr,
+            &machine_interface,
+            expected.as_ref(),
+            Some(&existing_ep.report),
+            boot_interface_mac,
+        )
+        .await;
+
+    let report = match result {
+        Ok(mut report) => {
+            report.last_exploration_latency = Some(start.elapsed());
+            report
+        }
+        Err(e) => {
+            let mut report = existing_ep.report.clone();
+            report.last_exploration_error = Some(e);
+            report.last_exploration_latency = Some(start.elapsed());
+            report
+        }
+    };
+
+    let mut txn = api.txn_begin().await?;
+
+    let current = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
+    let current_version = current
+        .first()
+        .ok_or_else(|| CarbideError::NotFoundError {
+            kind: "explored_endpoint",
+            id: bmc_ip.to_string(),
+        })?
+        .report_version;
+
+    let updated = db::explored_endpoints::try_update(
+        bmc_ip,
+        current_version,
+        &report,
+        false,
+        &mut txn,
+    )
+    .await?;
+
+    if !updated {
+        return Err(CarbideError::ConcurrentModificationError(
+            "explored_endpoint",
+            current_version.to_string(),
+        )
+        .into());
+    }
+
+    db::explored_endpoints::request_exploration_for_addresses(&[bmc_ip], &mut txn).await?;
+
+    let endpoints = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
+
+    txn.commit().await?;
+
+    let ep = endpoints.into_iter().next().ok_or_else(|| {
+        CarbideError::internal(format!("Endpoint {bmc_ip} not found after update"))
+    })?;
+
+    Ok(Response::new(ep.into()))
 }

@@ -600,6 +600,31 @@ pub async fn re_explore(
     Redirect::to(&view_url)
 }
 
+pub async fn refresh_endpoint(
+    AxumState(state): AxumState<Arc<Api>>,
+    AxumPath(endpoint_ip): AxumPath<String>,
+) -> Response {
+    match state
+        .refresh_endpoint_report(tonic::Request::new(
+            rpc::forge::RefreshEndpointReportRequest {
+                ip_address: endpoint_ip.clone(),
+                if_version_match: None,
+            },
+        ))
+        .await
+    {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Err(err) => {
+            tracing::error!(%err, endpoint_ip, "refresh_endpoint_report");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"ok": false, "error": err.message()})),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub async fn pause_remediation(
     AxumState(state): AxumState<Arc<Api>>,
     AxumPath(endpoint_ip): AxumPath<String>,

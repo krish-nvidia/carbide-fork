@@ -4953,3 +4953,107 @@ async fn test_orphan_managed_host_alert_emitted(
 
     Ok(())
 }
+
+#[crate::sqlx_test]
+async fn test_refresh_endpoint_report(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+
+    let mut machine = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
+    machine.discover_dhcp(&env).await?;
+
+    let endpoint_explorer = Arc::new(MockEndpointExplorer::default());
+    endpoint_explorer
+        .insert_endpoints(vec![(machine.ip.parse().unwrap(), DpuConfig::default().into())]);
+
+    let explorer_config = SiteExplorerConfig {
+        enabled: Arc::new(true.into()),
+        explorations_per_run: 1,
+        concurrent_explorations: 1,
+        run_interval: std::time::Duration::from_secs(1),
+        create_machines: Arc::new(false.into()),
+        create_power_shelves: Arc::new(true.into()),
+        explore_power_shelves_from_static_ip: Arc::new(true.into()),
+        power_shelves_created_per_run: 1,
+        create_switches: Arc::new(true.into()),
+        switches_created_per_run: 1,
+        ..Default::default()
+    };
+
+    let test_meter = TestMeter::default();
+    let explorer = SiteExplorer::new(
+        env.pool.clone(),
+        explorer_config,
+        test_meter.meter(),
+        endpoint_explorer.clone(),
+        Arc::new(env.config.get_firmware_config()),
+        env.common_pools.clone(),
+        env.api.work_lock_manager_handle.clone(),
+        env.rms_sim.as_rms_client(),
+        env.test_credential_manager.clone(),
+    );
+
+    explorer.run_single_iteration().await.unwrap();
+
+    let mut txn = env.pool.begin().await?;
+    let explored = db::explored_endpoints::find_all(txn.as_mut()).await.unwrap();
+    txn.commit().await?;
+    assert_eq!(explored.len(), 1);
+    let explored_ip = explored[0].address;
+    let initial_version = explored[0].report_version;
+    assert!(!explored[0].exploration_requested);
+
+    // Refresh the endpoint report via the new RPC
+    let response = env
+        .api
+        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: explored_ip.to_string(),
+            if_version_match: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(response.address, explored_ip.to_string());
+
+    // Verify the DB was updated: version bumped and exploration_requested is true
+    let mut txn = env.pool.begin().await?;
+    let explored = db::explored_endpoints::find_all(txn.as_mut()).await.unwrap();
+    txn.commit().await?;
+    assert_eq!(explored.len(), 1);
+    assert_eq!(explored[0].address, explored_ip);
+    assert!(
+        explored[0].report_version.version_nr() > initial_version.version_nr(),
+        "version should have been bumped"
+    );
+    assert!(
+        explored[0].exploration_requested,
+        "exploration_requested should be true after refresh"
+    );
+
+    // Refresh with if_version_match using wrong version should fail
+    let wrong_version = initial_version;
+    let err = env
+        .api
+        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: explored_ip.to_string(),
+            if_version_match: Some(wrong_version.version_string()),
+        }))
+        .await
+        .expect_err("Should fail due to version mismatch");
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+
+    // Refresh for non-existent endpoint should fail
+    let err = env
+        .api
+        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: "99.99.99.99".to_string(),
+            if_version_match: None,
+        }))
+        .await
+        .expect_err("Should fail for non-existent endpoint");
+    assert_eq!(err.code(), tonic::Code::NotFound);
+
+    Ok(())
+}
