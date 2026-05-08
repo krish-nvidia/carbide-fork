@@ -189,10 +189,10 @@
 				if (e.persisted) hideActionSpinner();
 			});
 
-			function showToast(message) {
+			function showToast(message, isError) {
 				hideActionSpinner();
 				const toast = document.createElement('div');
-				toast.className = 'action-toast';
+				toast.className = 'action-toast' + (isError ? ' action-toast-error' : '');
 				const text = document.createElement('span');
 				text.className = 'action-toast-text';
 				text.textContent = message;
@@ -201,7 +201,7 @@
 				setTimeout(function() {
 					toast.classList.add('dismissing');
 					setTimeout(function() { toast.remove(); }, 300);
-				}, 3000);
+				}, isError ? 6000 : 3000);
 			}
 
 			function prettifyErrorMsg(raw) {

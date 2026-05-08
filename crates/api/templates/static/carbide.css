@@ -1412,6 +1412,10 @@ pre:not(div[style*="overflow: auto"] > pre):not(td > div > pre) {
   background: var(--accent, #76b900);
 }
 
+.action-toast.action-toast-error::before {
+  background: #d9534f;
+}
+
 .action-toast-text {
   padding: 0.85rem 1.25rem;
   font-size: 0.95rem;
@@ -1528,7 +1532,25 @@ select.disabled {
    Refresh Endpoint Icon
    ------------------------------------------------------------------------ */
 .refresh-icon {
-  vertical-align: middle;
+  display: block;
+}
+
+/* Override the generic `div#json a` pill styling so the icon button matches
+   the visual height of the text links without inheriting their text padding. */
+#refresh-endpoint {
+  align-items: center;
+  background-color: transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  display: inline-flex;
+  justify-content: center;
+  padding: 0.5rem;
+}
+
+#refresh-endpoint:hover {
+  background-color: var(--accent-green);
+  box-shadow: var(--shadow-md);
+  border-color: var(--accent-green-hover);
 }
 
 @keyframes refresh-spin {
@@ -1539,6 +1561,7 @@ select.disabled {
 
 .refresh-spinning .refresh-icon {
   animation: refresh-spin 1s ease-in-out infinite;
+  transform-origin: center;
 }
 
 /* ------------------------------------------------------------------------

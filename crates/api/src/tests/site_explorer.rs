@@ -5017,7 +5017,9 @@ async fn test_refresh_endpoint_report(
 
     assert_eq!(response.address, explored_ip.to_string());
 
-    // Verify the DB was updated: version bumped and exploration_requested is true
+    // Verify the DB was updated: version bumped and no second probe was queued.
+    // `try_update` clears `exploration_requested`; the periodic loop picks up the
+    // freshly persisted report without an extra Redfish call.
     let mut txn = env.pool.begin().await?;
     let explored = db::explored_endpoints::find_all(txn.as_mut()).await.unwrap();
     txn.commit().await?;
@@ -5028,8 +5030,8 @@ async fn test_refresh_endpoint_report(
         "version should have been bumped"
     );
     assert!(
-        explored[0].exploration_requested,
-        "exploration_requested should be true after refresh"
+        !explored[0].exploration_requested,
+        "refresh should not requeue a second Redfish probe"
     );
 
     // Refresh with if_version_match using wrong version should fail
@@ -5054,6 +5056,266 @@ async fn test_refresh_endpoint_report(
         .await
         .expect_err("Should fail for non-existent endpoint");
     assert_eq!(err.code(), tonic::Code::NotFound);
+
+    Ok(())
+}
+
+/// Two concurrent `RefreshEndpointReport` calls for the same endpoint should
+/// be deduplicated by the per-endpoint work lock: the first one acquires the
+/// lock and runs the probe; the second one immediately gets an `AlreadyExists`
+/// error. Refreshes for *different* endpoints must not block each other.
+#[crate::sqlx_test]
+async fn test_refresh_endpoint_report_dedupes_concurrent_requests(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+
+    let mut machine_a = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
+    let mut machine_b = FakeMachine::new("AA:BB:CC:DD:EE:FF", "Vendor1", &env.underlay_segment);
+    machine_a.discover_dhcp(&env).await?;
+    machine_b.discover_dhcp(&env).await?;
+
+    let bmc_ip_a = machine_a.ip.parse::<IpAddr>().unwrap();
+    let bmc_ip_b = machine_b.ip.parse::<IpAddr>().unwrap();
+
+    // Seed initial explored endpoint rows for both machines.
+    env.endpoint_explorer
+        .insert_endpoints(vec![
+            (bmc_ip_a, DpuConfig::default().into()),
+            (bmc_ip_b, DpuConfig::default().into()),
+        ]);
+    env.run_site_explorer_iteration().await;
+
+    // Introduce a delay so the first refresh holds the lock long enough for
+    // the second concurrent call to observe it.
+    env.endpoint_explorer
+        .set_explore_endpoint_delay(std::time::Duration::from_millis(200));
+
+    let api_clone = env.api.clone();
+    let first = tokio::spawn({
+        let api = api_clone.clone();
+        let ip = machine_a.ip.clone();
+        async move {
+            api.refresh_endpoint_report(tonic::Request::new(
+                rpc::forge::RefreshEndpointReportRequest {
+                    ip_address: ip,
+                    if_version_match: None,
+                },
+            ))
+            .await
+        }
+    });
+
+    // Give the first task a moment to acquire the lock before firing the second.
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    // Same endpoint — should be rejected.
+    let second_result = api_clone
+        .refresh_endpoint_report(tonic::Request::new(
+            rpc::forge::RefreshEndpointReportRequest {
+                ip_address: machine_a.ip.clone(),
+                if_version_match: None,
+            },
+        ))
+        .await;
+
+    // Different endpoint — must succeed independently.
+    let other_result = api_clone
+        .refresh_endpoint_report(tonic::Request::new(
+            rpc::forge::RefreshEndpointReportRequest {
+                ip_address: machine_b.ip.clone(),
+                if_version_match: None,
+            },
+        ))
+        .await;
+
+    let first_result = first.await?;
+
+    assert!(first_result.is_ok(), "first refresh should succeed");
+
+    let second_err = second_result.expect_err("second concurrent refresh should be rejected");
+    assert_eq!(
+        second_err.code(),
+        tonic::Code::AlreadyExists,
+        "expected AlreadyExists for duplicate concurrent refresh"
+    );
+
+    assert!(
+        other_result.is_ok(),
+        "refresh for a different endpoint should not be blocked"
+    );
+
+    Ok(())
+}
+
+/// When the only candidate for exploration is a `priority_update_endpoint`
+/// (i.e. one that has `exploration_requested = true`), the periodic loop must
+/// still select it even though there are no routine candidates. This protects
+/// the scheduler budget fix.
+#[crate::sqlx_test]
+async fn test_site_explorer_reexplore_requested_only_candidate(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+
+    let mut machine = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
+    machine.discover_dhcp(&env).await?;
+
+    let bmc_ip: IpAddr = machine.ip.parse().unwrap();
+
+    let endpoint_explorer = Arc::new(MockEndpointExplorer::default());
+    endpoint_explorer.insert_endpoint_result(bmc_ip, Ok(DpuConfig::default().into()));
+
+    let explorer_config = SiteExplorerConfig {
+        enabled: Arc::new(true.into()),
+        // explorations_per_run = 0 means the routine budget is empty; only
+        // priority_update_endpoints are explored.
+        explorations_per_run: 0,
+        concurrent_explorations: 1,
+        run_interval: std::time::Duration::from_secs(1),
+        create_machines: Arc::new(false.into()),
+        ..Default::default()
+    };
+    let test_meter = TestMeter::default();
+    let explorer = SiteExplorer::new(
+        env.pool.clone(),
+        explorer_config,
+        test_meter.meter(),
+        endpoint_explorer.clone(),
+        Arc::new(env.config.get_firmware_config()),
+        env.common_pools.clone(),
+        env.api.work_lock_manager_handle.clone(),
+        env.rms_sim.as_rms_client(),
+        env.test_credential_manager.clone(),
+    );
+
+    // First iteration seeds the explored_endpoints row via the normal path (env explorer).
+    env.endpoint_explorer
+        .insert_endpoints(vec![(bmc_ip, DpuConfig::default().into())]);
+    env.run_site_explorer_iteration().await;
+
+    let mut txn = env.pool.begin().await?;
+    let explored = db::explored_endpoints::find_all(txn.as_mut()).await?;
+    txn.commit().await?;
+    assert_eq!(explored.len(), 1);
+    let initial_version = explored[0].report_version;
+
+    // Flag this endpoint for re-exploration.
+    env.api
+        .re_explore_endpoint(tonic::Request::new(rpc::forge::ReExploreEndpointRequest {
+            ip_address: bmc_ip.to_string(),
+            if_version_match: None,
+        }))
+        .await?;
+
+    // Run the dedicated explorer with an empty routine budget. The priority
+    // endpoint must still be picked up and probed.
+    explorer.run_single_iteration().await.unwrap();
+
+    let mut txn = env.pool.begin().await?;
+    let explored = db::explored_endpoints::find_all(txn.as_mut()).await?;
+    txn.commit().await?;
+    assert_eq!(explored.len(), 1);
+    assert!(
+        explored[0].report_version.version_nr() > initial_version.version_nr(),
+        "priority endpoint must be explored even when the routine budget is zero"
+    );
+    assert!(!explored[0].exploration_requested);
+
+    Ok(())
+}
+
+/// When `RefreshEndpointReport` is running, the periodic loop must skip that
+/// endpoint for the current tick rather than probing it concurrently. The skip
+/// must not count against exploration metrics.
+#[crate::sqlx_test]
+async fn test_periodic_loop_skips_endpoint_locked_by_adhoc_refresh(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+
+    let mut machine = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
+    machine.discover_dhcp(&env).await?;
+
+    let bmc_ip: IpAddr = machine.ip.parse().unwrap();
+
+    env.endpoint_explorer
+        .insert_endpoints(vec![(bmc_ip, DpuConfig::default().into())]);
+    env.run_site_explorer_iteration().await;
+
+    // Flag for re-exploration so the periodic loop will try to probe this endpoint.
+    env.api
+        .re_explore_endpoint(tonic::Request::new(rpc::forge::ReExploreEndpointRequest {
+            ip_address: bmc_ip.to_string(),
+            if_version_match: None,
+        }))
+        .await?;
+
+    // Give the adhoc refresh a slow probe so it holds the lock during the tick.
+    env.endpoint_explorer
+        .set_explore_endpoint_delay(std::time::Duration::from_millis(300));
+
+    let calls_before = env.endpoint_explorer.explore_endpoint_call_count();
+
+    // Start a slow adhoc refresh in the background.
+    let api_clone = env.api.clone();
+    let ip_str = machine.ip.clone();
+    let refresh = tokio::spawn(async move {
+        api_clone
+            .refresh_endpoint_report(tonic::Request::new(
+                rpc::forge::RefreshEndpointReportRequest {
+                    ip_address: ip_str,
+                    if_version_match: None,
+                },
+            ))
+            .await
+    });
+
+    // Give the adhoc refresh a moment to acquire the lock.
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    // Now run the periodic loop. It must skip the locked endpoint.
+    let explorer_config = SiteExplorerConfig {
+        enabled: Arc::new(true.into()),
+        explorations_per_run: 1,
+        concurrent_explorations: 1,
+        run_interval: std::time::Duration::from_secs(1),
+        create_machines: Arc::new(false.into()),
+        ..Default::default()
+    };
+    let test_meter = TestMeter::default();
+    let explorer = SiteExplorer::new(
+        env.pool.clone(),
+        explorer_config,
+        test_meter.meter(),
+        Arc::new(env.endpoint_explorer.clone()),
+        Arc::new(env.config.get_firmware_config()),
+        env.common_pools.clone(),
+        env.api.work_lock_manager_handle.clone(),
+        env.rms_sim.as_rms_client(),
+        env.test_credential_manager.clone(),
+    );
+    explorer.run_single_iteration().await.unwrap();
+
+    refresh.await??;
+
+    // Only the adhoc refresh probe should have occurred; the periodic loop
+    // must not have added another probe call.
+    let calls_after = env.endpoint_explorer.explore_endpoint_call_count();
+    assert_eq!(
+        calls_after,
+        calls_before + 1,
+        "periodic loop must skip the locked endpoint; expected only the adhoc probe"
+    );
+
+    // Periodic exploration metric must not count the skip.
+    assert_eq!(
+        test_meter
+            .formatted_metric("carbide_endpoint_explorations_count")
+            .unwrap_or_else(|| "0".to_string()),
+        "0",
+        "skipped-locked endpoint must not increment periodic exploration metric"
+    );
 
     Ok(())
 }

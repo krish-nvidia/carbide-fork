@@ -19,7 +19,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use ::rpc::forge::{self as rpc, IsBmcInManagedHostResponse};
+use carbide_site_explorer::endpoint_exploration_work_key;
 use config_version::ConfigVersion;
+use db::work_lock_manager::AcquireLockError;
 use model::expected_entity::ExpectedEntity;
 use model::machine::MachineInterfaceSnapshot;
 use tokio::net::lookup_host;
@@ -359,7 +361,7 @@ pub(crate) async fn refresh_endpoint_report(
     let mut txn = api.txn_begin().await?;
 
     let existing = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
-    let existing_ep = existing.first().ok_or_else(|| CarbideError::NotFoundError {
+    let existing_ep = existing.into_iter().next().ok_or_else(|| CarbideError::NotFoundError {
         kind: "explored_endpoint",
         id: bmc_ip.to_string(),
     })?;
@@ -374,6 +376,7 @@ pub(crate) async fn refresh_endpoint_report(
         }
     }
     let boot_interface_mac = existing_ep.boot_interface_mac;
+    let existing_report = existing_ep.report.clone();
 
     let bmc_interface = db::machine_interface::find_by_ip(&mut txn, bmc_ip)
         .await?
@@ -383,6 +386,29 @@ pub(crate) async fn refresh_endpoint_report(
         })?;
 
     txn.commit().await?;
+
+    // Acquire the per-endpoint work lock before probing. If the periodic site-explorer
+    // loop (or another concurrent refresh) is already probing this endpoint, return an
+    // error immediately rather than running a redundant Redfish call.
+    let _work_lock = match api
+        .work_lock_manager_handle
+        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
+        .await
+    {
+        Ok(lock) => lock,
+        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
+            return Err(CarbideError::AlreadyInProgress(format!(
+                "Endpoint refresh already in progress for {bmc_ip}"
+            ))
+            .into());
+        }
+        Err(e) => {
+            return Err(CarbideError::internal(format!(
+                "Failed to acquire endpoint work lock for {bmc_ip}: {e}"
+            ))
+            .into());
+        }
+    };
 
     let machine_interface = MachineInterfaceSnapshot::mock_with_mac(bmc_interface.mac_address);
 
@@ -407,7 +433,7 @@ pub(crate) async fn refresh_endpoint_report(
             bmc_addr,
             &machine_interface,
             expected.as_ref(),
-            Some(&existing_ep.report),
+            Some(&existing_report),
             boot_interface_mac,
         )
         .await;
@@ -415,10 +441,34 @@ pub(crate) async fn refresh_endpoint_report(
     let report = match result {
         Ok(mut report) => {
             report.last_exploration_latency = Some(start.elapsed());
+            // Enrich the report the same way the periodic loop does.
+            if !report.is_power_shelf() {
+                if let Err(e) = report.generate_machine_id(false) {
+                    tracing::error!(%e, "refresh_endpoint_report: could not generate MachineId");
+                }
+                report.model = report.model();
+                let fw_config = api.runtime_config.get_firmware_config().create_snapshot();
+                if let Some(fw_info) = fw_config.find_fw_info_for_host_report(&report) {
+                    let missing = report.parse_versions(&fw_info);
+                    if !missing.is_empty() {
+                        tracing::debug!(
+                            "refresh_endpoint_report: could not find firmware version for: {missing:?}"
+                        );
+                    }
+                } else {
+                    report.versions = std::collections::HashMap::default();
+                }
+                report.parse_position_info();
+            } else {
+                if let Err(e) = report.generate_power_shelf_id() {
+                    tracing::error!(%e, "refresh_endpoint_report: could not generate PowerShelfId");
+                }
+                report.versions = std::collections::HashMap::default();
+            }
             report
         }
         Err(e) => {
-            let mut report = existing_ep.report.clone();
+            let mut report = existing_report.clone();
             report.last_exploration_error = Some(e);
             report.last_exploration_latency = Some(start.elapsed());
             report
@@ -453,7 +503,9 @@ pub(crate) async fn refresh_endpoint_report(
         .into());
     }
 
-    db::explored_endpoints::request_exploration_for_addresses(&[bmc_ip], &mut txn).await?;
+    // `try_update` already clears `exploration_requested = false`. The freshly persisted
+    // report is picked up by downstream site-explorer phases on the next tick without
+    // a second Redfish probe. Only `ReExploreEndpoint` should set `exploration_requested`.
 
     let endpoints = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
 

@@ -603,22 +603,25 @@ pub async fn re_explore(
 pub async fn refresh_endpoint(
     AxumState(state): AxumState<Arc<Api>>,
     AxumPath(endpoint_ip): AxumPath<String>,
-) -> Response {
+) -> impl IntoResponse {
     match state
-        .refresh_endpoint_report(tonic::Request::new(
-            rpc::forge::RefreshEndpointReportRequest {
-                ip_address: endpoint_ip.clone(),
-                if_version_match: None,
-            },
-        ))
+        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: endpoint_ip.clone(),
+            if_version_match: None,
+        }))
         .await
     {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({}))).into_response(),
         Err(err) => {
-            tracing::error!(%err, endpoint_ip, "refresh_endpoint_report");
+            let status_code = match err.code() {
+                tonic::Code::AlreadyExists => StatusCode::CONFLICT,
+                tonic::Code::NotFound => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            tracing::error!(%err, endpoint_ip, "refresh_endpoint");
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"ok": false, "error": err.message()})),
+                status_code,
+                Json(serde_json::json!({ "error": err.message() })),
             )
                 .into_response()
         }

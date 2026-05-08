@@ -50,7 +50,7 @@ pub enum Cmd {
     )]
     ReExplore(re_explore::Args),
     #[clap(
-        about = "Immediately probes a BMC endpoint, persists the report, and queues it for the site-explorer loop."
+        about = "Immediately probes a BMC endpoint and persists the report. The next site-explorer tick picks up the result for downstream processing without a second Redfish probe."
     )]
     RefreshEndpoint(refresh_endpoint::Args),
     #[clap(about = "Clear the last known error for the BMC in the latest site exploration report.")]

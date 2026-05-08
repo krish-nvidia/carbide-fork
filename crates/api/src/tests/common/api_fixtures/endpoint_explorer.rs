@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use carbide_site_explorer::{EndpointExplorer, SiteExplorationMetrics};
 use libredfish::RoleId;
@@ -37,9 +38,22 @@ pub struct MockEndpointExplorer {
     /// mode) so tests can assert the auto-correct path fired with the
     /// right arguments. Cleared on each `insert_endpoints` reset.
     pub set_nic_mode_calls: Arc<Mutex<Vec<(SocketAddr, NicMode)>>>,
+    /// Optional delay to inject into `explore_endpoint`. Useful for testing
+    /// concurrent-refresh deduplication via the work lock.
+    pub explore_endpoint_delay: Arc<Mutex<Option<Duration>>>,
+    /// Records IPs that `explore_endpoint` was called for.
+    pub explore_endpoint_calls: Arc<Mutex<Vec<IpAddr>>>,
 }
 
 impl MockEndpointExplorer {
+    pub fn set_explore_endpoint_delay(&self, delay: Duration) {
+        *self.explore_endpoint_delay.lock().unwrap() = Some(delay);
+    }
+
+    pub fn explore_endpoint_call_count(&self) -> usize {
+        self.explore_endpoint_calls.lock().unwrap().len()
+    }
+
     pub fn insert_endpoints(&self, endpoints: Vec<(IpAddr, EndpointExplorationReport)>) {
         self.insert_endpoint_results(
             endpoints
@@ -88,6 +102,14 @@ impl EndpointExplorer for MockEndpointExplorer {
         _boot_interface_mac: Option<MacAddress>,
     ) -> Result<EndpointExplorationReport, EndpointExplorationError> {
         tracing::info!("Endpoint {bmc_ip_address} is getting explored");
+        self.explore_endpoint_calls
+            .lock()
+            .unwrap()
+            .push(bmc_ip_address.ip());
+        let delay = *self.explore_endpoint_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         let guard = self.reports.lock().unwrap();
         let res = guard.get(&bmc_ip_address.ip()).unwrap();
         res.clone()
