@@ -350,31 +350,19 @@ pub(crate) async fn refresh_endpoint_report(
     let req = request.into_inner();
 
     let bmc_ip = IpAddr::from_str(&req.ip_address).map_err(CarbideError::from)?;
-    let if_version_match = req
-        .if_version_match
-        .map(|v| v.parse::<ConfigVersion>())
-        .transpose()
-        .map_err(CarbideError::from)?;
-
     let bmc_addr = SocketAddr::new(bmc_ip, 443);
 
     let mut txn = api.txn_begin().await?;
 
     let existing = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
-    let existing_ep = existing.into_iter().next().ok_or_else(|| CarbideError::NotFoundError {
-        kind: "explored_endpoint",
-        id: bmc_ip.to_string(),
-    })?;
+    let existing_ep = existing
+        .into_iter()
+        .next()
+        .ok_or_else(|| CarbideError::NotFoundError {
+            kind: "explored_endpoint",
+            id: bmc_ip.to_string(),
+        })?;
 
-    if let Some(v) = if_version_match {
-        if v != existing_ep.report_version {
-            return Err(CarbideError::ConcurrentModificationError(
-                "explored_endpoint",
-                v.to_string(),
-            )
-            .into());
-        }
-    }
     let boot_interface_mac = existing_ep.boot_interface_mac;
     let existing_report = existing_ep.report.clone();
 
@@ -387,10 +375,26 @@ pub(crate) async fn refresh_endpoint_report(
 
     txn.commit().await?;
 
+    let machine_interface = MachineInterfaceSnapshot::mock_with_mac(bmc_interface.mac_address);
+
+    let expected = if let Some(expected_machine) =
+        crate::handlers::expected_machine::query(api, bmc_interface.mac_address).await?
+    {
+        Some(ExpectedEntity::Machine(expected_machine))
+    } else if let Some(expected_switch) =
+        crate::handlers::expected_switch::query(api, bmc_interface.mac_address).await?
+    {
+        Some(ExpectedEntity::Switch(expected_switch))
+    } else {
+        crate::handlers::expected_power_shelf::query(api, bmc_interface.mac_address)
+            .await?
+            .map(ExpectedEntity::PowerShelf)
+    };
+
     // Acquire the per-endpoint work lock before probing. If the periodic site-explorer
     // loop (or another concurrent refresh) is already probing this endpoint, return an
     // error immediately rather than running a redundant Redfish call.
-    let _work_lock = match api
+    let work_lock = match api
         .work_lock_manager_handle
         .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
         .await
@@ -410,110 +414,108 @@ pub(crate) async fn refresh_endpoint_report(
         }
     };
 
-    let machine_interface = MachineInterfaceSnapshot::mock_with_mac(bmc_interface.mac_address);
+    // Run the probe + persist on a detached tokio task that owns the work lock.
+    // Awaiting the JoinHandle preserves the synchronous UX. Even if the caller navigates
+    // away mid-fetch, the probe will still run to completion.
+    let endpoint_explorer = api.endpoint_explorer.clone();
+    let database_connection = api.database_connection.clone();
+    let runtime_config = api.runtime_config.clone();
 
-    let expected = if let Some(expected_machine) =
-        crate::handlers::expected_machine::query(api, bmc_interface.mac_address).await?
-    {
-        Some(ExpectedEntity::Machine(expected_machine))
-    } else if let Some(expected_switch) =
-        crate::handlers::expected_switch::query(api, bmc_interface.mac_address).await?
-    {
-        Some(ExpectedEntity::Switch(expected_switch))
-    } else {
-        crate::handlers::expected_power_shelf::query(api, bmc_interface.mac_address)
-            .await?
-            .map(ExpectedEntity::PowerShelf)
-    };
+    let join_handle = tokio::spawn(async move {
+        let _work_lock = work_lock;
 
-    let start = std::time::Instant::now();
-    let result = api
-        .endpoint_explorer
-        .explore_endpoint(
-            bmc_addr,
-            &machine_interface,
-            expected.as_ref(),
-            Some(&existing_report),
-            boot_interface_mac,
-        )
-        .await;
+        let start = std::time::Instant::now();
+        let result = endpoint_explorer
+            .explore_endpoint(
+                bmc_addr,
+                &machine_interface,
+                expected.as_ref(),
+                Some(&existing_report),
+                boot_interface_mac,
+            )
+            .await;
 
-    let report = match result {
-        Ok(mut report) => {
-            report.last_exploration_latency = Some(start.elapsed());
-            // Enrich the report the same way the periodic loop does.
-            if !report.is_power_shelf() {
-                if let Err(e) = report.generate_machine_id(false) {
-                    tracing::error!(%e, "refresh_endpoint_report: could not generate MachineId");
-                }
-                report.model = report.model();
-                let fw_config = api.runtime_config.get_firmware_config().create_snapshot();
-                if let Some(fw_info) = fw_config.find_fw_info_for_host_report(&report) {
-                    let missing = report.parse_versions(&fw_info);
-                    if !missing.is_empty() {
-                        tracing::debug!(
-                            "refresh_endpoint_report: could not find firmware version for: {missing:?}"
-                        );
+        let report = match result {
+            Ok(mut report) => {
+                report.last_exploration_latency = Some(start.elapsed());
+                if !report.is_power_shelf() {
+                    if let Err(e) = report.generate_machine_id(false) {
+                        tracing::error!(%e, "refresh_endpoint_report: could not generate MachineId");
                     }
+                    report.model = report.model();
+                    let fw_config = runtime_config.get_firmware_config().create_snapshot();
+                    if let Some(fw_info) = fw_config.find_fw_info_for_host_report(&report) {
+                        let missing = report.parse_versions(&fw_info);
+                        if !missing.is_empty() {
+                            tracing::debug!(
+                                "refresh_endpoint_report: could not find firmware version for: {missing:?}"
+                            );
+                        }
+                    } else {
+                        report.versions = std::collections::HashMap::default();
+                    }
+                    report.parse_position_info();
                 } else {
+                    if let Err(e) = report.generate_power_shelf_id() {
+                        tracing::error!(%e, "refresh_endpoint_report: could not generate PowerShelfId");
+                    }
                     report.versions = std::collections::HashMap::default();
                 }
-                report.parse_position_info();
-            } else {
-                if let Err(e) = report.generate_power_shelf_id() {
-                    tracing::error!(%e, "refresh_endpoint_report: could not generate PowerShelfId");
-                }
-                report.versions = std::collections::HashMap::default();
+                report
             }
-            report
+            Err(e) => {
+                let mut report = existing_report.clone();
+                report.last_exploration_error = Some(e);
+                report.last_exploration_latency = Some(start.elapsed());
+                report
+            }
+        };
+
+        let mut txn = db::Transaction::begin(&database_connection).await?;
+
+        let current = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
+        let current_version = current
+            .first()
+            .ok_or_else(|| {
+                tonic::Status::from(CarbideError::NotFoundError {
+                    kind: "explored_endpoint",
+                    id: bmc_ip.to_string(),
+                })
+            })?
+            .report_version;
+
+        let updated =
+            db::explored_endpoints::try_update(bmc_ip, current_version, &report, false, &mut txn)
+                .await?;
+
+        if !updated {
+            return Err(tonic::Status::from(
+                CarbideError::ConcurrentModificationError(
+                    "explored_endpoint",
+                    current_version.to_string(),
+                ),
+            ));
         }
-        Err(e) => {
-            let mut report = existing_report.clone();
-            report.last_exploration_error = Some(e);
-            report.last_exploration_latency = Some(start.elapsed());
-            report
-        }
-    };
 
-    let mut txn = api.txn_begin().await?;
+        let endpoints = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
 
-    let current = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
-    let current_version = current
-        .first()
-        .ok_or_else(|| CarbideError::NotFoundError {
-            kind: "explored_endpoint",
-            id: bmc_ip.to_string(),
-        })?
-        .report_version;
+        txn.commit().await?;
 
-    let updated = db::explored_endpoints::try_update(
-        bmc_ip,
-        current_version,
-        &report,
-        false,
-        &mut txn,
-    )
-    .await?;
+        let ep = endpoints.into_iter().next().ok_or_else(|| {
+            tonic::Status::from(CarbideError::internal(format!(
+                "Endpoint {bmc_ip} not found after update"
+            )))
+        })?;
 
-    if !updated {
-        return Err(CarbideError::ConcurrentModificationError(
-            "explored_endpoint",
-            current_version.to_string(),
-        )
-        .into());
+        Ok::<_, tonic::Status>(ep)
+    });
+
+    match join_handle.await {
+        Ok(Ok(ep)) => Ok(Response::new(ep.into())),
+        Ok(Err(status)) => Err(status),
+        Err(join_err) => Err(CarbideError::internal(format!(
+            "refresh_endpoint_report background task failed for {bmc_ip}: {join_err}"
+        ))
+        .into()),
     }
-
-    // `try_update` already clears `exploration_requested = false`. The freshly persisted
-    // report is picked up by downstream site-explorer phases on the next tick without
-    // a second Redfish probe. Only `ReExploreEndpoint` should set `exploration_requested`.
-
-    let endpoints = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
-
-    txn.commit().await?;
-
-    let ep = endpoints.into_iter().next().ok_or_else(|| {
-        CarbideError::internal(format!("Endpoint {bmc_ip} not found after update"))
-    })?;
-
-    Ok(Response::new(ep.into()))
 }

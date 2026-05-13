@@ -21,6 +21,4 @@ use clap::Parser;
 pub struct Args {
     #[clap(help = "BMC IP address")]
     pub address: String,
-    #[clap(long, help = "Only refresh when the current report version matches this value")]
-    pub if_version_match: Option<String>,
 }

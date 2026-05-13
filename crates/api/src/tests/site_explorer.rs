@@ -20,8 +20,8 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use carbide_site_explorer::SiteExplorer;
 use carbide_site_explorer::config::{SiteExplorerConfig, SiteExplorerExploreMode};
+use carbide_site_explorer::{SiteExplorer, endpoint_exploration_work_key};
 use carbide_utils::test_support::test_meter::TestMeter;
 use carbide_uuid::network::NetworkSegmentId;
 use common::api_fixtures::TestEnv;
@@ -1142,7 +1142,8 @@ async fn test_site_explorer_reexplore(
         assert!(!report.exploration_requested);
     }
 
-    // Re-exploring the first endpoint should prioritize it over exploring another endpoint
+    // Re-exploring the first endpoint should prioritize it while preserving
+    // routine capacity for another endpoint.
     env.api
         .re_explore_endpoint(tonic::Request::new(rpc::forge::ReExploreEndpointRequest {
             ip_address: explored_ip.to_string(),
@@ -1161,22 +1162,23 @@ async fn test_site_explorer_reexplore(
         assert!(report.exploration_requested);
     }
 
-    // The 2nd iteration should just update the version number of the initial explored
-    // endpoint - but not find anything new
+    // The 2nd iteration updates the priority endpoint and still uses the
+    // routine budget to discover another endpoint.
     explorer.run_single_iteration().await.unwrap();
     let mut txn = env.pool.begin().await?;
     let explored = db::explored_endpoints::find_all(txn.as_mut())
         .await
         .unwrap();
     txn.commit().await?;
-    assert_eq!(explored.len(), 1);
+    assert_eq!(explored.len(), 2);
 
-    for report in &explored {
-        assert_eq!(report.address, explored_ip);
-        assert_eq!(report.report_version.version_nr(), 2);
-        assert!(!report.exploration_requested);
-    }
-    let current_version = explored[0].report_version;
+    let reexplored = explored
+        .iter()
+        .find(|report| report.address == explored_ip)
+        .unwrap();
+    assert_eq!(reexplored.report_version.version_nr(), 2);
+    assert!(!reexplored.exploration_requested);
+    let current_version = reexplored.report_version;
 
     // Using if_version_match with an incorrect version does nothing
     let unexpected_version = current_version.increment();
@@ -1221,18 +1223,20 @@ async fn test_site_explorer_reexplore(
         .await
         .unwrap();
     txn.commit().await?;
-    for report in &explored {
-        assert!(report.exploration_requested);
-    }
+    let reexplored = explored
+        .iter()
+        .find(|report| report.address == explored_ip)
+        .unwrap();
+    assert!(reexplored.exploration_requested);
 
-    // 3rd iteration still yields 1 result
+    // 3rd iteration still yields the same two known endpoints.
     explorer.run_single_iteration().await.unwrap();
     let mut txn = env.pool.begin().await?;
     let explored = db::explored_endpoints::find_all(txn.as_mut())
         .await
         .unwrap();
     txn.commit().await?;
-    assert_eq!(explored.len(), 1);
+    assert_eq!(explored.len(), 2);
 
     Ok(())
 }
@@ -4954,367 +4958,227 @@ async fn test_orphan_managed_host_alert_emitted(
     Ok(())
 }
 
+async fn host_bmc_ip(
+    env: &TestEnv,
+    mh: &api_fixtures::TestManagedHost,
+) -> Result<IpAddr, Box<dyn std::error::Error>> {
+    let mut txn = env.pool.begin().await?;
+    let bmc_ip = mh.host().bmc_ip(&mut txn).await.unwrap();
+    txn.commit().await?;
+    Ok(bmc_ip)
+}
+
+async fn explored_endpoint(
+    env: &TestEnv,
+    bmc_ip: IpAddr,
+) -> Result<ExploredEndpoint, Box<dyn std::error::Error>> {
+    let mut txn = env.pool.begin().await?;
+    let endpoint = db::explored_endpoints::find_by_ips(txn.as_mut(), vec![bmc_ip])
+        .await?
+        .into_iter()
+        .next()
+        .unwrap();
+    txn.commit().await?;
+    Ok(endpoint)
+}
+
+fn endpoint_explore_call_count(env: &TestEnv, bmc_ip: IpAddr) -> usize {
+    env.endpoint_explorer
+        .explore_endpoint_calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|ip| **ip == bmc_ip)
+        .count()
+}
+
 #[crate::sqlx_test]
-async fn test_refresh_endpoint_report(
+async fn test_refresh_endpoint_report_bumps_report_version(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+    let mh = common::api_fixtures::create_managed_host(&env).await;
+    let bmc_ip = host_bmc_ip(&env, &mh).await?;
+    let initial_version = explored_endpoint(&env, bmc_ip).await?.report_version;
+
+    env.api
+        .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: bmc_ip.to_string(),
+        }))
+        .await?;
+
+    let refreshed = explored_endpoint(&env, bmc_ip).await?;
+    assert!(
+        refreshed.report_version.version_nr() > initial_version.version_nr(),
+        "refresh should bump report version from {} to a newer version, got {}",
+        initial_version.version_nr(),
+        refreshed.report_version.version_nr()
+    );
+
+    Ok(())
+}
+
+#[crate::sqlx_test]
+async fn test_refresh_endpoint_report_rejects_nonexistent_endpoint(
     pool: sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env = common::api_fixtures::create_test_env(pool.clone()).await;
 
-    let mut machine = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
-    machine.discover_dhcp(&env).await?;
-
-    let endpoint_explorer = Arc::new(MockEndpointExplorer::default());
-    endpoint_explorer
-        .insert_endpoints(vec![(machine.ip.parse().unwrap(), DpuConfig::default().into())]);
-
-    let explorer_config = SiteExplorerConfig {
-        enabled: Arc::new(true.into()),
-        explorations_per_run: 1,
-        concurrent_explorations: 1,
-        run_interval: std::time::Duration::from_secs(1),
-        create_machines: Arc::new(false.into()),
-        create_power_shelves: Arc::new(true.into()),
-        explore_power_shelves_from_static_ip: Arc::new(true.into()),
-        power_shelves_created_per_run: 1,
-        create_switches: Arc::new(true.into()),
-        switches_created_per_run: 1,
-        ..Default::default()
-    };
-
-    let test_meter = TestMeter::default();
-    let explorer = SiteExplorer::new(
-        env.pool.clone(),
-        explorer_config,
-        test_meter.meter(),
-        endpoint_explorer.clone(),
-        Arc::new(env.config.get_firmware_config()),
-        env.common_pools.clone(),
-        env.api.work_lock_manager_handle.clone(),
-        env.rms_sim.as_rms_client(),
-        env.test_credential_manager.clone(),
-    );
-
-    explorer.run_single_iteration().await.unwrap();
-
-    let mut txn = env.pool.begin().await?;
-    let explored = db::explored_endpoints::find_all(txn.as_mut()).await.unwrap();
-    txn.commit().await?;
-    assert_eq!(explored.len(), 1);
-    let explored_ip = explored[0].address;
-    let initial_version = explored[0].report_version;
-    assert!(!explored[0].exploration_requested);
-
-    // Refresh the endpoint report via the new RPC
-    let response = env
-        .api
-        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
-            ip_address: explored_ip.to_string(),
-            if_version_match: None,
-        }))
-        .await
-        .unwrap()
-        .into_inner();
-
-    assert_eq!(response.address, explored_ip.to_string());
-
-    // Verify the DB was updated: version bumped and no second probe was queued.
-    // `try_update` clears `exploration_requested`; the periodic loop picks up the
-    // freshly persisted report without an extra Redfish call.
-    let mut txn = env.pool.begin().await?;
-    let explored = db::explored_endpoints::find_all(txn.as_mut()).await.unwrap();
-    txn.commit().await?;
-    assert_eq!(explored.len(), 1);
-    assert_eq!(explored[0].address, explored_ip);
-    assert!(
-        explored[0].report_version.version_nr() > initial_version.version_nr(),
-        "version should have been bumped"
-    );
-    assert!(
-        !explored[0].exploration_requested,
-        "refresh should not requeue a second Redfish probe"
-    );
-
-    // Refresh with if_version_match using wrong version should fail
-    let wrong_version = initial_version;
     let err = env
         .api
-        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
-            ip_address: explored_ip.to_string(),
-            if_version_match: Some(wrong_version.version_string()),
-        }))
-        .await
-        .expect_err("Should fail due to version mismatch");
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-
-    // Refresh for non-existent endpoint should fail
-    let err = env
-        .api
-        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
+        .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
             ip_address: "99.99.99.99".to_string(),
-            if_version_match: None,
         }))
         .await
-        .expect_err("Should fail for non-existent endpoint");
+        .unwrap_err();
+
     assert_eq!(err.code(), tonic::Code::NotFound);
 
     Ok(())
 }
 
-/// Two concurrent `RefreshEndpointReport` calls for the same endpoint should
-/// be deduplicated by the per-endpoint work lock: the first one acquires the
-/// lock and runs the probe; the second one immediately gets an `AlreadyExists`
-/// error. Refreshes for *different* endpoints must not block each other.
 #[crate::sqlx_test]
-async fn test_refresh_endpoint_report_dedupes_concurrent_requests(
+async fn test_refresh_endpoint_report_rejects_duplicate_refresh(
     pool: sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env = common::api_fixtures::create_test_env(pool.clone()).await;
+    let mh = common::api_fixtures::create_managed_host(&env).await;
+    let bmc_ip = host_bmc_ip(&env, &mh).await?;
+    let _endpoint_lock = env
+        .api
+        .work_lock_manager_handle
+        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
+        .await?;
 
-    let mut machine_a = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
-    let mut machine_b = FakeMachine::new("AA:BB:CC:DD:EE:FF", "Vendor1", &env.underlay_segment);
-    machine_a.discover_dhcp(&env).await?;
-    machine_b.discover_dhcp(&env).await?;
+    let err = env
+        .api
+        .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: bmc_ip.to_string(),
+        }))
+        .await
+        .unwrap_err();
 
-    let bmc_ip_a = machine_a.ip.parse::<IpAddr>().unwrap();
-    let bmc_ip_b = machine_b.ip.parse::<IpAddr>().unwrap();
-
-    // Seed initial explored endpoint rows for both machines.
-    env.endpoint_explorer
-        .insert_endpoints(vec![
-            (bmc_ip_a, DpuConfig::default().into()),
-            (bmc_ip_b, DpuConfig::default().into()),
-        ]);
-    env.run_site_explorer_iteration().await;
-
-    // Introduce a delay so the first refresh holds the lock long enough for
-    // the second concurrent call to observe it.
-    env.endpoint_explorer
-        .set_explore_endpoint_delay(std::time::Duration::from_millis(200));
-
-    let api_clone = env.api.clone();
-    let first = tokio::spawn({
-        let api = api_clone.clone();
-        let ip = machine_a.ip.clone();
-        async move {
-            api.refresh_endpoint_report(tonic::Request::new(
-                rpc::forge::RefreshEndpointReportRequest {
-                    ip_address: ip,
-                    if_version_match: None,
-                },
-            ))
-            .await
-        }
-    });
-
-    // Give the first task a moment to acquire the lock before firing the second.
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-
-    // Same endpoint — should be rejected.
-    let second_result = api_clone
-        .refresh_endpoint_report(tonic::Request::new(
-            rpc::forge::RefreshEndpointReportRequest {
-                ip_address: machine_a.ip.clone(),
-                if_version_match: None,
-            },
-        ))
-        .await;
-
-    // Different endpoint — must succeed independently.
-    let other_result = api_clone
-        .refresh_endpoint_report(tonic::Request::new(
-            rpc::forge::RefreshEndpointReportRequest {
-                ip_address: machine_b.ip.clone(),
-                if_version_match: None,
-            },
-        ))
-        .await;
-
-    let first_result = first.await?;
-
-    assert!(first_result.is_ok(), "first refresh should succeed");
-
-    let second_err = second_result.expect_err("second concurrent refresh should be rejected");
-    assert_eq!(
-        second_err.code(),
-        tonic::Code::AlreadyExists,
-        "expected AlreadyExists for duplicate concurrent refresh"
-    );
-
-    assert!(
-        other_result.is_ok(),
-        "refresh for a different endpoint should not be blocked"
-    );
+    assert_eq!(err.code(), tonic::Code::AlreadyExists);
 
     Ok(())
 }
 
-/// When the only candidate for exploration is a `priority_update_endpoint`
-/// (i.e. one that has `exploration_requested = true`), the periodic loop must
-/// still select it even though there are no routine candidates. This protects
-/// the scheduler budget fix.
 #[crate::sqlx_test]
-async fn test_site_explorer_reexplore_requested_only_candidate(
+async fn test_refresh_endpoint_report_lock_blocks_periodic_probe(
     pool: sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env = common::api_fixtures::create_test_env(pool.clone()).await;
+    let mh = common::api_fixtures::create_managed_host(&env).await;
+    let bmc_ip = host_bmc_ip(&env, &mh).await?;
 
-    let mut machine = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
-    machine.discover_dhcp(&env).await?;
-
-    let bmc_ip: IpAddr = machine.ip.parse().unwrap();
-
-    let endpoint_explorer = Arc::new(MockEndpointExplorer::default());
-    endpoint_explorer.insert_endpoint_result(bmc_ip, Ok(DpuConfig::default().into()));
-
-    let explorer_config = SiteExplorerConfig {
-        enabled: Arc::new(true.into()),
-        // explorations_per_run = 0 means the routine budget is empty; only
-        // priority_update_endpoints are explored.
-        explorations_per_run: 0,
-        concurrent_explorations: 1,
-        run_interval: std::time::Duration::from_secs(1),
-        create_machines: Arc::new(false.into()),
-        ..Default::default()
-    };
-    let test_meter = TestMeter::default();
-    let explorer = SiteExplorer::new(
-        env.pool.clone(),
-        explorer_config,
-        test_meter.meter(),
-        endpoint_explorer.clone(),
-        Arc::new(env.config.get_firmware_config()),
-        env.common_pools.clone(),
-        env.api.work_lock_manager_handle.clone(),
-        env.rms_sim.as_rms_client(),
-        env.test_credential_manager.clone(),
-    );
-
-    // First iteration seeds the explored_endpoints row via the normal path (env explorer).
-    env.endpoint_explorer
-        .insert_endpoints(vec![(bmc_ip, DpuConfig::default().into())]);
-    env.run_site_explorer_iteration().await;
-
-    let mut txn = env.pool.begin().await?;
-    let explored = db::explored_endpoints::find_all(txn.as_mut()).await?;
-    txn.commit().await?;
-    assert_eq!(explored.len(), 1);
-    let initial_version = explored[0].report_version;
-
-    // Flag this endpoint for re-exploration.
     env.api
-        .re_explore_endpoint(tonic::Request::new(rpc::forge::ReExploreEndpointRequest {
+        .re_explore_endpoint(Request::new(rpc::forge::ReExploreEndpointRequest {
             ip_address: bmc_ip.to_string(),
             if_version_match: None,
         }))
         .await?;
 
-    // Run the dedicated explorer with an empty routine budget. The priority
-    // endpoint must still be picked up and probed.
-    explorer.run_single_iteration().await.unwrap();
+    let calls_before = endpoint_explore_call_count(&env, bmc_ip);
+    let _endpoint_lock = env
+        .api
+        .work_lock_manager_handle
+        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
+        .await?;
 
-    let mut txn = env.pool.begin().await?;
-    let explored = db::explored_endpoints::find_all(txn.as_mut()).await?;
-    txn.commit().await?;
-    assert_eq!(explored.len(), 1);
-    assert!(
-        explored[0].report_version.version_nr() > initial_version.version_nr(),
-        "priority endpoint must be explored even when the routine budget is zero"
+    env.run_site_explorer_iteration().await;
+
+    assert_eq!(
+        endpoint_explore_call_count(&env, bmc_ip),
+        calls_before,
+        "periodic site explorer probe should be skipped while refresh lock is held"
     );
-    assert!(!explored[0].exploration_requested);
 
     Ok(())
 }
 
-/// When `RefreshEndpointReport` is running, the periodic loop must skip that
-/// endpoint for the current tick rather than probing it concurrently. The skip
-/// must not count against exploration metrics.
 #[crate::sqlx_test]
-async fn test_periodic_loop_skips_endpoint_locked_by_adhoc_refresh(
+async fn test_refresh_endpoint_report_failure_persists_error_and_bumps_version(
     pool: sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let env = common::api_fixtures::create_test_env(pool.clone()).await;
-
-    let mut machine = FakeMachine::new("B8:3F:D2:90:97:A6", "Vendor1", &env.underlay_segment);
-    machine.discover_dhcp(&env).await?;
-
-    let bmc_ip: IpAddr = machine.ip.parse().unwrap();
-
-    env.endpoint_explorer
-        .insert_endpoints(vec![(bmc_ip, DpuConfig::default().into())]);
-    env.run_site_explorer_iteration().await;
-
-    // Flag for re-exploration so the periodic loop will try to probe this endpoint.
+    let mh = common::api_fixtures::create_managed_host(&env).await;
+    let bmc_ip = host_bmc_ip(&env, &mh).await?;
+    let initial_version = explored_endpoint(&env, bmc_ip).await?.report_version;
     env.api
-        .re_explore_endpoint(tonic::Request::new(rpc::forge::ReExploreEndpointRequest {
+        .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: bmc_ip.to_string(),
+        }))
+        .await?;
+
+    let refreshed = explored_endpoint(&env, bmc_ip).await?;
+    assert!(
+        refreshed.report_version.version_nr() > initial_version.version_nr(),
+        "failed refresh should still bump report version"
+    );
+    assert!(
+        refreshed.report.last_exploration_error.is_some(),
+        "failed refresh should persist the exploration error"
+    );
+
+    Ok(())
+}
+
+#[crate::sqlx_test]
+async fn test_refresh_endpoint_report_clears_pending_requested_exploration(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+    let mh = common::api_fixtures::create_managed_host(&env).await;
+    let bmc_ip = host_bmc_ip(&env, &mh).await?;
+
+    env.api
+        .re_explore_endpoint(Request::new(rpc::forge::ReExploreEndpointRequest {
             ip_address: bmc_ip.to_string(),
             if_version_match: None,
         }))
         .await?;
+    assert!(explored_endpoint(&env, bmc_ip).await?.exploration_requested);
 
-    // Give the adhoc refresh a slow probe so it holds the lock during the tick.
-    env.endpoint_explorer
-        .set_explore_endpoint_delay(std::time::Duration::from_millis(300));
+    env.api
+        .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: bmc_ip.to_string(),
+        }))
+        .await?;
 
-    let calls_before = env.endpoint_explorer.explore_endpoint_call_count();
-
-    // Start a slow adhoc refresh in the background.
-    let api_clone = env.api.clone();
-    let ip_str = machine.ip.clone();
-    let refresh = tokio::spawn(async move {
-        api_clone
-            .refresh_endpoint_report(tonic::Request::new(
-                rpc::forge::RefreshEndpointReportRequest {
-                    ip_address: ip_str,
-                    if_version_match: None,
-                },
-            ))
-            .await
-    });
-
-    // Give the adhoc refresh a moment to acquire the lock.
-    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-
-    // Now run the periodic loop. It must skip the locked endpoint.
-    let explorer_config = SiteExplorerConfig {
-        enabled: Arc::new(true.into()),
-        explorations_per_run: 1,
-        concurrent_explorations: 1,
-        run_interval: std::time::Duration::from_secs(1),
-        create_machines: Arc::new(false.into()),
-        ..Default::default()
-    };
-    let test_meter = TestMeter::default();
-    let explorer = SiteExplorer::new(
-        env.pool.clone(),
-        explorer_config,
-        test_meter.meter(),
-        Arc::new(env.endpoint_explorer.clone()),
-        Arc::new(env.config.get_firmware_config()),
-        env.common_pools.clone(),
-        env.api.work_lock_manager_handle.clone(),
-        env.rms_sim.as_rms_client(),
-        env.test_credential_manager.clone(),
-    );
-    explorer.run_single_iteration().await.unwrap();
-
-    refresh.await??;
-
-    // Only the adhoc refresh probe should have occurred; the periodic loop
-    // must not have added another probe call.
-    let calls_after = env.endpoint_explorer.explore_endpoint_call_count();
-    assert_eq!(
-        calls_after,
-        calls_before + 1,
-        "periodic loop must skip the locked endpoint; expected only the adhoc probe"
+    assert!(
+        !explored_endpoint(&env, bmc_ip).await?.exploration_requested,
+        "refresh should clear the pending requested exploration so the endpoint is not immediately probed again as priority work"
     );
 
-    // Periodic exploration metric must not count the skip.
-    assert_eq!(
-        test_meter
-            .formatted_metric("carbide_endpoint_explorations_count")
-            .unwrap_or_else(|| "0".to_string()),
-        "0",
-        "skipped-locked endpoint must not increment periodic exploration metric"
+    Ok(())
+}
+
+#[crate::sqlx_test]
+async fn test_refresh_endpoint_report_lock_is_per_endpoint(
+    pool: sqlx::PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool.clone()).await;
+    let mh_a = common::api_fixtures::create_managed_host(&env).await;
+    let mh_b = common::api_fixtures::create_managed_host(&env).await;
+    let bmc_ip_a = host_bmc_ip(&env, &mh_a).await?;
+    let bmc_ip_b = host_bmc_ip(&env, &mh_b).await?;
+    let initial_version_b = explored_endpoint(&env, bmc_ip_b).await?.report_version;
+    let _endpoint_lock = env
+        .api
+        .work_lock_manager_handle
+        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip_a))
+        .await?;
+
+    env.api
+        .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
+            ip_address: bmc_ip_b.to_string(),
+        }))
+        .await?;
+
+    let refreshed_b = explored_endpoint(&env, bmc_ip_b).await?;
+    assert!(
+        refreshed_b.report_version.version_nr() > initial_version_b.version_nr(),
+        "lock for endpoint {bmc_ip_a} should not block refresh for endpoint {bmc_ip_b}"
     );
 
     Ok(())

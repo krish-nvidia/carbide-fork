@@ -402,7 +402,14 @@ impl From<ExploredEndpointInfo> for ExploredEndpointDetail<'_> {
         let report_age =
             config_version::ConfigVersion::from_str(&endpoint_info.endpoint.report_version)
                 .ok()
-                .map(|v| v.since_state_change_humanized())
+                .map(|v| {
+                    let elapsed = v.since_state_change();
+                    if elapsed.num_seconds() <= 0 {
+                        "just now".to_string()
+                    } else {
+                        format!("{} ago", v.since_state_change_humanized())
+                    }
+                })
                 .unwrap_or_else(|| "unknown".to_string());
 
         let pause_remediation = endpoint_info.endpoint.pause_remediation;
@@ -605,13 +612,26 @@ pub async fn refresh_endpoint(
     AxumPath(endpoint_ip): AxumPath<String>,
 ) -> impl IntoResponse {
     match state
-        .refresh_endpoint_report(tonic::Request::new(rpc::forge::RefreshEndpointReportRequest {
-            ip_address: endpoint_ip.clone(),
-            if_version_match: None,
-        }))
+        .refresh_endpoint_report(tonic::Request::new(
+            rpc::forge::RefreshEndpointReportRequest {
+                ip_address: endpoint_ip.clone(),
+            },
+        ))
         .await
     {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({}))).into_response(),
+        Ok(response) => {
+            let ep = response.into_inner();
+            let has_error = ep
+                .report
+                .as_ref()
+                .and_then(|r| r.last_exploration_error.as_ref())
+                .is_some();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "has_exploration_error": has_error })),
+            )
+                .into_response()
+        }
         Err(err) => {
             let status_code = match err.code() {
                 tonic::Code::AlreadyExists => StatusCode::CONFLICT,

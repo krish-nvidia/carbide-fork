@@ -281,7 +281,7 @@ service Forge {
   // Immediately probes a single BMC endpoint via Redfish, enriches the report
   // (machine_id, model, position), and persists it. The next site-explorer tick
   // picks up the freshly persisted report for downstream processing (pairing,
-  // remediation, audit) without a second Redfish probe. Returns AlreadyExists
+  // remediation, audit). Returns AlreadyExists
   // if a concurrent refresh or periodic probe is already in progress.
   rpc RefreshEndpointReport(RefreshEndpointReportRequest) returns (site_explorer.ExploredEndpoint);
   // Delete an explored endpoint from the database
@@ -3639,8 +3639,6 @@ message ReExploreEndpointRequest {
 message RefreshEndpointReportRequest {
   // The IP address of the BMC endpoint to probe and refresh
   string ip_address = 1;
-  // If set, only refresh when the current report version matches this value
-  optional string if_version_match = 2;
 }
 
 message DeleteExploredEndpointRequest {

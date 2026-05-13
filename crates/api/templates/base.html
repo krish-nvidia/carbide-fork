@@ -201,7 +201,7 @@
 				setTimeout(function() {
 					toast.classList.add('dismissing');
 					setTimeout(function() { toast.remove(); }, 300);
-				}, isError ? 6000 : 3000);
+				}, 5000);
 			}
 
 			function prettifyErrorMsg(raw) {
@@ -310,7 +310,13 @@
 				if (!jsonLink) {
 					return;
 				}
-				jsonLink.href = window.location.href + ".json";
+				// JSON endpoints don't honor UI query state (e.g. ?tab=),
+				// so target the path-only ".json" variant of this page.
+				const url = new URL(window.location.href);
+				url.pathname = url.pathname + ".json";
+				url.search = "";
+				url.hash = "";
+				jsonLink.href = url.toString();
 			}
 
 			function prettifyJSONs() {

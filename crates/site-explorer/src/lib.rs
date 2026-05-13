@@ -198,52 +198,12 @@ impl Display for Endpoint<'_> {
 
 pub type SiteIdentifiedHosts = Vec<(ExploredManagedHost, EndpointExplorationReport)>;
 
-/// The SiteExplorer periodically runs [modules](machine_update_module::MachineUpdateModule) to initiate upgrades of machine components.
-/// On each iteration the SiteExplorer will:
-/// 1. collect the number of outstanding updates from all modules.
-/// 2. if there are less than the max allowed updates each module will be told to start updates until
-///    the number of updates reaches the maximum allowed.
-///
-/// Config from [CarbideConfig]:
-/// * `max_concurrent_machine_updates` the maximum number of updates allowed across all modules
-/// * `machine_update_run_interval` how often the manager calls the modules to start updates
 /// Work-lock key for a single endpoint exploration.
 ///
-/// Both the periodic loop (`update_explored_endpoints`) and the adhoc
+/// Both the site-explorer loop (`update_explored_endpoints`) and the adhoc
 /// `RefreshEndpointReport` handler acquire this key before probing Redfish.
-/// The key namespace is distinct from `ITERATION_WORK_KEY` so per-endpoint
-/// locks never collide with the single-iteration lock.
 pub fn endpoint_exploration_work_key(bmc_ip: IpAddr) -> String {
     format!("SiteExplorer::endpoint_exploration::{bmc_ip}")
-}
-
-/// Tries to acquire the per-endpoint work lock and, if successful, pushes
-/// `endpoint` into `out`. Returns `true` if the endpoint was scheduled.
-/// If the lock is already held (adhoc refresh in progress) the endpoint is
-/// silently skipped and `false` is returned so the caller can backfill.
-async fn try_schedule_endpoint<'a>(
-    endpoint: Endpoint<'a>,
-    work_lock_manager_handle: &WorkLockManagerHandle,
-    out: &mut Vec<(Endpoint<'a>, db::work_lock_manager::WorkLock)>,
-) -> SiteExplorerResult<bool> {
-    let work_key = endpoint_exploration_work_key(endpoint.address);
-    match work_lock_manager_handle.try_acquire_lock(work_key).await {
-        Ok(work_lock) => {
-            out.push((endpoint, work_lock));
-            Ok(true)
-        }
-        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
-            tracing::info!(
-                address = %endpoint.address,
-                "Skipping periodic endpoint exploration — adhoc refresh already in progress"
-            );
-            Ok(false)
-        }
-        Err(e) => Err(SiteExplorerError::internal(format!(
-            "Failed to acquire per-endpoint work lock for {}: {e}",
-            endpoint.address
-        ))),
-    }
 }
 
 pub struct SiteExplorer {
@@ -1472,21 +1432,68 @@ impl SiteExplorer {
         // and Switches.
         let unexplored_endpoints = index.get_unexplored_endpoints();
 
-        // Endpoints with `exploration_requested` are enqueued unconditionally and
-        // sit outside the per-iteration count budget. Operators set this flag to
-        // request a guaranteed next-tick attempt, so we must not let the routine
-        // refresh budget delay them. Concurrency is still bounded by the
-        // `concurrent_explorations` semaphore below.
-        //
-        // The per-endpoint work lock is acquired here during candidate selection
-        // rather than inside the task, so a locked endpoint never consumes a
-        // budget slot and the scheduler can backfill from the next candidate.
-        let mut explore_endpoint_data: Vec<(Endpoint, db::work_lock_manager::WorkLock)> =
-            Vec::with_capacity(priority_update_endpoints.len() + unexplored_endpoints.len());
+        // Now that we gathered the routine candidates for exploration, let's
+        // decide how many we are actually going to explore. The config limits
+        // the amount of routine explorations per iteration.
+        let num_explore_endpoints = (self.config.explorations_per_run as usize)
+            .min(unexplored_endpoints.len() + update_endpoints.len());
 
+        let mut explore_endpoint_data =
+            Vec::with_capacity(priority_update_endpoints.len() + num_explore_endpoints);
+
+        // Existing endpoints with `exploration_requested` are enqueued
+        // unconditionally and sit outside the per-iteration count budget.
+        // Operators set this flag to request a guaranteed next-tick attempt, so
+        // we must not let the routine refresh budget delay them. Concurrency is
+        // still bounded by the `concurrent_explorations` semaphore below.
         for (address, iface, endpoint) in priority_update_endpoints {
-            try_schedule_endpoint(
-                Endpoint {
+            explore_endpoint_data.push(Endpoint {
+                address,
+                iface,
+                last_redfish_bmc_reset: endpoint.last_redfish_bmc_reset,
+                last_ipmitool_bmc_reset: endpoint.last_ipmitool_bmc_reset,
+                last_redfish_reboot: endpoint.last_redfish_reboot,
+                old_report: Some((endpoint.report_version, &endpoint.report)),
+                pause_remediation: endpoint.pause_remediation,
+                boot_interface_mac: endpoint.boot_interface_mac,
+                expected: index.matched_expected(&address),
+            });
+        }
+
+        let routine_start = explore_endpoint_data.len();
+
+        // Next priority are all endpoints that we've never looked at
+        let remaining_explore_endpoints = num_explore_endpoints;
+        for (address, iface) in unexplored_endpoints
+            .iter()
+            .take(remaining_explore_endpoints)
+        {
+            explore_endpoint_data.push(Endpoint {
+                address: *address,
+                iface,
+                last_redfish_bmc_reset: None,
+                last_ipmitool_bmc_reset: None,
+                last_redfish_reboot: None,
+                old_report: None,
+                pause_remediation: false,
+                boot_interface_mac: None,
+                expected: index.matched_expected(address),
+            });
+        }
+
+        // If we have any capacity available, we update knowledge about endpoints we looked at earlier on
+        let remaining_explore_endpoints =
+            num_explore_endpoints - (explore_endpoint_data.len() - routine_start);
+        if remaining_explore_endpoints != 0 {
+            // Sort endpoints so that we will replace the oldest report first
+            update_endpoints.sort_by_key(|(_address, _machine_interface, endpoint)| {
+                endpoint.report_version.timestamp()
+            });
+            for (address, iface, endpoint) in update_endpoints
+                .into_iter()
+                .take(remaining_explore_endpoints)
+            {
+                explore_endpoint_data.push(Endpoint {
                     address,
                     iface,
                     last_redfish_bmc_reset: endpoint.last_redfish_bmc_reset,
@@ -1496,78 +1503,7 @@ impl SiteExplorer {
                     pause_remediation: endpoint.pause_remediation,
                     boot_interface_mac: endpoint.boot_interface_mac,
                     expected: index.matched_expected(&address),
-                },
-                &self.work_lock_manager_handle,
-                &mut explore_endpoint_data,
-            )
-            .await?;
-        }
-
-        // Now decide how much routine refresh work to schedule. `explorations_per_run`
-        // applies only to non-priority work: never-explored endpoints and
-        // already-explored endpoints whose reports we want to refresh.
-        // Locked endpoints are skipped without consuming a slot so we walk more
-        // candidates than the budget when needed.
-        let num_routine_endpoints = (self.config.explorations_per_run as usize)
-            .min(unexplored_endpoints.len() + update_endpoints.len());
-
-        let routine_start = explore_endpoint_data.len();
-
-        // Next priority are all endpoints that we've never looked at
-        for (address, iface) in unexplored_endpoints.iter() {
-            if explore_endpoint_data.len() - routine_start >= num_routine_endpoints {
-                break;
-            }
-            try_schedule_endpoint(
-                Endpoint {
-                    address: *address,
-                    iface,
-                    last_redfish_bmc_reset: None,
-                    last_ipmitool_bmc_reset: None,
-                    last_redfish_reboot: None,
-                    old_report: None,
-                    pause_remediation: false,
-                    boot_interface_mac: None,
-                    expected: index.matched_expected(address),
-                },
-                &self.work_lock_manager_handle,
-                &mut explore_endpoint_data,
-            )
-            .await?;
-        }
-
-        // If we have any routine capacity available, fill remaining slots from
-        // already-explored endpoints, oldest report first.
-        let remaining_routine_endpoints =
-            num_routine_endpoints - (explore_endpoint_data.len() - routine_start);
-        if remaining_routine_endpoints != 0 {
-            update_endpoints.sort_by_key(|(_address, _machine_interface, endpoint)| {
-                endpoint.report_version.timestamp()
-            });
-            let mut filled = 0;
-            for (address, iface, endpoint) in update_endpoints.into_iter() {
-                if filled >= remaining_routine_endpoints {
-                    break;
-                }
-                if try_schedule_endpoint(
-                    Endpoint {
-                        address,
-                        iface,
-                        last_redfish_bmc_reset: endpoint.last_redfish_bmc_reset,
-                        last_ipmitool_bmc_reset: endpoint.last_ipmitool_bmc_reset,
-                        last_redfish_reboot: endpoint.last_redfish_reboot,
-                        old_report: Some((endpoint.report_version, &endpoint.report)),
-                        pause_remediation: endpoint.pause_remediation,
-                        boot_interface_mac: endpoint.boot_interface_mac,
-                        expected: index.matched_expected(&address),
-                    },
-                    &self.work_lock_manager_handle,
-                    &mut explore_endpoint_data,
-                )
-                .await?
-                {
-                    filled += 1;
-                }
+                });
             }
         }
 
@@ -1582,7 +1518,7 @@ impl SiteExplorer {
             expected_count - index.all_matched_expected_machines().len();
         let fw_config_snapshot = Arc::new(self.firmware_config.create_snapshot());
 
-        for (endpoint, work_lock) in explore_endpoint_data.into_iter() {
+        for endpoint in explore_endpoint_data.into_iter() {
             let endpoint_explorer = self.endpoint_explorer.clone();
             let concurrency_limiter = concurrency_limiter.clone();
 
@@ -1590,6 +1526,7 @@ impl SiteExplorer {
             let bmc_target_addr = SocketAddr::new(endpoint.address, bmc_target_port);
             let fw_config_snapshot = fw_config_snapshot.clone();
             let database_connection = self.database_connection.clone();
+            let work_lock_manager_handle = self.work_lock_manager_handle.clone();
 
             task_set.push(
                 async move {
@@ -1605,9 +1542,25 @@ impl SiteExplorer {
                         .await
                         .expect("Semaphore can't be closed");
 
-                    // The per-endpoint work lock was acquired during candidate selection;
-                    // hold it through the probe so the adhoc handler cannot race us.
-                    let _work_lock = work_lock;
+                    // If the endpoint is locked, we skip exploration
+                    let work_key = endpoint_exploration_work_key(endpoint.address);
+                    let _work_lock = match work_lock_manager_handle.try_acquire_lock(work_key).await
+                    {
+                        Ok(work_lock) => work_lock,
+                        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
+                            tracing::info!(
+                                address = %endpoint.address,
+                                "Skipping periodic endpoint exploration — adhoc refresh already in progress"
+                            );
+                            return Ok(None);
+                        }
+                        Err(e) => {
+                            return Err(SiteExplorerError::internal(format!(
+                                "Failed to acquire per-endpoint work lock for {}: {e}",
+                                endpoint.address
+                            )));
+                        }
+                    };
 
                     let mut result = endpoint_explorer
                         .explore_endpoint(
@@ -1650,7 +1603,7 @@ impl SiteExplorer {
                                 // It's possible that we knew about this host type before but do not now, so make sure we
                                 // do not keep stale data.
                                 report.versions = HashMap::default();
-                                tracing::debug!("Can not find firmware info for: vendor: {:?}; model: {:?}", report.vendor, report.model());
+                                tracing::debug!("Can not find fimware info for: vendor: {:?}; model: {:?}", report.vendor, report.model());
                             }
 
                             // Go through the chassis entries and get what at least one of them says
@@ -1664,7 +1617,7 @@ impl SiteExplorer {
                         }
                     }
 
-                    (endpoint, result, start.elapsed())
+                    Ok(Some((endpoint, result, start.elapsed())))
                 }
                     .in_current_span(),
             );
@@ -1676,14 +1629,20 @@ impl SiteExplorer {
         // even thought the next controller iteration already started.
         // Therefore we drain the `task_set` here completely and record all errors
         // before returning.
-        let exploration_results = task_set.collect::<Vec<_>>().await;
+        let exploration_results = task_set
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<SiteExplorerResult<Vec<_>>>()?;
 
         // All subtasks finished. We now update the database
         let mut txn = self.txn_begin().await?;
 
         let mut redfish_errors = Vec::new();
 
-        for (mut endpoint, result, exploration_duration) in exploration_results.into_iter() {
+        for (mut endpoint, result, exploration_duration) in
+            exploration_results.into_iter().flatten()
+        {
             let address = endpoint.address;
             let mut redfish_error = None;
 
@@ -1863,6 +1822,8 @@ impl SiteExplorer {
             }
         };
 
+        // If the endpoint is in the initial preingestion state, and the expected entity is a machine,
+        // and the pause ingestion and power on flag is not set, then try to power on the host.
         // Dont let site explorer issue either a force-restart or bmc-reset more than the rate limit.
         let reset_rate_limit = self.config.reset_rate_limit;
         let min_time_since_last_action_mins = 20;

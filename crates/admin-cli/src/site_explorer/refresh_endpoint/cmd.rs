@@ -26,7 +26,6 @@ pub async fn refresh_endpoint(api_client: &ApiClient, opts: Args) -> CarbideCliR
         .0
         .refresh_endpoint_report(RefreshEndpointReportRequest {
             ip_address: opts.address,
-            if_version_match: opts.if_version_match,
         })
         .await?;
     println!("{}", serde_json::to_string_pretty(&endpoint)?);

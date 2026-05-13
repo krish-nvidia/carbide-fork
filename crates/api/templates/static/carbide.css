@@ -1535,19 +1535,24 @@ select.disabled {
   display: block;
 }
 
-/* Override the generic `div#json a` pill styling so the icon button matches
-   the visual height of the text links without inheriting their text padding. */
-#refresh-endpoint {
+/* Selector matches `div#json a` specificity so flex layout wins over the
+   inline-block pill styling defined earlier. */
+div#json a#refresh-endpoint {
   align-items: center;
-  background-color: transparent;
-  border-radius: 8px;
-  box-shadow: none;
   display: inline-flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
   justify-content: center;
-  padding: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  white-space: nowrap;
 }
 
-#refresh-endpoint:hover {
+div#json a#refresh-endpoint .refresh-icon {
+  flex-shrink: 0;
+}
+
+div#json a#refresh-endpoint:hover {
   background-color: var(--accent-green);
   box-shadow: var(--shadow-md);
   border-color: var(--accent-green-hover);
@@ -1671,4 +1676,4 @@ select.disabled {
     font-size: 0.85rem;
     white-space: nowrap;
   }
-} 
+}
