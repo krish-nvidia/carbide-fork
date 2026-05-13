@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use carbide_firmware::FirmwareConfig;
+use carbide_firmware::{FirmwareConfig, FirmwareConfigSnapshot};
 use carbide_network::sanitized_mac;
 use carbide_utils::periodic_timer::PeriodicTimer;
 use carbide_uuid::machine::MachineType;
@@ -112,6 +112,45 @@ pub fn new_bmc_explorer(
         mode,
     )
     .into()
+}
+
+pub fn enrich_endpoint_exploration_report(
+    report: &mut EndpointExplorationReport,
+    fw_config_snapshot: &FirmwareConfigSnapshot,
+) {
+    if !report.is_power_shelf() {
+        if let Err(error) = report.generate_machine_id(false) {
+            tracing::error!(%error, "Can not generate MachineId for explored endpoint");
+        }
+        report.model = report.model();
+        if let Some(fw_info) = fw_config_snapshot.find_fw_info_for_host_report(report) {
+            let components_without_version = report.parse_versions(&fw_info);
+            if !components_without_version.is_empty() {
+                tracing::debug!(
+                    "Can not find firmware version for component(s): {:?}",
+                    components_without_version
+                );
+            }
+        } else {
+            // It's possible that we knew about this host type before but do not now, so make sure we
+            // do not keep stale data.
+            report.versions = HashMap::default();
+            tracing::debug!(
+                "Can not find firmware info for: vendor: {:?}; model: {:?}",
+                report.vendor,
+                report.model()
+            );
+        }
+
+        // Go through the chassis entries and get what at least one of them says.
+        report.parse_position_info()
+    } else {
+        tracing::info!("Generating PowerShelfId for power shelf");
+        if let Err(error) = report.generate_power_shelf_id() {
+            tracing::error!(%error, "Can not generate PowerShelfId for explored power shelf endpoint");
+        }
+        report.versions = HashMap::default();
+    }
 }
 
 /// Ensures a rack row exists for the given `rack_id`.
@@ -206,6 +245,15 @@ pub fn endpoint_exploration_work_key(bmc_ip: IpAddr) -> String {
     format!("SiteExplorer::endpoint_exploration::{bmc_ip}")
 }
 
+/// The SiteExplorer periodically runs [modules](machine_update_module::MachineUpdateModule) to initiate upgrades of machine components.
+/// On each iteration the SiteExplorer will:
+/// 1. collect the number of outstanding updates from all modules.
+/// 2. if there are less than the max allowed updates each module will be told to start updates until
+///    the number of updates reaches the maximum allowed.
+///
+/// Config from [CarbideConfig]:
+/// * `max_concurrent_machine_updates` the maximum number of updates allowed across all modules
+/// * `machine_update_run_interval` how often the manager calls the modules to start updates
 pub struct SiteExplorer {
     database_connection: PgPool,
     config: SiteExplorerConfig,
@@ -1432,9 +1480,9 @@ impl SiteExplorer {
         // and Switches.
         let unexplored_endpoints = index.get_unexplored_endpoints();
 
-        // Now that we gathered the routine candidates for exploration, let's
-        // decide how many we are actually going to explore. The config limits
-        // the amount of routine explorations per iteration.
+        // Now that we gathered the candidates for exploration, let's decide what
+        // we are actually going to explore. The config limits the amount of explorations
+        // per iteration.
         let num_explore_endpoints = (self.config.explorations_per_run as usize)
             .min(unexplored_endpoints.len() + update_endpoints.len());
 
@@ -1475,8 +1523,8 @@ impl SiteExplorer {
                 last_ipmitool_bmc_reset: None,
                 last_redfish_reboot: None,
                 old_report: None,
-                pause_remediation: false,
-                boot_interface_mac: None,
+                pause_remediation: false, // New endpoints haven't been explored yet, so pause_remediation defaults to false
+                boot_interface_mac: None, // boot_interface_mac not yet discovered for new endpoints
                 expected: index.matched_expected(address),
             });
         }
@@ -1586,35 +1634,8 @@ impl SiteExplorer {
                         tracing::info!(%error, "Failed to explore {}: {}{}", bmc_target_addr, error, machine_state);
                     }
 
-                    // Try to generate a MachineId and parsed version info based on the retrieved data
                     if let Ok(report) = &mut result {
-                        if !report.is_power_shelf() {
-                            if let Err(error) = report.generate_machine_id(false) {
-                                tracing::error!(%error, "Can not generate MachineId for explored endpoint");
-                            }
-                            report.model = report.model();
-                            if let Some(fw_info) = fw_config_snapshot.find_fw_info_for_host_report(report)
-                            {
-                                let components_without_version = report.parse_versions(&fw_info);
-                                if !components_without_version.is_empty() {
-                                    tracing::debug!("Can not find firmware version for component(s): {:?}", components_without_version);
-                                }
-                            } else {
-                                // It's possible that we knew about this host type before but do not now, so make sure we
-                                // do not keep stale data.
-                                report.versions = HashMap::default();
-                                tracing::debug!("Can not find fimware info for: vendor: {:?}; model: {:?}", report.vendor, report.model());
-                            }
-
-                            // Go through the chassis entries and get what at least one of them says
-                            report.parse_position_info()
-                        } else {
-                            tracing::info!("Generating PowerShelfId for power shelf");
-                            if let Err(error) = report.generate_power_shelf_id() {
-                                tracing::error!(%error, "Can not generate PowerShelfId for explored power shelf endpoint");
-                            }
-                            report.versions = HashMap::default();
-                        }
+                        enrich_endpoint_exploration_report(report, &fw_config_snapshot);
                     }
 
                     Ok(Some((endpoint, result, start.elapsed())))
@@ -1822,8 +1843,6 @@ impl SiteExplorer {
             }
         };
 
-        // If the endpoint is in the initial preingestion state, and the expected entity is a machine,
-        // and the pause ingestion and power on flag is not set, then try to power on the host.
         // Dont let site explorer issue either a force-restart or bmc-reset more than the rate limit.
         let reset_rate_limit = self.config.reset_rate_limit;
         let min_time_since_last_action_mins = 20;

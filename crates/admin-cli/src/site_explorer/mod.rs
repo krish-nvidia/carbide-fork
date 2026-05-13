@@ -49,7 +49,10 @@ pub enum Cmd {
         about = "Asks carbide-api to explore a single host in the next exploration cycle. The results will be stored."
     )]
     ReExplore(re_explore::Args),
-    #[clap(about = "Immediately probes a BMC endpoint and persists the report.")]
+    #[clap(
+        name = "refresh",
+        about = "Immediately probes a BMC endpoint and persists the report."
+    )]
     RefreshEndpoint(refresh_endpoint::Args),
     #[clap(about = "Clear the last known error for the BMC in the latest site exploration report.")]
     ClearError(clear_error::Args),

@@ -1535,8 +1535,6 @@ select.disabled {
   display: block;
 }
 
-/* Selector matches `div#json a` specificity so flex layout wins over the
-   inline-block pill styling defined earlier. */
 div#json a#refresh-endpoint {
   align-items: center;
   display: inline-flex;

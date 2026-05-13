@@ -19,7 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use ::rpc::forge::{self as rpc, IsBmcInManagedHostResponse};
-use carbide_site_explorer::endpoint_exploration_work_key;
+use carbide_site_explorer::{endpoint_exploration_work_key, enrich_endpoint_exploration_report};
 use config_version::ConfigVersion;
 use db::work_lock_manager::AcquireLockError;
 use model::expected_entity::ExpectedEntity;
@@ -438,29 +438,8 @@ pub(crate) async fn refresh_endpoint_report(
         let report = match result {
             Ok(mut report) => {
                 report.last_exploration_latency = Some(start.elapsed());
-                if !report.is_power_shelf() {
-                    if let Err(e) = report.generate_machine_id(false) {
-                        tracing::error!(%e, "refresh_endpoint_report: could not generate MachineId");
-                    }
-                    report.model = report.model();
-                    let fw_config = runtime_config.get_firmware_config().create_snapshot();
-                    if let Some(fw_info) = fw_config.find_fw_info_for_host_report(&report) {
-                        let missing = report.parse_versions(&fw_info);
-                        if !missing.is_empty() {
-                            tracing::debug!(
-                                "refresh_endpoint_report: could not find firmware version for: {missing:?}"
-                            );
-                        }
-                    } else {
-                        report.versions = std::collections::HashMap::default();
-                    }
-                    report.parse_position_info();
-                } else {
-                    if let Err(e) = report.generate_power_shelf_id() {
-                        tracing::error!(%e, "refresh_endpoint_report: could not generate PowerShelfId");
-                    }
-                    report.versions = std::collections::HashMap::default();
-                }
+                let fw_config_snapshot = runtime_config.get_firmware_config().create_snapshot();
+                enrich_endpoint_exploration_report(&mut report, &fw_config_snapshot);
                 report
             }
             Err(e) => {
