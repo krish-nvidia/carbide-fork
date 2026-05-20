@@ -9713,8 +9713,7 @@ async fn handle_instance_host_platform_config(
                 .host_snapshot
                 .hardware_info
                 .as_ref()
-                .and_then(|hw| hw.dmi_data.as_ref())
-                .is_some_and(|dmi| dmi.sys_vendor == "NVIDIA" && dmi.product_name == "DGXH100");
+                .is_some_and(|hw| hw.is_dgx_h100());
 
             let configure_host_boot_order = if is_viking {
                 // Viking BMC FW has known issues with the boot-order remediation path.
