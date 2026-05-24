@@ -26,6 +26,7 @@ use carbide_rack::firmware_update::{
 };
 use carbide_rack::rack_manager_error;
 use carbide_rack::rms_client::SwitchSystemImageRmsClient;
+use carbide_rack_controller::config::RmsConfig;
 use carbide_rack_controller::context::RackStateHandlerContextObjects;
 use carbide_rack_controller::fabric_manager::{
     get_scale_up_fabric_services_status, persist_fabric_manager_statuses, persist_primary_switch,
@@ -448,6 +449,31 @@ fn build_switch_device_info_request(
         }),
         ..Default::default()
     }
+}
+
+#[cfg(not(test))]
+const NMX_CONFIGURE_RMS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(not(test))]
+fn build_nmx_configure_rms_client(rms_config: &RmsConfig) -> Option<librms::RackManagerApi> {
+    let url = rms_config
+        .api_url
+        .as_deref()
+        .filter(|url| !url.is_empty())?;
+    let mut rms_client_config = librms::client_config::RmsClientConfig::new(
+        rms_config.root_ca_path.clone(),
+        rms_config.client_cert.clone(),
+        rms_config.client_key.clone(),
+        rms_config.enforce_tls,
+    );
+    rms_client_config.connect_timeout = Some(NMX_CONFIGURE_RMS_CONNECT_TIMEOUT);
+    let rms_api_config = librms::client::RmsApiConfig::new(url, &rms_client_config);
+    Some(librms::RackManagerApi::new(&rms_api_config))
+}
+
+#[cfg(test)]
+fn build_nmx_configure_rms_client(_rms_config: &RmsConfig) -> Option<librms::RackManagerApi> {
+    None
 }
 
 fn rms_component_filters_from_components(
@@ -1721,10 +1747,34 @@ pub async fn handle_maintenance(
             configure_nmx_cluster,
         } => match configure_nmx_cluster {
             ConfigureNmxClusterState::Start => {
-                let Some(rms_client) = ctx.services.rms_client.as_ref() else {
-                    return transition_to_rack_error(id, state, "RMS client not configured", ctx)
-                        .await;
-                };
+                tracing::info!(
+                    rack_id = %id,
+                    "Starting ConfigureNmxCluster; advancing to DisableScaleUpFabricState"
+                );
+                Ok(StateHandlerOutcome::transition(RackState::Maintenance {
+                    maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
+                        configure_nmx_cluster: ConfigureNmxClusterState::DisableScaleUpFabricState,
+                    },
+                }))
+            }
+            ConfigureNmxClusterState::DisableScaleUpFabricState => {
+                let nmx_configure_rms_client =
+                    build_nmx_configure_rms_client(&ctx.services.site_config.rms);
+                let rms_client: &dyn librms::RmsApi =
+                    if let Some(rms_client) = nmx_configure_rms_client.as_ref() {
+                        rms_client
+                    } else {
+                        let Some(rms_client) = ctx.services.rms_client.as_ref() else {
+                            return transition_to_rack_error(
+                                id,
+                                state,
+                                "RMS client not configured",
+                                ctx,
+                            )
+                            .await;
+                        };
+                        rms_client.as_ref()
+                    };
                 let switch_inventory = load_rack_switch_firmware_inventory(
                     &ctx.services.db_pool,
                     ctx.services.credential_manager.as_ref(),
@@ -1733,7 +1783,138 @@ pub async fn handle_maintenance(
                 .await
                 .map_err(|error| {
                     StateHandlerError::GenericError(eyre::eyre!(
-                        "failed to load rack switch firmware inventory for ConfigureNmxCluster: {}",
+                        "failed to load rack switch firmware inventory for DisableScaleUpFabricState: {}",
+                        error
+                    ))
+                })?;
+                let switch_inventory = filter_switch_inventory_by_scope(switch_inventory, scope);
+
+                if switch_inventory.switches.is_empty() {
+                    return Ok(skip_configure_nmx_cluster_outcome(
+                        id,
+                        "rack has no switches in inventory",
+                        scope,
+                    ));
+                }
+
+                if let Err(cause) =
+                    validate_switch_inventory_for_nmx_cluster(&switch_inventory.switches)
+                {
+                    return transition_to_rack_error(id, state, cause, ctx).await;
+                }
+
+                tracing::info!(
+                    rack_id = %id,
+                    switch_count = switch_inventory.switches.len(),
+                    "Disabling ScaleUpFabric state before selecting ConfigureNmxCluster primary switch"
+                );
+                let response = match rms_client
+                    .set_scale_up_fabric_state(rms::SetScaleUpFabricStateRequest {
+                        nodes: Some(rms::NodeSet {
+                            devices: switch_inventory
+                                .switches
+                                .iter()
+                                .map(|switch| {
+                                    build_new_node_info(id, switch, rms::NodeType::Switch)
+                                })
+                                .collect(),
+                        }),
+                        enabled: Some(false),
+                        verify_ssl: false,
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let error = rack_manager_error("set_scale_up_fabric_state", error);
+                        return transition_to_rack_error(id, state, error.to_string(), ctx).await;
+                    }
+                };
+
+                let batch = response.response.unwrap_or_default();
+                if batch.status != rms::ReturnCode::Success as i32 || batch.failed_nodes > 0 {
+                    let node_error = batch
+                        .node_results
+                        .iter()
+                        .find(|result| {
+                            result.status != rms::ReturnCode::Success as i32
+                                || !result.error_message.is_empty()
+                        })
+                        .map(|result| {
+                            if result.error_message.is_empty() {
+                                format!("status={}", result.status)
+                            } else {
+                                result.error_message.clone()
+                            }
+                        });
+                    let summary = if !batch.message.trim().is_empty() {
+                        batch.message
+                    } else if let Some(error) = node_error {
+                        error
+                    } else {
+                        format!(
+                            "batch status {}, failed_nodes {}",
+                            batch.status, batch.failed_nodes,
+                        )
+                    };
+                    tracing::error!(
+                        rack_id = %id,
+                        batch_status = batch.status,
+                        successful_nodes = batch.successful_nodes,
+                        failed_nodes = batch.failed_nodes,
+                        summary = %summary,
+                        "RMS SetScaleUpFabricState failed",
+                    );
+                    return transition_to_rack_error(
+                        id,
+                        state,
+                        format!("RMS SetScaleUpFabricState failed: {}", summary),
+                        ctx,
+                    )
+                    .await;
+                }
+
+                tracing::info!(
+                    rack_id = %id,
+                    successful_nodes = batch.successful_nodes,
+                    switch_count = switch_inventory.switches.len(),
+                    "ScaleUpFabric state disabled; advancing to ConfigureScaleUpFabricManager"
+                );
+                Ok(StateHandlerOutcome::transition(RackState::Maintenance {
+                    maintenance_state: RackMaintenanceState::ConfigureNmxCluster {
+                        configure_nmx_cluster:
+                            ConfigureNmxClusterState::ConfigureScaleUpFabricManager,
+                    },
+                }))
+            }
+            ConfigureNmxClusterState::ConfigureScaleUpFabricManager => {
+                let nmx_configure_rms_client =
+                    build_nmx_configure_rms_client(&ctx.services.site_config.rms);
+                let rms_client: &dyn librms::RmsApi =
+                    if let Some(rms_client) = nmx_configure_rms_client.as_ref() {
+                        rms_client
+                    } else {
+                        let Some(rms_client) = ctx.services.rms_client.as_ref() else {
+                            return transition_to_rack_error(
+                                id,
+                                state,
+                                "RMS client not configured",
+                                ctx,
+                            )
+                            .await;
+                        };
+                        rms_client.as_ref()
+                    };
+                let switch_inventory = load_rack_switch_firmware_inventory(
+                    &ctx.services.db_pool,
+                    ctx.services.credential_manager.as_ref(),
+                    id,
+                )
+                .await
+                .map_err(|error| {
+                    StateHandlerError::GenericError(eyre::eyre!(
+                        "failed to load rack switch firmware inventory for ConfigureScaleUpFabricManager: {}",
                         error
                     ))
                 })?;
