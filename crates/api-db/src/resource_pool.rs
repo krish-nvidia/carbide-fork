@@ -933,6 +933,7 @@ pub async fn create_common_pools(
     let pool_fnn_asn: Arc<ResourcePool<u32>> =
         Arc::new(ResourcePool::new(FNN_ASN.to_string(), ValueType::Integer));
     optional_pool_names.push(pool_fnn_asn.name().to_string());
+
     let pool_dpa_vni: Arc<ResourcePool<i32>> =
         Arc::new(ResourcePool::new(DPA_VNI.to_string(), ValueType::Integer));
     pool_names.push(pool_dpa_vni.name().to_string());
