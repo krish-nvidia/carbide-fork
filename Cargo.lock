@@ -2693,6 +2693,7 @@ dependencies = [
  "byte-unit",
  "carbide-health-report",
  "carbide-rpc",
+ "carbide-test-support",
  "carbide-uuid",
  "chrono",
  "config-version",
