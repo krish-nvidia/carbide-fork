@@ -541,6 +541,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("MachineValidationResult", "#[derive(serde::Serialize)]")
         .type_attribute("MachineValidationRunList", "#[derive(serde::Serialize)]")
         .type_attribute("MachineValidationRun", "#[derive(serde::Serialize)]")
+        .type_attribute(
+            "MachineValidationRunItemList",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute(
+            "MachineValidationRunItemIdList",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute("MachineValidationRunItem", "#[derive(serde::Serialize)]")
+        .type_attribute(
+            "MachineValidationAttempt",
+            "#[derive(serde::Serialize)]",
+        )
         .type_attribute("ExpectedHostNic", "#[derive(serde::Serialize)]")
         .type_attribute("ExpectedHostNic", "#[derive(serde::Deserialize)]")
         .type_attribute("HostLifecycleProfile", "#[derive(serde::Serialize, serde::Deserialize)]")
@@ -1008,6 +1021,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (
                 ".common.IpxeTemplateId",
                 "::carbide_uuid::ipxe_template::IpxeTemplateId",
+            ),
+            (
+                ".common.MachineValidationId",
+                "::carbide_uuid::machine_validation::MachineValidationId",
             ),
             (".common.RackId", "::carbide_uuid::rack::RackId"),
             (
