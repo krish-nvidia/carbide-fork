@@ -246,6 +246,7 @@ impl RedfishClient {
                     .map_err(map_redfish_error)?;
             }
             RedfishVendor::LenovoAMI
+            | RedfishVendor::LenovoGB300
             | RedfishVendor::Supermicro
             | RedfishVendor::Dell
             | RedfishVendor::Hpe => {
