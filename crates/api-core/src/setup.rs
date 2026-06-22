@@ -1085,6 +1085,14 @@ async fn initialize_and_start_controllers<'a>(
         .to_string_lossy()
         .to_string();
 
+    // Capability-oriented Redfish platform service, backed by NICo's credential
+    // store. Injected now so controllers can migrate off `redfish_client_pool`
+    // family by family.
+    let redfish_platform_credentials: Arc<dyn carbide_secrets::credentials::CredentialReader> =
+        credential_manager.clone();
+    let redfish_platform =
+        crate::redfish_platform::build_platform_service(redfish_platform_credentials);
+
     // handles need to be stored in a variable
     // If they are assigned to _ then the destructor will be immediately called
     StateController::<MachineStateControllerIO>::builder()
@@ -1096,6 +1104,7 @@ async fn initialize_and_start_controllers<'a>(
                 db_pool: db_pool.clone(),
                 db_reader: db_pool.clone().into(),
                 redfish_client_pool: shared_redfish_pool.clone(),
+                redfish_platform: redfish_platform.clone(),
                 ipmi_tool: ipmi_tool.clone(),
                 site_config: carbide_config.machine_state_handler_site_config().into(),
             }

@@ -13,7 +13,6 @@ name = "carbide_redfish"
 default = []
 test-support = [
   "dep:chrono",
-  "dep:serde_json",
   "dep:tokio",
   "carbide-secrets/test-support",
 ]
@@ -21,6 +20,7 @@ test-support = [
 [dependencies]
 bmc-vendor = { path = "../bmc-vendor" }
 carbide-api-model = { path = "../api-model", default-features = false }
+carbide-redfish-platform-api = { path = "../redfish-platform-api" }
 carbide-secrets = { path = "../secrets" }
 carbide-utils = { path = "../utils", default-features = false }
 # state-controller is required only to convert redfish errors to
@@ -42,7 +42,7 @@ nv-redfish = { workspace = true, features = [
 ] }
 reqwest = { workspace = true, default-features = false }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true }

@@ -21,6 +21,8 @@ carbide-health-report = { path = "../health-report" }
 carbide-ipmi = { path = "../ipmi" }
 carbide-network = { path = "../network" }
 carbide-redfish = { path = "../redfish" }
+carbide-redfish-platform-api = { path = "../redfish-platform-api" }
+carbide-redfish-platform-runtime = { path = "../redfish-platform-runtime" }
 carbide-secrets = { path = "../secrets" }
 carbide-utils = { path = "../utils" }
 carbide-uuid = { path = "../uuid" }

@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use carbide_ipmi::IPMITool;
 use carbide_redfish::libredfish::RedfishClientPool;
+use carbide_redfish_platform_api::service::RedfishPlatformService;
 use db::db_read::PgPoolReader;
 use libredfish::Redfish;
 use model::machine::Machine;
@@ -43,6 +44,9 @@ pub struct MachineStateHandlerServices {
     pub db_reader: PgPoolReader,
     /// API for interaction with Libredfish
     pub redfish_client_pool: Arc<dyn RedfishClientPool>,
+    /// Capability-oriented Redfish platform service (migration target that
+    /// replaces direct `redfish_client_pool` use, family by family).
+    pub redfish_platform: Arc<dyn RedfishPlatformService>,
     /// An implementation of the IPMITool that understands how to reboot a machine
     pub ipmi_tool: Arc<dyn IPMITool>,
     /// Configuration used by MachineStateHandler.

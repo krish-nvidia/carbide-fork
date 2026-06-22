@@ -92,6 +92,12 @@ pub struct EndpointExplorationReport {
     /// Model, parsed out of chassis and service
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Redfish platform plugin selected for this endpoint during exploration,
+    /// cached so controllers can pass it as a `BmcRef` hint and skip live
+    /// re-identification. `None` when no plugin matched (callers then fall back
+    /// to live identification).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_plugin_id: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -741,6 +747,7 @@ impl EndpointExplorationReport {
             machine_id: None,
             versions: HashMap::default(),
             model: None,
+            platform_plugin_id: None,
             machine_setup_status: None,
             secure_boot_status: None,
             lockdown_status: None,
@@ -1869,6 +1876,7 @@ mod tests {
             machine_id: None,
             versions: HashMap::default(),
             model: None,
+            platform_plugin_id: None,
             machine_setup_status: None,
             secure_boot_status: None,
             lockdown_status: None,
@@ -1940,6 +1948,7 @@ mod tests {
             machine_id: None,
             versions: HashMap::default(),
             model: None,
+            platform_plugin_id: None,
             machine_setup_status: None,
             secure_boot_status: None,
             lockdown_status: None,

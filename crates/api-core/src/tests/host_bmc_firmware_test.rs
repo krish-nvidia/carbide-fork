@@ -436,6 +436,7 @@ fn build_exploration_report(
         machine_id,
         versions: HashMap::default(),
         model: None,
+        platform_plugin_id: None,
         machine_setup_status: None,
         secure_boot_status: None,
         lockdown_status: None,

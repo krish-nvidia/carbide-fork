@@ -22,18 +22,40 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 use carbide_secrets::credentials::Credentials;
 use carbide_utils::HostPortPair;
+use nv_redfish::Bmc as _;
 pub use nv_redfish::bmc_http::reqwest::BmcError;
 use nv_redfish::bmc_http::reqwest::{
     Client as RedfishReqwestClient, ClientParams as RedfishReqwestClientParams,
 };
 use nv_redfish::bmc_http::{BmcCredentials, CacheSettings, HttpBmc};
+use nv_redfish::core::{EntityTypeRef, ODataETag, ODataId};
 use nv_redfish::oem::hpe::ilo_service_ext::ManagerType as HpeManagerType;
 use nv_redfish::{Error as NvError, ServiceRoot as NvServiceRoot};
 use reqwest::header::HeaderMap;
+use serde::Deserialize;
 
 pub type RedfishBmc = HttpBmc<RedfishReqwestClient>;
 pub type ServiceRoot = NvServiceRoot<RedfishBmc>;
 pub type Error = NvError<RedfishBmc>;
+
+/// Minimal entity wrapper for fetching the raw service-root JSON (the `Bmc`
+/// trait requires `EntityTypeRef`); used only to read OEM keys.
+#[derive(Debug, Deserialize)]
+struct RawServiceRoot {
+    #[serde(rename = "@odata.id", default = "ODataId::service_root")]
+    odata_id: ODataId,
+    #[serde(flatten)]
+    body: serde_json::Map<String, serde_json::Value>,
+}
+
+impl EntityTypeRef for RawServiceRoot {
+    fn odata_id(&self) -> &ODataId {
+        &self.odata_id
+    }
+    fn etag(&self) -> Option<&ODataETag> {
+        None
+    }
+}
 
 pub fn new_pool(proxy_address: Arc<ArcSwap<Option<HostPortPair>>>) -> Arc<NvRedfishClientPool> {
     NvRedfishClientPool::new(proxy_address).into()
@@ -135,6 +157,25 @@ impl NvRedfishClientPool {
             .lock()
             .expect("nv-redish client cache mutex poisoned");
         cache.insert(key, root);
+    }
+
+    /// Read the service-root OEM keys for plugin selection. Uses the shared
+    /// extractor in `carbide-redfish-platform-api` so the value matches what the
+    /// platform runtime computes during live identification.
+    pub async fn service_root_oem_keys(
+        &self,
+        bmc_address: SocketAddr,
+        credentials: Credentials,
+    ) -> Result<Vec<String>, Error> {
+        let Credentials::UsernamePassword { username, password } = credentials;
+        let bmc = self.create_bmc(bmc_address, BmcCredentials::new(username, password), false)?;
+        let root = bmc
+            .get::<RawServiceRoot>(&ODataId::service_root())
+            .await
+            .map_err(Error::Bmc)?;
+        Ok(carbide_redfish_platform_api::model::service_root_oem_keys(
+            &serde_json::Value::Object(root.body.clone()),
+        ))
     }
 
     pub fn create_bmc(

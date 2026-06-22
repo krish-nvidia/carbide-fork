@@ -37,6 +37,7 @@ carbide-firmware = { path = "../firmware", default-features = false }
 carbide-ipmi = { path = "../ipmi", default-features = false }
 carbide-measured-boot = { path = "../measured-boot", default-features = false }
 carbide-redfish = { path = "../redfish", default-features = false }
+carbide-redfish-platform-api = { path = "../redfish-platform-api" }
 carbide-secrets = { path = "../secrets" }
 carbide-state-controller-common = { path = "../state-controller-common", default-features = false }
 carbide-uuid = { path = "../uuid", default-features = false }

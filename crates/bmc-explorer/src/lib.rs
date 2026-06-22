@@ -248,6 +248,8 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
         vendor: hw_type.and_then(|hw_type| hw_type.bmc_vendor()),
         versions: HashMap::default(),
         model: None,
+        // Set by site-explorer after the report is built (it owns the registry).
+        platform_plugin_id: None,
         power_shelf_id: None,
         switch_id: None,
         machine_setup_status: Some(machine_setup_status),

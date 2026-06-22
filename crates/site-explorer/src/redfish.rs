@@ -28,7 +28,8 @@ use carbide_redfish::libredfish::dpu_bios::is_dpu_bios_attributes_not_ready;
 use carbide_redfish::libredfish::{
     RedfishAuth, RedfishClientCreationError, RedfishClientPool, redact_password,
 };
-use carbide_redfish::nv_redfish::NvRedfishClientPool;
+use carbide_redfish::nv_redfish::{NvRedfishClientPool, ServiceRoot};
+use carbide_redfish_platform_api::model::PlatformIdentity;
 use carbide_secrets::credentials::Credentials;
 use libredfish::model::oem::nvidia_dpu::NicMode;
 use libredfish::model::service_root::RedfishVendor;
@@ -43,6 +44,31 @@ use model::site_explorer::{
 use regex::Regex;
 
 const NOT_FOUND: u16 = 404;
+
+/// Select the Redfish platform plugin id for an explored endpoint from the same
+/// evidence the runtime uses, built from the service root plus the report we
+/// just generated (no extra BMC reads). Returns `None` when no plugin matches.
+fn select_platform_plugin_id(
+    service_root: &ServiceRoot,
+    report: &EndpointExplorationReport,
+    oem_keys: Vec<String>,
+) -> Option<String> {
+    let first_system = report.systems.first();
+    let identity = PlatformIdentity {
+        service_root_vendor: service_root.vendor().map(|v| v.to_string()),
+        service_root_product: service_root.product().map(|p| p.to_string()),
+        service_root_oem_keys: oem_keys,
+        manager_id: report.managers.first().map(|m| m.id.clone()),
+        manager_firmware_version: None,
+        system_id: first_system.map(|s| s.id.clone()),
+        system_manufacturer: first_system.and_then(|s| s.manufacturer.clone()),
+        system_model: first_system
+            .and_then(|s| s.model.clone())
+            .or_else(|| report.model.clone()),
+        chassis_ids: report.chassis.iter().map(|c| c.id.clone()).collect(),
+    };
+    carbide_redfish_platform_runtime::select_plugin_id(&identity).map(|id| id.0)
+}
 
 // RedfishClient is a wrapper around a redfish client pool and implements redfish utility functions that the site explorer utilizes.
 // TODO: In the future, we should refactor a lot of this client's work to api/src/redfish.rs because other components in carbide can utilize this functionality.
@@ -366,6 +392,8 @@ impl RedfishClient {
             vendor,
             versions: HashMap::default(),
             model: None,
+            // Only the nv-redfish path computes the platform plugin hint today.
+            platform_plugin_id: None,
             power_shelf_id: None,
             switch_id: None,
             machine_setup_status,
@@ -387,18 +415,34 @@ impl RedfishClient {
     ) -> Result<EndpointExplorationReport, EndpointExplorationError> {
         let service_root = self
             .nv_redfish_client_pool
-            .service_root(bmc_ip_address, credentials)
+            .service_root(bmc_ip_address, credentials.clone())
             .await
             .map_err(|err| EndpointExplorationError::Other {
                 details: format!("Cannot Redfish service root: {err}"),
             })?;
 
-        bmc_explorer::nv_generate_exploration_report(
-            service_root,
+        let mut report = bmc_explorer::nv_generate_exploration_report(
+            service_root.clone(),
             &nv_bmc_explore_config(boot_interface_mac),
         )
         .await
-        .map_err(map_nv_redfish_explore_error)
+        .map_err(map_nv_redfish_explore_error)?;
+
+        // OEM keys are a primary selection signal but the typed service root
+        // exposes no generic OEM list, so read them from the raw service root
+        // (best-effort; failure just yields no OEM signal).
+        let oem_keys = self
+            .nv_redfish_client_pool
+            .service_root_oem_keys(bmc_ip_address, credentials)
+            .await
+            .unwrap_or_default();
+
+        // Cache the platform plugin this endpoint resolves to, using the same
+        // registry selection the runtime uses, so controllers can later pass it
+        // as a `BmcRef` hint and skip live re-identification.
+        report.platform_plugin_id = select_platform_plugin_id(&service_root, &report, oem_keys);
+
+        Ok(report)
     }
 
     pub async fn reset_bmc(

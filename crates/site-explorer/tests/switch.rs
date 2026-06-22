@@ -162,6 +162,7 @@ async fn test_site_explorer_switch_discovery(
             service: Vec::new(),
             versions: HashMap::default(),
             model: Some("Switch".to_string()),
+            platform_plugin_id: None,
             machine_setup_status: None,
             secure_boot_status: None,
             lockdown_status: None,

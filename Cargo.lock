@@ -1182,6 +1182,8 @@ dependencies = [
  "carbide-rack",
  "carbide-rack-controller",
  "carbide-redfish",
+ "carbide-redfish-platform-api",
+ "carbide-redfish-platform-runtime",
  "carbide-rpc",
  "carbide-rpc-utils",
  "carbide-secrets",
@@ -2265,6 +2267,7 @@ dependencies = [
  "carbide-ipmi",
  "carbide-measured-boot",
  "carbide-redfish",
+ "carbide-redfish-platform-api",
  "carbide-secrets",
  "carbide-state-controller-common",
  "carbide-utils",
@@ -2596,6 +2599,7 @@ dependencies = [
  "async-trait",
  "bmc-vendor",
  "carbide-api-model",
+ "carbide-redfish-platform-api",
  "carbide-secrets",
  "carbide-utils",
  "chrono",
@@ -2608,6 +2612,41 @@ dependencies = [
  "serde_json",
  "state-controller",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "carbide-redfish-platform-api"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "mac_address",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "carbide-redfish-platform-plugins"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "carbide-redfish-platform-api",
+ "serde_json",
+]
+
+[[package]]
+name = "carbide-redfish-platform-runtime"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "carbide-redfish-platform-api",
+ "carbide-redfish-platform-plugins",
+ "nv-redfish",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "url",
@@ -2812,6 +2851,8 @@ dependencies = [
  "carbide-ipmi",
  "carbide-network",
  "carbide-redfish",
+ "carbide-redfish-platform-api",
+ "carbide-redfish-platform-runtime",
  "carbide-rpc",
  "carbide-secrets",
  "carbide-test-harness",
@@ -6506,8 +6547,8 @@ dependencies = [
 [[package]]
 name = "libredfish"
 version = "0.0.0"
-source = "git+https://github.com/NVIDIA/libredfish.git?tag=v0.44.10#3c5bd928414892355e0dd3ce4fd5120c31477857"
 dependencies = [
+ "anyhow",
  "chrono",
  "clap",
  "log",
@@ -6520,6 +6561,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "urlencoding",
  "version-compare 0.1.1",
 ]
