@@ -1332,8 +1332,13 @@ pub struct EthernetInterface {
 pub struct UefiDevicePath(String);
 
 lazy_static! {
+    // Not anchored at start: GB300/Grace UEFI device paths prefix the PciRoot
+    // node with vendor/MMIO nodes, e.g.
+    // VenHw(<guid>)/MemoryMapped(0xB,...)/PciRoot(0x16)/Pci(0x0,0x0)/Pci(0x0,0x0)
+    // An `^PciRoot` anchor never matches those and aborts the whole exploration
+    // (`Could not match regex in PCI Device Path`). Match PciRoot wherever it appears.
     static ref PCI_ROOT_REGEX: Regex =
-        Regex::new(r"^PciRoot\(([^)]*)\)").expect("must always compile");
+        Regex::new(r"PciRoot\(([^)]*)\)").expect("must always compile");
     static ref PCI_NODE_REGEX: Regex = Regex::new(r"/Pci\(([^)]*)\)").expect("must always compile");
 }
 
