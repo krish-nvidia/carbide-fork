@@ -1188,14 +1188,33 @@ impl SiteExplorer {
                 }
             }
 
-            // A DPU can show up as a chassis network adapter instead of a PCIe
-            // device on some BMCs; fall back to those only if the PCIe scan found none.
+            // A DPU can show up as a chassis instead of a PCIe device on some
+            // BMCs; fall back to the chassis inventory only if the PCIe scan
+            // found none.
             if dpu_exploration.expected_managed_total() == 0 {
                 for chassis in ep.report.chassis.iter() {
-                    for network_adapter in chassis.network_adapters.iter() {
+                    // Some BMCs (e.g. the AMI/Lenovo GB300 host BMC) report the
+                    // BlueField as the chassis object itself -- model, part_number
+                    // and serial_number live on the chassis, while its nested
+                    // network adapter carries an empty serial. Match on the
+                    // chassis identity in that case; otherwise fall back to the
+                    // chassis's network adapters (other vendors put the DPU
+                    // serial there). Matching only one of the two per chassis
+                    // keeps a single DPU from being counted twice.
+                    let chassis_is_bluefield = chassis
+                        .part_number
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(is_bluefield_model);
+                    let chassis_has_serial = chassis
+                        .serial_number
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|serial| !serial.is_empty());
+                    if chassis_is_bluefield && chassis_has_serial {
                         self.record_host_dpu_device(
-                            network_adapter.part_number.as_deref(),
-                            network_adapter.serial_number.as_deref(),
+                            chassis.part_number.as_deref(),
+                            chassis.serial_number.as_deref(),
                             &dpu_sn_to_endpoint,
                             host_dpu_mode,
                             &ep,
@@ -1203,6 +1222,19 @@ impl SiteExplorer {
                             metrics,
                         )
                         .await;
+                    } else {
+                        for network_adapter in chassis.network_adapters.iter() {
+                            self.record_host_dpu_device(
+                                network_adapter.part_number.as_deref(),
+                                network_adapter.serial_number.as_deref(),
+                                &dpu_sn_to_endpoint,
+                                host_dpu_mode,
+                                &ep,
+                                &mut dpu_exploration,
+                                metrics,
+                            )
+                            .await;
+                        }
                     }
                 }
             }
