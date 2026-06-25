@@ -1693,6 +1693,7 @@ pub async fn create_test_env_with_overrides(
         Arc::new(config.get_firmware_config()),
         common_pools.clone(),
         api.work_lock_manager_handle.clone(),
+        api.endpoint_exploration_locks.clone(),
         site_explorer_rack_profiles,
         rms_sim.as_rms_client(),
         credential_manager.clone(),

@@ -61,6 +61,8 @@ use tracing::Instrument;
 use version_compare::Cmp;
 mod endpoint_explorer;
 pub use endpoint_explorer::EndpointExplorer;
+mod endpoint_lock;
+pub use endpoint_lock::{EndpointExplorationGuard, EndpointExplorationLocks};
 mod credentials;
 mod metrics;
 #[cfg(any(test, feature = "test-support"))]
@@ -76,7 +78,7 @@ pub use machine_creator::MachineCreator;
 pub mod explored_endpoint_index;
 mod managed_host;
 use db::ObjectColumnFilter;
-use db::work_lock_manager::{AcquireLockError, WorkLockManagerHandle};
+use db::work_lock_manager::WorkLockManagerHandle;
 pub use managed_host::is_endpoint_in_managed_host;
 use model::DpuModel;
 use model::expected_machine::DpuMode;
@@ -253,14 +255,6 @@ impl<'a> Endpoint<'a> {
 
 pub type SiteIdentifiedHosts = Vec<(ExploredManagedHost, EndpointExplorationReport)>;
 
-/// Work-lock key for a single endpoint exploration.
-///
-/// Both the site-explorer loop (`update_explored_endpoints`) and the adhoc
-/// `RefreshEndpointReport` handler acquire this key before probing Redfish.
-pub fn endpoint_exploration_work_key(bmc_ip: IpAddr) -> String {
-    format!("SiteExplorer::endpoint_exploration::{bmc_ip}")
-}
-
 /// The SiteExplorer periodically runs [modules](machine_update_module::MachineUpdateModule) to initiate upgrades of machine components.
 /// On each iteration the SiteExplorer will:
 /// 1. collect the number of outstanding updates from all modules.
@@ -277,6 +271,9 @@ pub struct SiteExplorer {
     endpoint_explorer: Arc<dyn EndpointExplorer>,
     firmware_config: Arc<FirmwareConfig>,
     work_lock_manager_handle: WorkLockManagerHandle,
+    /// Per-endpoint, in-process exploration locks. Shared with the API's `RefreshEndpointReport`
+    /// handler so the periodic loop and ad-hoc refreshes never probe the same BMC concurrently.
+    endpoint_exploration_locks: EndpointExplorationLocks,
     machine_creator: MachineCreator,
     switch_creator: SwitchCreator,
     boot_order_tracker: BootOrderTracker,
@@ -296,6 +293,7 @@ impl SiteExplorer {
         firmware_config: Arc<FirmwareConfig>,
         common_pools: Arc<CommonPools>,
         work_lock_manager_handle: WorkLockManagerHandle,
+        endpoint_exploration_locks: EndpointExplorationLocks,
         rack_profiles: RackProfileConfig,
         rms_client: Option<Arc<dyn RmsApi>>,
         credential_manager: Arc<dyn CredentialManager>,
@@ -333,6 +331,7 @@ impl SiteExplorer {
             endpoint_explorer,
             firmware_config,
             work_lock_manager_handle,
+            endpoint_exploration_locks,
             boot_order_tracker: BootOrderTracker::default(),
         }
     }
@@ -1994,7 +1993,7 @@ impl SiteExplorer {
             let bmc_target_addr = SocketAddr::new(endpoint.address, bmc_target_port);
             let fw_config_snapshot = fw_config_snapshot.clone();
             let database_connection = self.database_connection.clone();
-            let work_lock_manager_handle = self.work_lock_manager_handle.clone();
+            let endpoint_exploration_locks = self.endpoint_exploration_locks.clone();
 
             task_set.push(
                 async move {
@@ -2010,23 +2009,17 @@ impl SiteExplorer {
                         .await
                         .expect("Semaphore can't be closed");
 
-                    // If the endpoint is locked, we skip exploration.
-                    let work_key = endpoint_exploration_work_key(endpoint.address);
-                    let _work_lock = match work_lock_manager_handle.try_acquire_lock(work_key).await
+                    // Claim the in-process exploration lock for this endpoint. If it's already being
+                    // explored (e.g. an ad-hoc refresh is in progress), skip it this iteration.
+                    let _endpoint_guard = match endpoint_exploration_locks.try_claim(endpoint.address)
                     {
-                        Ok(work_lock) => work_lock,
-                        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
+                        Some(guard) => guard,
+                        None => {
                             tracing::info!(
                                 address = %endpoint.address,
                                 "Skipping periodic endpoint exploration; adhoc refresh already in progress"
                             );
                             return Ok(None);
-                        }
-                        Err(e) => {
-                            return Err(SiteExplorerError::internal(format!(
-                                "Failed to acquire per-endpoint work lock for {}: {e}",
-                                endpoint.address
-                            )));
                         }
                     };
 

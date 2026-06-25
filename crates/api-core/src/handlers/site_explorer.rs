@@ -19,9 +19,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use ::rpc::forge::{self as rpc, IsBmcInManagedHostResponse};
-use carbide_site_explorer::{endpoint_exploration_work_key, enrich_endpoint_exploration_report};
+use carbide_site_explorer::enrich_endpoint_exploration_report;
 use config_version::ConfigVersion;
-use db::work_lock_manager::AcquireLockError;
 use model::expected_entity::ExpectedEntity;
 use tokio::net::lookup_host;
 use tonic::{Request, Response, Status};
@@ -306,24 +305,14 @@ pub(crate) async fn refresh_endpoint_report(
             .map(ExpectedEntity::PowerShelf)
     };
 
-    // Acquire the per-endpoint work lock before probing. If the periodic site-explorer
+    // Claim the per-endpoint exploration lock before probing. If the periodic site-explorer
     // loop (or another concurrent refresh) is already probing this endpoint, return an
     // error immediately rather than running a redundant Redfish call.
-    let work_lock = match api
-        .work_lock_manager_handle
-        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
-        .await
-    {
-        Ok(lock) => lock,
-        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
+    let endpoint_guard = match api.endpoint_exploration_locks.try_claim(bmc_ip) {
+        Some(guard) => guard,
+        None => {
             return Err(CarbideError::AlreadyInProgress(format!(
                 "Endpoint refresh already in progress for {bmc_ip}"
-            ))
-            .into());
-        }
-        Err(e) => {
-            return Err(CarbideError::internal(format!(
-                "Failed to acquire endpoint work lock for {bmc_ip}: {e}"
             ))
             .into());
         }
@@ -337,7 +326,7 @@ pub(crate) async fn refresh_endpoint_report(
     let runtime_config = api.runtime_config.clone();
 
     let join_handle = tokio::spawn(async move {
-        let _work_lock = work_lock;
+        let _endpoint_guard = endpoint_guard;
 
         let start = std::time::Instant::now();
         let result = endpoint_explorer

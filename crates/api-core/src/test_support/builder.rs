@@ -26,6 +26,7 @@ use carbide_redfish::libredfish::test_support::RedfishSim;
 use carbide_secrets::credentials::CredentialManager;
 use carbide_secrets::test_support::certificates::TestCertificateProvider;
 use carbide_secrets::test_support::credentials::TestCredentialManager;
+use carbide_site_explorer::EndpointExplorationLocks;
 use carbide_site_explorer::config::SiteExplorerExploreMode;
 use carbide_utils::test_support::test_meter::TestMeter;
 use db::work_lock_manager::WorkLockManagerHandle;
@@ -63,6 +64,7 @@ pub struct TestApiBuilder {
     ib_fabric_manager: Option<Arc<dyn IBFabricManager>>,
     component_manager: Option<Arc<component_manager::component_manager::ComponentManager>>,
     secrets_context: Option<crate::secrets::SecretsContext>,
+    endpoint_exploration_locks: EndpointExplorationLocks,
 }
 
 impl TestApiBuilder {
@@ -86,6 +88,7 @@ impl TestApiBuilder {
             ib_fabric_manager: None,
             component_manager: None,
             secrets_context: None,
+            endpoint_exploration_locks: EndpointExplorationLocks::default(),
         }
     }
 
@@ -259,6 +262,7 @@ impl TestApiBuilder {
             rms_client: self.rms_client,
             nmxc_client_pool,
             work_lock_manager_handle: self.work_lock_manager,
+            endpoint_exploration_locks: self.endpoint_exploration_locks,
             machine_state_handler_enqueuer,
             metric_emitter,
             component_manager: self.component_manager.map(|cm| (*cm).clone()),

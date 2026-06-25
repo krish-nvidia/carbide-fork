@@ -20,7 +20,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use carbide_site_explorer::config::SiteExplorerConfig;
-use carbide_site_explorer::endpoint_exploration_work_key;
 use common::api_fixtures::TestEnv;
 use db::{self, ObjectColumnFilter};
 use ipnetwork::IpNetwork;
@@ -806,9 +805,9 @@ async fn test_refresh_endpoint_report_rejects_duplicate_refresh(
     let bmc_ip = host_bmc_ip(&env, &mh).await?;
     let _endpoint_lock = env
         .api
-        .work_lock_manager_handle
-        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
-        .await?;
+        .endpoint_exploration_locks
+        .try_claim(bmc_ip)
+        .expect("test should be able to claim the endpoint exploration lock");
 
     let err = env
         .api
@@ -841,9 +840,9 @@ async fn test_refresh_endpoint_report_lock_blocks_periodic_probe(
     let calls_before = endpoint_explore_call_count(&env, bmc_ip);
     let _endpoint_lock = env
         .api
-        .work_lock_manager_handle
-        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip))
-        .await?;
+        .endpoint_exploration_locks
+        .try_claim(bmc_ip)
+        .expect("test should be able to claim the endpoint exploration lock");
 
     env.run_site_explorer_iteration().await;
 
@@ -931,9 +930,9 @@ async fn test_refresh_endpoint_report_lock_is_per_endpoint(
     let initial_version_b = explored_endpoint(&env, bmc_ip_b).await?.report_version;
     let _endpoint_lock = env
         .api
-        .work_lock_manager_handle
-        .try_acquire_lock(endpoint_exploration_work_key(bmc_ip_a))
-        .await?;
+        .endpoint_exploration_locks
+        .try_claim(bmc_ip_a)
+        .expect("test should be able to claim the endpoint exploration lock");
 
     env.api
         .refresh_endpoint_report(Request::new(rpc::forge::RefreshEndpointReportRequest {
