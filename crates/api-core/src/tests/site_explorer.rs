@@ -803,7 +803,7 @@ async fn test_refresh_endpoint_report_rejects_duplicate_refresh(
     let bmc_ip = host_bmc_ip(&env, &mh).await?;
     let _endpoint_lock = env
         .api
-        .endpoint_exploration
+        .endpoint_exploration_locks
         .try_claim(bmc_ip)
         .expect("test should be able to claim the endpoint exploration lock");
 
@@ -842,7 +842,7 @@ async fn test_refresh_endpoint_report_lock_blocks_periodic_probe(
     let calls_before = endpoint_explore_call_count(&env, bmc_ip);
     let _endpoint_lock = env
         .api
-        .endpoint_exploration
+        .endpoint_exploration_locks
         .try_claim(bmc_ip)
         .expect("test should be able to claim the endpoint exploration lock");
 
@@ -933,7 +933,7 @@ async fn test_refresh_endpoint_report_lock_is_per_endpoint(
     let initial_version_b = explored_endpoint(&env, bmc_ip_b).await?.report_version;
     let _endpoint_lock = env
         .api
-        .endpoint_exploration
+        .endpoint_exploration_locks
         .try_claim(bmc_ip_a)
         .expect("test should be able to claim the endpoint exploration lock");
 

@@ -19,7 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use ::rpc::forge::{self as rpc, IsBmcInManagedHostResponse};
-use carbide_site_explorer::{EndpointExplorer, enrich_endpoint_exploration_report};
+use carbide_site_explorer::enrich_endpoint_exploration_report;
 use config_version::ConfigVersion;
 use model::expected_entity::ExpectedEntity;
 use tokio::net::lookup_host;
@@ -370,7 +370,7 @@ pub(crate) async fn refresh_endpoint_report(
     // Claim the per-endpoint exploration lock before probing. If the periodic site-explorer loop or
     // another concurrent refresh is already probing this endpoint, return immediately rather than
     // running a redundant Redfish call.
-    let endpoint_guard = match api.endpoint_exploration.try_claim(bmc_ip) {
+    let endpoint_guard = match api.endpoint_exploration_locks.try_claim(bmc_ip) {
         Some(guard) => guard,
         None => {
             return Err(CarbideError::AlreadyInProgress(format!(
@@ -383,7 +383,7 @@ pub(crate) async fn refresh_endpoint_report(
     // Run the probe + persist on a detached tokio task that owns the endpoint guard. Awaiting the
     // JoinHandle preserves the synchronous UX. Even if the caller navigates away mid-fetch, the
     // probe will still run to completion.
-    let endpoint_explorer = api.endpoint_exploration.clone();
+    let endpoint_explorer = api.endpoint_explorer.clone();
     let database_connection = api.database_connection.clone();
     let runtime_config = api.runtime_config.clone();
 

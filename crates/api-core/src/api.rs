@@ -39,7 +39,7 @@ use carbide_secrets::certificates::CertificateProvider;
 use carbide_secrets::credentials::{
     BmcCredentialType, CredentialKey, CredentialManager, CredentialType, Credentials,
 };
-use carbide_site_explorer::EndpointExplorationCoordinator;
+use carbide_site_explorer::{EndpointExplorationLocks, EndpointExplorer};
 use carbide_uuid::machine::{MachineId, MachineInterfaceId};
 use db::db_read::PgPoolReader;
 use db::work_lock_manager::WorkLockManagerHandle;
@@ -77,12 +77,15 @@ pub struct Api {
     pub runtime_config: Arc<CarbideConfig>,
     pub(crate) dpu_health_log_limiter: LogLimiter<MachineId>,
     pub dynamic_settings: DynamicSettings,
-    pub(crate) endpoint_exploration: Arc<EndpointExplorationCoordinator>,
+    pub(crate) endpoint_explorer: Arc<dyn EndpointExplorer>,
     pub(crate) scout_stream_registry: ConnectionRegistry,
     #[allow(unused)]
     pub(crate) rms_client: Option<Arc<dyn RmsApi>>,
     pub(crate) nmxc_client_pool: Arc<dyn NmxcPool>,
     pub(crate) work_lock_manager_handle: WorkLockManagerHandle,
+    /// In-process per-endpoint exploration locks, shared with the site-explorer loop so periodic
+    /// exploration and ad-hoc `RefreshEndpointReport` calls never probe the same BMC at once.
+    pub(crate) endpoint_exploration_locks: EndpointExplorationLocks,
     pub(crate) dpf_sdk: Option<Arc<dyn DpfOperations>>,
     pub(crate) machine_state_handler_enqueuer: Enqueuer<MachineStateControllerIO>,
     pub(crate) metric_emitter: ApiMetricsEmitter,

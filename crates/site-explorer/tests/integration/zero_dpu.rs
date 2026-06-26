@@ -50,9 +50,6 @@ async fn init(pool: PgPool) -> ZeroDpuEnv {
     let underlay_segment = network_controller.create_underlay_segment(&domain).await;
     let host_inband_segment = network_controller.create_host_inband_segment(&domain).await;
     let endpoint_explorer = Arc::new(MockEndpointExplorer::default());
-    let endpoint_exploration = Arc::new(
-        carbide_site_explorer::EndpointExplorationCoordinator::new(endpoint_explorer.clone()),
-    );
     let api = test_harness.api();
     let site_explorer = TestSiteExplorer::new(
         SiteExplorer::new(
@@ -67,10 +64,11 @@ async fn init(pool: PgPool) -> ZeroDpuEnv {
                 ..Default::default()
             },
             test_harness.test_meter.meter(),
-            endpoint_exploration,
+            endpoint_explorer.clone(),
             Arc::new(api.runtime_config.get_firmware_config()),
             api.common_pools().clone(),
             api.work_lock_manager_handle(),
+            carbide_site_explorer::EndpointExplorationLocks::default(),
             api.runtime_config.rack_profiles.clone(),
             None,
             api.credential_manager().clone(),

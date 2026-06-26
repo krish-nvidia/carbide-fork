@@ -27,7 +27,7 @@ use carbide_secrets::credentials::CredentialManager;
 use carbide_secrets::test_support::certificates::TestCertificateProvider;
 use carbide_secrets::test_support::credentials::TestCredentialManager;
 use carbide_site_explorer::config::SiteExplorerExploreMode;
-use carbide_site_explorer::{EndpointExplorationCoordinator, EndpointExplorer};
+use carbide_site_explorer::{EndpointExplorationLocks, EndpointExplorer};
 use carbide_utils::test_support::test_meter::TestMeter;
 use db::work_lock_manager::WorkLockManagerHandle;
 use libnmxc::NmxcPool;
@@ -65,6 +65,7 @@ pub struct TestApiBuilder {
     component_manager: Option<Arc<component_manager::component_manager::ComponentManager>>,
     secrets_context: Option<crate::secrets::SecretsContext>,
     endpoint_explorer: Option<Arc<dyn EndpointExplorer>>,
+    endpoint_exploration_locks: EndpointExplorationLocks,
 }
 
 impl TestApiBuilder {
@@ -89,6 +90,7 @@ impl TestApiBuilder {
             component_manager: None,
             secrets_context: None,
             endpoint_explorer: None,
+            endpoint_exploration_locks: EndpointExplorationLocks::default(),
         }
     }
 
@@ -231,8 +233,6 @@ impl TestApiBuilder {
                 self.db_pool.clone(),
             )
         });
-        let endpoint_exploration = Arc::new(EndpointExplorationCoordinator::new(endpoint_explorer));
-
         let metric_emitter = self.metric_emitter.unwrap_or_else(|| {
             let test_meter = TestMeter::default();
             ApiMetricsEmitter::new(&test_meter.meter())
@@ -267,12 +267,13 @@ impl TestApiBuilder {
             common_pools: self.common_pools,
             ib_fabric_manager,
             dynamic_settings,
-            endpoint_exploration,
+            endpoint_explorer,
             dpu_health_log_limiter,
             scout_stream_registry,
             rms_client: self.rms_client,
             nmxc_client_pool,
             work_lock_manager_handle: self.work_lock_manager,
+            endpoint_exploration_locks: self.endpoint_exploration_locks,
             machine_state_handler_enqueuer,
             metric_emitter,
             component_manager: self.component_manager.map(|cm| (*cm).clone()),

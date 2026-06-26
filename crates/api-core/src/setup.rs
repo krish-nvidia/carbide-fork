@@ -53,7 +53,7 @@ use carbide_redfish::libredfish::RedfishClientPool;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
 use carbide_secrets::certificates::CertificateProvider;
 use carbide_secrets::credentials::{CredentialManager, CredentialReader};
-use carbide_site_explorer::{EndpointExplorationCoordinator, SiteExplorer};
+use carbide_site_explorer::{EndpointExplorationLocks, SiteExplorer};
 use carbide_spdm_controller::context::SpdmStateHandlerServices;
 use carbide_spdm_controller::handler::SpdmAttestationStateHandler;
 use carbide_spdm_controller::io::SpdmStateControllerIO;
@@ -477,7 +477,9 @@ pub async fn start_api(
         carbide_config.site_explorer.explore_mode,
         db_pool.clone(),
     );
-    let endpoint_exploration = Arc::new(EndpointExplorationCoordinator::new(bmc_explorer));
+    // Shared between the API's `RefreshEndpointReport` handler and the site-explorer loop so they
+    // never probe the same endpoint at once. In-process only; see `EndpointExplorationLocks`.
+    let endpoint_exploration_locks = EndpointExplorationLocks::default();
 
     let nvlink_config = carbide_config.nvlink_config.clone().unwrap_or_default();
 
@@ -598,7 +600,7 @@ pub async fn start_api(
         database_connection: db_pool.clone(),
         dpu_health_log_limiter: LogLimiter::default(),
         dynamic_settings,
-        endpoint_exploration: endpoint_exploration.clone(),
+        endpoint_explorer: bmc_explorer,
         eth_data,
         ib_fabric_manager,
         redfish_pool: shared_redfish_pool,
@@ -608,6 +610,7 @@ pub async fn start_api(
         rms_client: rms_client.clone(),
         nmxc_client_pool: shared_nmxc_pool.clone(),
         work_lock_manager_handle,
+        endpoint_exploration_locks: endpoint_exploration_locks.clone(),
         dpf_sdk: dpf_sdk.clone(),
         machine_state_handler_enqueuer: Enqueuer::new(db_pool),
         metric_emitter: ApiMetricsEmitter::new(&meter),
@@ -863,12 +866,13 @@ async fn initialize_and_start_controllers<'a>(
 ) -> eyre::Result<()> {
     let Api {
         runtime_config: carbide_config,
-        endpoint_exploration,
+        endpoint_explorer: bmc_explorer,
         common_pools,
         database_connection: db_pool,
         ib_fabric_manager,
         redfish_pool: shared_redfish_pool,
         work_lock_manager_handle,
+        endpoint_exploration_locks,
         rms_client,
         component_manager,
         dpf_sdk,
@@ -1444,10 +1448,11 @@ async fn initialize_and_start_controllers<'a>(
         db_pool.clone(),
         site_explorer_config,
         meter.clone(),
-        endpoint_exploration.clone(),
+        bmc_explorer.clone(),
         Arc::new(carbide_config.get_firmware_config()),
         common_pools.clone(),
         work_lock_manager_handle.clone(),
+        endpoint_exploration_locks.clone(),
         carbide_config.rack_profiles.clone(),
         rms_client.clone(),
         credential_manager.clone(),
