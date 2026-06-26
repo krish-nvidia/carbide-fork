@@ -53,7 +53,7 @@ use carbide_redfish::libredfish::RedfishClientPool;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
 use carbide_secrets::certificates::CertificateProvider;
 use carbide_secrets::credentials::{CredentialManager, CredentialReader};
-use carbide_site_explorer::SiteExplorer;
+use carbide_site_explorer::{EndpointExplorationCoordinator, SiteExplorer};
 use carbide_spdm_controller::context::SpdmStateHandlerServices;
 use carbide_spdm_controller::handler::SpdmAttestationStateHandler;
 use carbide_spdm_controller::io::SpdmStateControllerIO;
@@ -477,6 +477,7 @@ pub async fn start_api(
         carbide_config.site_explorer.explore_mode,
         db_pool.clone(),
     );
+    let endpoint_exploration = Arc::new(EndpointExplorationCoordinator::new(bmc_explorer));
 
     let nvlink_config = carbide_config.nvlink_config.clone().unwrap_or_default();
 
@@ -597,7 +598,7 @@ pub async fn start_api(
         database_connection: db_pool.clone(),
         dpu_health_log_limiter: LogLimiter::default(),
         dynamic_settings,
-        endpoint_explorer: bmc_explorer,
+        endpoint_exploration: endpoint_exploration.clone(),
         eth_data,
         ib_fabric_manager,
         redfish_pool: shared_redfish_pool,
@@ -862,7 +863,7 @@ async fn initialize_and_start_controllers<'a>(
 ) -> eyre::Result<()> {
     let Api {
         runtime_config: carbide_config,
-        endpoint_explorer: bmc_explorer,
+        endpoint_exploration,
         common_pools,
         database_connection: db_pool,
         ib_fabric_manager,
@@ -1443,7 +1444,7 @@ async fn initialize_and_start_controllers<'a>(
         db_pool.clone(),
         site_explorer_config,
         meter.clone(),
-        bmc_explorer.clone(),
+        endpoint_exploration.clone(),
         Arc::new(carbide_config.get_firmware_config()),
         common_pools.clone(),
         work_lock_manager_handle.clone(),

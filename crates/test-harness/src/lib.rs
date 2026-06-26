@@ -119,12 +119,15 @@ impl TestHarness {
 
     pub fn test_site_explorer(&self, config: SiteExplorerConfig) -> TestSiteExplorer {
         let endpoint_explorer = Arc::new(MockEndpointExplorer::default());
+        let endpoint_exploration = Arc::new(
+            carbide_site_explorer::EndpointExplorationCoordinator::new(endpoint_explorer.clone()),
+        );
         let api = self.api();
         let site_explorer = SiteExplorer::new(
             api.database_connection.clone(),
             config,
             self.test_meter.meter(),
-            endpoint_explorer.clone(),
+            endpoint_exploration,
             Arc::new(api.runtime_config.get_firmware_config()),
             api.common_pools().clone(),
             api.work_lock_manager_handle(),

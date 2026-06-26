@@ -19,6 +19,7 @@ use std::net::SocketAddr;
 
 use ::rpc::forge as rpc;
 use carbide_redfish::boot_interface::BootInterfaceTarget;
+use carbide_site_explorer::EndpointExplorer;
 use carbide_uuid::machine::{MachineId, MachineInterfaceId};
 use model::machine::LoadSnapshotOptions;
 use model::machine::machine_search_config::MachineSearchConfig;
@@ -264,7 +265,7 @@ async fn set_primary_interface_core(
         }),
         None => BootInterfaceTarget::MacOnly(primary_interface_mac_address),
     };
-    api.endpoint_explorer
+    api.endpoint_exploration
         .set_boot_order_dpu_first(bmc_socket_addr, &bmc_interface, &boot_target)
         .await
         .map_err(|e| CarbideError::internal(e.to_string()))?;
@@ -329,7 +330,7 @@ async fn set_primary_interface_core(
     // but an operator will need to make that call.  The scout image handles this pretty well,
     // albeit with a leftover IP on the unused interface
     if reboot {
-        api.endpoint_explorer
+        api.endpoint_exploration
             .redfish_power_control(
                 bmc_socket_addr,
                 &bmc_interface,

@@ -27,6 +27,7 @@ use carbide_secrets::credentials::CredentialManager;
 use carbide_secrets::test_support::certificates::TestCertificateProvider;
 use carbide_secrets::test_support::credentials::TestCredentialManager;
 use carbide_site_explorer::config::SiteExplorerExploreMode;
+use carbide_site_explorer::{EndpointExplorationCoordinator, EndpointExplorer};
 use carbide_utils::test_support::test_meter::TestMeter;
 use db::work_lock_manager::WorkLockManagerHandle;
 use libnmxc::NmxcPool;
@@ -63,6 +64,7 @@ pub struct TestApiBuilder {
     ib_fabric_manager: Option<Arc<dyn IBFabricManager>>,
     component_manager: Option<Arc<component_manager::component_manager::ComponentManager>>,
     secrets_context: Option<crate::secrets::SecretsContext>,
+    endpoint_explorer: Option<Arc<dyn EndpointExplorer>>,
 }
 
 impl TestApiBuilder {
@@ -86,6 +88,7 @@ impl TestApiBuilder {
             ib_fabric_manager: None,
             component_manager: None,
             secrets_context: None,
+            endpoint_explorer: None,
         }
     }
 
@@ -173,6 +176,13 @@ impl TestApiBuilder {
         }
     }
 
+    pub fn with_endpoint_explorer(self, endpoint_explorer: Arc<dyn EndpointExplorer>) -> Self {
+        Self {
+            endpoint_explorer: Some(endpoint_explorer),
+            ..self
+        }
+    }
+
     pub fn build(self) -> Api {
         let runtime_config = self
             .runtime_config
@@ -209,16 +219,19 @@ impl TestApiBuilder {
             runtime_config.allow_bmc_basic_auth_fallback,
         ));
 
-        let endpoint_explorer = carbide_site_explorer::new_bmc_explorer(
-            redfish_pool.clone(),
-            nv_redfish_pool,
-            carbide_ipmi::test_support(),
-            credential_manager.clone(),
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            // Tests use MockEndpointExplorer. So this doesn't affect anything.
-            SiteExplorerExploreMode::NvRedfish,
-            self.db_pool.clone(),
-        );
+        let endpoint_explorer = self.endpoint_explorer.unwrap_or_else(|| {
+            carbide_site_explorer::new_bmc_explorer(
+                redfish_pool.clone(),
+                nv_redfish_pool,
+                carbide_ipmi::test_support(),
+                credential_manager.clone(),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                // Tests use MockEndpointExplorer. So this doesn't affect anything.
+                SiteExplorerExploreMode::NvRedfish,
+                self.db_pool.clone(),
+            )
+        });
+        let endpoint_exploration = Arc::new(EndpointExplorationCoordinator::new(endpoint_explorer));
 
         let metric_emitter = self.metric_emitter.unwrap_or_else(|| {
             let test_meter = TestMeter::default();
@@ -254,7 +267,7 @@ impl TestApiBuilder {
             common_pools: self.common_pools,
             ib_fabric_manager,
             dynamic_settings,
-            endpoint_explorer,
+            endpoint_exploration,
             dpu_health_log_limiter,
             scout_stream_registry,
             rms_client: self.rms_client,
