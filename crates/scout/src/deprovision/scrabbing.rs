@@ -624,6 +624,7 @@ fn read_block_sysfs_attr(devname: &str, attr: &str) -> Option<String> {
 enum BlockDeviceCleanupSkipReason {
     Hidden,
     Removable { removable: String },
+    ZeroSize,
     UsbTransport,
 }
 
@@ -634,6 +635,7 @@ impl std::fmt::Display for BlockDeviceCleanupSkipReason {
             Self::Removable { removable } => {
                 write!(f, "removable block device (removable={removable})")
             }
+            Self::ZeroSize => write!(f, "zero-size block device"),
             Self::UsbTransport => write!(f, "USB transport block device"),
         }
     }
@@ -648,6 +650,10 @@ fn block_device_cleanup_skip_reason(devname: &str) -> Option<BlockDeviceCleanupS
         && removable != "0"
     {
         return Some(BlockDeviceCleanupSkipReason::Removable { removable });
+    }
+
+    if read_block_sysfs_attr(devname, "size").is_some_and(|value| value == "0") {
+        return Some(BlockDeviceCleanupSkipReason::ZeroSize);
     }
 
     if is_usb_device(devname) {
