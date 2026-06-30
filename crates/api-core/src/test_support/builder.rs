@@ -27,6 +27,7 @@ use carbide_secrets::credentials::CredentialManager;
 use carbide_secrets::test_support::certificates::TestCertificateProvider;
 use carbide_secrets::test_support::credentials::TestCredentialManager;
 use carbide_site_explorer::config::SiteExplorerExploreMode;
+use carbide_site_explorer::test_support::MockEndpointExplorer;
 use carbide_site_explorer::{EndpointExplorationLocks, EndpointExplorer};
 use carbide_utils::test_support::test_meter::TestMeter;
 use db::work_lock_manager::WorkLockManagerHandle;
@@ -64,7 +65,7 @@ pub struct TestApiBuilder {
     ib_fabric_manager: Option<Arc<dyn IBFabricManager>>,
     component_manager: Option<Arc<component_manager::component_manager::ComponentManager>>,
     secrets_context: Option<crate::secrets::SecretsContext>,
-    endpoint_explorer: Option<Arc<dyn EndpointExplorer>>,
+    endpoint_explorer: Option<MockEndpointExplorer>,
     endpoint_exploration_locks: EndpointExplorationLocks,
 }
 
@@ -178,7 +179,7 @@ impl TestApiBuilder {
         }
     }
 
-    pub fn with_endpoint_explorer(self, endpoint_explorer: Arc<dyn EndpointExplorer>) -> Self {
+    pub fn with_endpoint_explorer(self, endpoint_explorer: MockEndpointExplorer) -> Self {
         Self {
             endpoint_explorer: Some(endpoint_explorer),
             ..self
@@ -221,18 +222,23 @@ impl TestApiBuilder {
             runtime_config.allow_bmc_basic_auth_fallback,
         ));
 
-        let endpoint_explorer = self.endpoint_explorer.unwrap_or_else(|| {
-            carbide_site_explorer::new_bmc_explorer(
-                redfish_pool.clone(),
-                nv_redfish_pool,
-                carbide_ipmi::test_support(),
-                credential_manager.clone(),
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                // Tests use MockEndpointExplorer. So this doesn't affect anything.
-                SiteExplorerExploreMode::NvRedfish,
-                self.db_pool.clone(),
-            )
-        });
+        // In tests a real explorer can't explore (nv-redfish has no `RedfishSim`
+        // behind it), so a supplied mock serves exploration -- but forwards its
+        // boot-order/machine-setup calls to this real, `RedfishSim`-backed
+        // explorer. With no mock, the API uses the real explorer (prod wiring).
+        let real_endpoint_explorer = carbide_site_explorer::new_bmc_explorer(
+            redfish_pool.clone(),
+            nv_redfish_pool,
+            carbide_ipmi::test_support(),
+            credential_manager.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            SiteExplorerExploreMode::NvRedfish,
+            self.db_pool.clone(),
+        );
+        let endpoint_explorer: Arc<dyn EndpointExplorer> = match self.endpoint_explorer {
+            Some(mock) => Arc::new(mock.with_redfish_backend(real_endpoint_explorer)),
+            None => real_endpoint_explorer,
+        };
         let metric_emitter = self.metric_emitter.unwrap_or_else(|| {
             let test_meter = TestMeter::default();
             ApiMetricsEmitter::new(&test_meter.meter())

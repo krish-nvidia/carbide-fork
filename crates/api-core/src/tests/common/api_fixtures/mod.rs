@@ -1385,7 +1385,7 @@ pub async fn create_test_env_with_overrides(
     .with_metric_emitter(ApiMetricsEmitter::new(&test_meter.meter()))
     .with_redfish_pool(redfish_sim.clone())
     .with_ib_fabric_manager(ib_fabric_manager.clone())
-    .with_endpoint_explorer(Arc::new(fake_endpoint_explorer.clone()));
+    .with_endpoint_explorer(fake_endpoint_explorer.clone());
 
     if let Some(rms_client) = rms_sim.as_rms_client() {
         api_builder = api_builder.with_rms_client(rms_client);
