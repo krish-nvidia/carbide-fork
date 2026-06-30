@@ -57,8 +57,11 @@ type ExpectedMachineCreateRequest struct {
 	// Host ID within the tray
 	HostId NullableInt32 `json:"hostId,omitempty"`
 	// When true, this host is eligible for DPF-based provisioning.
-	IsDpfEnabled NullableBool      `json:"isDpfEnabled,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
+	IsDpfEnabled NullableBool `json:"isDpfEnabled,omitempty"`
+	// User-defined key-value pairs for organizing and categorizing Expected Machines
+	Labels map[string]string `json:"labels,omitempty"`
+	// Optional per-host lifecycle profile
+	HostLifecycleProfile *HostLifecycleProfile `json:"hostLifecycleProfile,omitempty"`
 }
 
 type _ExpectedMachineCreateRequest ExpectedMachineCreateRequest
@@ -779,6 +782,38 @@ func (o *ExpectedMachineCreateRequest) SetLabels(v map[string]string) {
 	o.Labels = v
 }
 
+// GetHostLifecycleProfile returns the HostLifecycleProfile field value if set, zero value otherwise.
+func (o *ExpectedMachineCreateRequest) GetHostLifecycleProfile() HostLifecycleProfile {
+	if o == nil || IsNil(o.HostLifecycleProfile) {
+		var ret HostLifecycleProfile
+		return ret
+	}
+	return *o.HostLifecycleProfile
+}
+
+// GetHostLifecycleProfileOk returns a tuple with the HostLifecycleProfile field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *ExpectedMachineCreateRequest) GetHostLifecycleProfileOk() (*HostLifecycleProfile, bool) {
+	if o == nil || IsNil(o.HostLifecycleProfile) {
+		return nil, false
+	}
+	return o.HostLifecycleProfile, true
+}
+
+// HasHostLifecycleProfile returns a boolean if a field has been set.
+func (o *ExpectedMachineCreateRequest) HasHostLifecycleProfile() bool {
+	if o != nil && !IsNil(o.HostLifecycleProfile) {
+		return true
+	}
+
+	return false
+}
+
+// SetHostLifecycleProfile gets a reference to the given HostLifecycleProfile and assigns it to the HostLifecycleProfile field.
+func (o *ExpectedMachineCreateRequest) SetHostLifecycleProfile(v HostLifecycleProfile) {
+	o.HostLifecycleProfile = &v
+}
+
 func (o ExpectedMachineCreateRequest) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -836,6 +871,9 @@ func (o ExpectedMachineCreateRequest) ToMap() (map[string]interface{}, error) {
 	}
 	if !IsNil(o.Labels) {
 		toSerialize["labels"] = o.Labels
+	}
+	if !IsNil(o.HostLifecycleProfile) {
+		toSerialize["hostLifecycleProfile"] = o.HostLifecycleProfile
 	}
 	return toSerialize, nil
 }

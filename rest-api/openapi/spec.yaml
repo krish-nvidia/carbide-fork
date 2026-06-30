@@ -20217,6 +20217,16 @@ components:
             type: string
       required:
         - machineIds
+    HostLifecycleProfile:
+      title: HostLifecycleProfile
+      type: object
+      description: Per-host lifecycle settings that affect how NICo progresses a host through its state machine.
+      properties:
+        disableLockdown:
+          type:
+            - boolean
+            - 'null'
+          description: When true, the server is not locked down during host lifecycle management. When omitted, the existing value is preserved.
     ExpectedMachine:
       title: ExpectedMachine
       type: object
@@ -20337,6 +20347,9 @@ components:
         labels:
           $ref: '#/components/schemas/Labels'
           description: User-defined key-value pairs for organizing and categorizing Expected Machines
+        hostLifecycleProfile:
+          $ref: '#/components/schemas/HostLifecycleProfile'
+          description: Optional per-host lifecycle profile
         created:
           type: string
           format: date-time
@@ -20466,6 +20479,9 @@ components:
         labels:
           $ref: '#/components/schemas/Labels'
           description: User-defined key-value pairs for organizing and categorizing Expected Machines
+        hostLifecycleProfile:
+          $ref: '#/components/schemas/HostLifecycleProfile'
+          description: Optional per-host lifecycle profile
       required:
         - siteId
         - bmcMacAddress
@@ -20598,6 +20614,9 @@ components:
         labels:
           $ref: '#/components/schemas/Labels'
           description: User-defined key-value pairs for organizing and categorizing Expected Machines
+        hostLifecycleProfile:
+          $ref: '#/components/schemas/HostLifecycleProfile'
+          description: Optional per-host lifecycle profile
     ExpectedPowerShelf:
       title: ExpectedPowerShelf
       type: object
