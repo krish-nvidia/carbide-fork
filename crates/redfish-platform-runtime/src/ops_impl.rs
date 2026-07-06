@@ -163,6 +163,31 @@ impl NvRedfishOps {
         Ok(Self { bmc, root, session })
     }
 
+    /// Anonymous reachability probe: fetch the service root (which the Redfish
+    /// spec requires to be readable without auth) with no credentials. Success
+    /// means a Redfish service is answering at the address.
+    pub async fn probe(address: std::net::SocketAddr) -> Result<(), RedfishError> {
+        let client = NvClient::with_params(
+            ClientParams::new()
+                .accept_invalid_certs(true)
+                .pool_max_idle_per_host(0),
+        )
+        .map_err(|e| RedfishError::Network {
+            url: address.to_string(),
+            source: Box::new(e),
+        })?;
+        let url = Url::parse(&format!("https://{address}"))
+            .map_err(|e| RedfishError::generic(format!("invalid BMC URL: {e}")))?;
+        let bmc = Arc::new(HttpBmc::new(
+            client,
+            url,
+            BmcCredentials::new(String::new(), String::new()),
+            CacheSettings::with_capacity(1),
+        ));
+        ServiceRoot::new(bmc).await.map_err(map_nv_error)?;
+        Ok(())
+    }
+
     /// Identity from data already in hand after `connect` (vendor/product from
     /// the service root) -- no extra BMC reads. Used on the hinted fast path,
     /// where a full identity gather is unnecessary.
@@ -190,25 +215,22 @@ impl NvRedfishOps {
                 carbide_redfish_platform_api::model::service_root_oem_keys(&root);
         }
 
-        if let Some(managers) = self.root.managers().await.map_err(map_nv_error)?
-            && let Some(manager) = managers
-                .members()
-                .await
-                .map_err(map_nv_error)?
-                .into_iter()
-                .next()
+        // Manager/system/chassis reads are best-effort: factory-state BMCs
+        // (e.g. NVIDIA GBx00) answer the service root but return 403
+        // `PasswordChangeRequired` on /Systems until the password is rotated.
+        // Selection must still work from the service-root evidence so the
+        // rotation itself can go through a plugin.
+        if let Ok(Some(managers)) = self.root.managers().await
+            && let Ok(members) = managers.members().await
+            && let Some(manager) = members.into_iter().next()
         {
             identity.manager_id = Some(manager.id().to_string());
             identity.manager_firmware_version = manager.raw().firmware_version.clone().flatten();
         }
 
-        if let Some(systems) = self.root.systems().await.map_err(map_nv_error)?
-            && let Some(system) = systems
-                .members()
-                .await
-                .map_err(map_nv_error)?
-                .into_iter()
-                .next()
+        if let Ok(Some(systems)) = self.root.systems().await
+            && let Ok(members) = systems.members().await
+            && let Some(system) = members.into_iter().next()
         {
             identity.system_id = Some(system.id().to_string());
             let hw = system.hardware_id();
@@ -216,14 +238,10 @@ impl NvRedfishOps {
             identity.system_model = hw.model.map(|m| m.to_string());
         }
 
-        if let Some(chassis) = self.root.chassis().await.map_err(map_nv_error)? {
-            identity.chassis_ids = chassis
-                .members()
-                .await
-                .map_err(map_nv_error)?
-                .iter()
-                .map(|c| c.id().to_string())
-                .collect();
+        if let Ok(Some(chassis)) = self.root.chassis().await
+            && let Ok(members) = chassis.members().await
+        {
+            identity.chassis_ids = members.iter().map(|c| c.id().to_string()).collect();
         }
 
         Ok(identity)

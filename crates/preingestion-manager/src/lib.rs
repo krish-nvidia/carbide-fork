@@ -25,11 +25,14 @@ use std::default::Default;
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use carbide_firmware::FirmwareDownloader;
-use carbide_redfish::libredfish::conv::IntoLibredfish;
-use carbide_redfish::libredfish::{RedfishClientCreationError, RedfishClientPool};
+use carbide_redfish_platform_api::RedfishError;
+use carbide_redfish_platform_api::model::{
+    BmcEndpointKind, BmcRef, BmcResetKind, ChassisResetRequest, FirmwareSource,
+    FirmwareTransferProtocol, FirmwareUpdateRequest, JobHandle, JobState, PowerAction, PowerState,
+};
+use carbide_redfish_platform_api::service::RedfishPlatformService;
 use carbide_secrets::credentials::{
     BmcCredentialType, CredentialKey, CredentialReader, Credentials,
 };
@@ -39,9 +42,6 @@ pub use config::PreingestionManagerConfig;
 use db::work_lock_manager::WorkLockManagerHandle;
 use db::{DatabaseError, WithTransaction};
 use futures_util::FutureExt;
-use libredfish::model::task::TaskState;
-use libredfish::model::update_service::TransferProtocolType;
-use libredfish::{PowerState, Redfish, RedfishError, SystemPowerControl};
 use model::firmware::{Firmware, FirmwareComponentType, FirmwareEntry};
 use model::site_explorer::{
     ExploredEndpoint, InitialBmcResetPhase, InitialResetPhase, NicMode, PowerDrainState,
@@ -49,7 +49,6 @@ use model::site_explorer::{
 };
 use opentelemetry::metrics::Meter;
 use sqlx::PgPool;
-use tokio::fs::File;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -86,7 +85,7 @@ pub struct PreingestionManager {
 #[derive(Clone)]
 struct PreingestionManagerStatic {
     config: PreingestionManagerConfig,
-    redfish_client_pool: Arc<dyn RedfishClientPool>,
+    redfish_platform: Arc<dyn RedfishPlatformService>,
     downloader: FirmwareDownloader,
     upload_limiter: Arc<Semaphore>,
     upgrade_script_state: Arc<UpdateScriptManager>,
@@ -107,7 +106,7 @@ impl PreingestionManager {
     pub fn new(
         database_connection: sqlx::PgPool,
         config: PreingestionManagerConfig,
-        redfish_client_pool: Arc<dyn RedfishClientPool>,
+        redfish_platform: Arc<dyn RedfishPlatformService>,
         meter: Meter,
         downloader: Option<FirmwareDownloader>,
         upload_limiter: Option<Arc<Semaphore>>,
@@ -124,7 +123,7 @@ impl PreingestionManager {
 
         PreingestionManager {
             static_info: Arc::new(PreingestionManagerStatic {
-                redfish_client_pool,
+                redfish_platform,
                 downloader: downloader.unwrap_or_default(),
                 upload_limiter: upload_limiter.unwrap_or(Arc::new(Semaphore::new(5))),
                 upgrade_script_state: Default::default(),
@@ -485,6 +484,17 @@ async fn one_endpoint(
 }
 
 impl PreingestionManagerStatic {
+    /// bmc_ref_for_ingested_host looks up the BMC access info for the given IP and builds a
+    /// [`BmcRef`] for it; credentials are resolved by the Redfish platform runtime from the
+    /// BMC MAC address.
+    async fn bmc_ref_for_ingested_host(
+        &self,
+        ip: IpAddr,
+        db_pool: &PgPool,
+    ) -> PreingestionManagerResult<BmcRef> {
+        bmc_ref_for_ingested_host(ip, db_pool).await
+    }
+
     /// find_fw_info_for_host looks up the firmware config for the given endpoint
     fn find_fw_info_for_host(&self, endpoint: &ExploredEndpoint) -> Option<Firmware> {
         let vendor = match &endpoint.report.vendor {
@@ -684,7 +694,7 @@ impl PreingestionManagerStatic {
 
                     initiate_update(
                         endpoint,
-                        &self.redfish_client_pool,
+                        &self.redfish_platform,
                         &to_install,
                         &fw_type,
                         &self.downloader,
@@ -720,33 +730,29 @@ impl PreingestionManagerStatic {
             args.firmware_number,
         );
 
-        let redfish_client = match self
-            .redfish_client_pool
-            .create_client_for_ingested_host(endpoint.address, db)
-            .await
-        {
-            Ok(redfish_client) => redfish_client,
+        let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+            Ok(bmc) => bmc,
             Err(e) => {
                 tracing::warn!("Redfish connection to {} failed: {e}", endpoint.address);
                 return Ok(());
             }
         };
 
-        match redfish_client.get_task(task_id).await {
-            Ok(task_info) => {
-                match task_info.task_state {
-                    Some(TaskState::New)
-                    | Some(TaskState::Starting)
-                    | Some(TaskState::Running)
-                    | Some(TaskState::Pending) => {
+        match self
+            .redfish_platform
+            .poll(bmc, &JobHandle::task(task_id))
+            .await
+        {
+            Ok(job_state) => {
+                match job_state {
+                    JobState::Pending | JobState::Running { .. } => {
                         tracing::debug!(
-                            "Upgrade task for {} not yet complete, current state {:?} message {:?}",
+                            "Upgrade task for {} not yet complete, current state {:?}",
                             endpoint.address,
-                            task_info.task_state,
-                            task_info.messages,
+                            job_state,
                         );
                     }
-                    Some(TaskState::Completed) => {
+                    JobState::Completed => {
                         // Task has completed, update is done and we can clean up.  Site explorer will ingest this next time it runs on this endpoint.
 
                         // If we have multiple firmware files to be uploaded, do the next one.
@@ -768,7 +774,7 @@ impl PreingestionManagerStatic {
 
                                 initiate_update(
                                     endpoint,
-                                    &self.redfish_client_pool,
+                                    &self.redfish_platform,
                                     selected_firmware,
                                     upgrade_type,
                                     &self.downloader,
@@ -811,18 +817,10 @@ impl PreingestionManagerStatic {
                             )
                             .await;
                     }
-                    Some(TaskState::Exception)
-                    | Some(TaskState::Interrupted)
-                    | Some(TaskState::Killed)
-                    | Some(TaskState::Cancelled) => {
+                    JobState::Failed { detail } => {
                         let msg = format!(
-                            "Failure in firmware upgrade for {}: {} {:?}",
+                            "Failure in firmware upgrade for {}: {detail}",
                             &endpoint.address,
-                            task_info.task_state.unwrap_or(TaskState::Killed),
-                            task_info
-                                .messages
-                                .last()
-                                .map_or(String::new(), |m| m.message.clone())
                         );
                         tracing::warn!(msg);
 
@@ -855,18 +853,10 @@ impl PreingestionManagerStatic {
                         })
                         .await??;
                     }
-                    _ => {
-                        // Unexpected state
-                        tracing::warn!(
-                            "Unrecognized task state for {}: {:?}",
-                            endpoint.address,
-                            task_info.task_state
-                        );
-                    }
                 };
             }
             Err(e) => match e {
-                RedfishError::HTTPErrorCode { status_code, .. } => {
+                RedfishError::HttpStatus { status_code, .. } => {
                     if status_code == NOT_FOUND {
                         // Dells (maybe others) have been observed to not have report the job any more after completing a host reboot for a UEFI upgrade.  If we get a 404 but see that we're at the right version, we're done with that upgrade.
                         if let Some(fw_info) = self.find_fw_info_for_host(endpoint)
@@ -930,12 +920,8 @@ impl PreingestionManagerStatic {
             }
         };
 
-        let redfish_client = match self
-            .redfish_client_pool
-            .create_client_for_ingested_host(endpoint.address, db)
-            .await
-        {
-            Ok(redfish_client) => redfish_client,
+        let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+            Ok(bmc) => bmc,
             Err(e) => {
                 tracing::error!("Redfish connection to {} failed: {e}", endpoint.address);
                 return Ok(());
@@ -971,7 +957,11 @@ impl PreingestionManagerStatic {
                             &endpoint.address,
                             *power_drains_needed
                         );
-                        if let Err(e) = redfish_client.power(SystemPowerControl::ForceOff).await {
+                        if let Err(e) = self
+                            .redfish_platform
+                            .set_power(bmc.clone(), PowerAction::ForceOff)
+                            .await
+                        {
                             tracing::error!("Failed to power off {}: {e}", &endpoint.address);
                             return Ok(());
                         }
@@ -1001,15 +991,17 @@ impl PreingestionManagerStatic {
                 Some(PowerDrainState::Off) => {
                     if endpoint.report.vendor.unwrap_or_default().is_lenovo() {
                         tracing::info!("Doing powercycle now for {}", &endpoint.address);
-                        match redfish_client.get_power_state().await {
+                        match self.redfish_platform.power_state(bmc.clone()).await {
                             Ok(power_state) if power_state != PowerState::Off => {
                                 tracing::warn!(
                                     address = %endpoint.address,
-                                    %power_state,
+                                    ?power_state,
                                     "ACPowercycle requires chassis to be Off, forcing off first"
                                 );
-                                if let Err(e) =
-                                    redfish_client.power(SystemPowerControl::ForceOff).await
+                                if let Err(e) = self
+                                    .redfish_platform
+                                    .set_power(bmc.clone(), PowerAction::ForceOff)
+                                    .await
                                 {
                                     tracing::error!(
                                         "Failed to force off {}: {e}",
@@ -1046,7 +1038,10 @@ impl PreingestionManagerStatic {
                                 return Ok(());
                             }
                         }
-                        if let Err(e) = redfish_client.power(SystemPowerControl::ACPowercycle).await
+                        if let Err(e) = self
+                            .redfish_platform
+                            .set_power(bmc.clone(), PowerAction::AcPowerCycle)
+                            .await
                         {
                             tracing::error!("Failed to power cycle {}: {e}", &endpoint.address);
                             return Ok(());
@@ -1074,7 +1069,11 @@ impl PreingestionManagerStatic {
                 }
                 Some(PowerDrainState::Powercycle) => {
                     tracing::info!("Turning back on {}", &endpoint.address);
-                    if let Err(e) = redfish_client.power(SystemPowerControl::On).await {
+                    if let Err(e) = self
+                        .redfish_platform
+                        .set_power(bmc.clone(), PowerAction::On)
+                        .await
+                    {
                         tracing::error!("Failed to power on {}: {e}", &endpoint.address);
                         return Ok(());
                     }
@@ -1104,7 +1103,11 @@ impl PreingestionManagerStatic {
                 "Upgrade task has completed for {} but needs reboot, initiating one",
                 &endpoint.address
             );
-            if let Err(e) = redfish_client.power(SystemPowerControl::ForceRestart).await {
+            if let Err(e) = self
+                .redfish_platform
+                .set_power(bmc.clone(), PowerAction::ForceRestart)
+                .await
+            {
                 tracing::error!("Failed to reboot {}: {e}", &endpoint.address);
                 return Ok(());
             }
@@ -1131,7 +1134,11 @@ impl PreingestionManagerStatic {
                 "Upgrade task has completed for {} but needs BMC reboot, initiating one",
                 &endpoint.address
             );
-            if let Err(e) = redfish_client.bmc_reset().await {
+            if let Err(e) = self
+                .redfish_platform
+                .reset_bmc(bmc.clone(), BmcResetKind::GracefulRestart)
+                .await
+            {
                 tracing::error!("Failed to reboot {}: {e}", &endpoint.address);
                 return Ok(());
             }
@@ -1153,17 +1160,33 @@ impl PreingestionManagerStatic {
         {
             // Needs a host power reset
             // DGX models only had an "off", GB200 (and presumably later ones) has an actual AC powercycle.
-            let poweroff_style = if redfish_client.ac_powercycle_supported_by_power() {
-                SystemPowerControl::ACPowercycle
-            } else {
-                SystemPowerControl::ForceOff
-            };
-            if let Err(e) = redfish_client.power(poweroff_style).await {
-                tracing::error!("Failed to power off {}: {e}", &endpoint.address);
-                return Ok(());
+            match self
+                .redfish_platform
+                .set_power(bmc.clone(), PowerAction::AcPowerCycle)
+                .await
+            {
+                Ok(()) => {}
+                Err(RedfishError::NotSupported(_)) => {
+                    if let Err(e) = self
+                        .redfish_platform
+                        .set_power(bmc.clone(), PowerAction::ForceOff)
+                        .await
+                    {
+                        tracing::error!("Failed to power off {}: {e}", &endpoint.address);
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to power off {}: {e}", &endpoint.address);
+                    return Ok(());
+                }
             }
             tokio::time::sleep(self.config.hgx_bmc_gpu_reboot_delay).await;
-            if let Err(e) = redfish_client.power(SystemPowerControl::On).await {
+            if let Err(e) = self
+                .redfish_platform
+                .set_power(bmc.clone(), PowerAction::On)
+                .await
+            {
                 tracing::error!("Failed to power on {}: {e}", &endpoint.address);
                 return Ok(());
             }
@@ -1178,12 +1201,19 @@ impl PreingestionManagerStatic {
             .await??;
             return Ok(());
         } else if *upgrade_type == FirmwareComponentType::Cec {
-            match redfish_client
-                .chassis_reset("Bluefield_ERoT", SystemPowerControl::GracefulRestart)
+            match self
+                .redfish_platform
+                .reset_chassis(
+                    bmc.clone(),
+                    ChassisResetRequest {
+                        chassis_id: "Bluefield_ERoT".into(),
+                        kind: BmcResetKind::GracefulRestart,
+                    },
+                )
                 .await
             {
                 Ok(()) => {}
-                Err(e) if e.to_string().contains("is not supported") => {
+                Err(RedfishError::NotSupported(_)) => {
                     tracing::error!(
                         "Chassis reset is not supported by current CEC FW. Need to do host power cycle! BMC IP: {}",
                         endpoint.address
@@ -1353,12 +1383,8 @@ impl PreingestionManagerStatic {
     ) -> PreingestionManagerResult<bool> {
         match phase {
             InitialBmcResetPhase::Start { attempts } => {
-                let redfish_client = match self
-                    .redfish_client_pool
-                    .create_client_for_ingested_host(endpoint.address, db)
-                    .await
-                {
-                    Ok(client) => client,
+                let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+                    Ok(bmc) => bmc,
                     Err(e) => {
                         tracing::warn!(
                             "Redfish connection to {} failed: {e}; will retry initial bmc reset",
@@ -1367,7 +1393,11 @@ impl PreingestionManagerStatic {
                         return Ok(false);
                     }
                 };
-                if let Err(e) = redfish_client.bmc_reset().await {
+                if let Err(e) = self
+                    .redfish_platform
+                    .reset_bmc(bmc, BmcResetKind::GracefulRestart)
+                    .await
+                {
                     let next = attempts + 1;
                     if next >= INITIAL_BMC_RESET_MAX_ATTEMPTS {
                         tracing::warn!(
@@ -1409,12 +1439,8 @@ impl PreingestionManagerStatic {
                 Ok(false)
             }
             InitialBmcResetPhase::WaitForBmc => {
-                let redfish_client = match self
-                    .redfish_client_pool
-                    .create_client_for_ingested_host(endpoint.address, db)
-                    .await
-                {
-                    Ok(client) => client,
+                let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+                    Ok(bmc) => bmc,
                     Err(e) => {
                         tracing::warn!(
                             "Redfish connection to {} failed: {e}; will retry waiting for BMC",
@@ -1423,7 +1449,7 @@ impl PreingestionManagerStatic {
                         return Ok(false);
                     }
                 };
-                match redfish_client.get_service_root().await {
+                match self.redfish_platform.bmc_status(bmc).await {
                     Ok(_) => {
                         // BMC is back. Force a fresh exploration and wait for it
                         // before running checks, so pairing/ingestion reads the
@@ -1485,10 +1511,14 @@ impl PreingestionManagerStatic {
     /// Returns true if successful, false if any step failed
     async fn execute_power_off_and_bmc_reset(
         &self,
-        redfish_client: &dyn libredfish::Redfish,
+        bmc: &BmcRef,
         endpoint: &ExploredEndpoint,
     ) -> bool {
-        match redfish_client.power(SystemPowerControl::ForceOff).await {
+        match self
+            .redfish_platform
+            .set_power(bmc.clone(), PowerAction::ForceOff)
+            .await
+        {
             Ok(()) => {}
             Err(e) if matches!(e, RedfishError::UnnecessaryOperation) => {
                 // ignore because it is already off
@@ -1500,7 +1530,7 @@ impl PreingestionManagerStatic {
             }
         }
 
-        let status = match redfish_client.get_power_state().await {
+        let status = match self.redfish_platform.power_state(bmc.clone()).await {
             Ok(status) => status,
             Err(e) => {
                 tracing::warn!("Could not get power of {}: {e}", endpoint.address);
@@ -1511,7 +1541,11 @@ impl PreingestionManagerStatic {
             tracing::warn!("Host {} did not turn off when requested", endpoint.address);
             return false;
         }
-        if let Err(e) = redfish_client.bmc_reset().await {
+        if let Err(e) = self
+            .redfish_platform
+            .reset_bmc(bmc.clone(), BmcResetKind::GracefulRestart)
+            .await
+        {
             tracing::warn!("Could not reset BMC on {}: {e}", endpoint.address);
             return false;
         }
@@ -1520,12 +1554,8 @@ impl PreingestionManagerStatic {
 
     /// Helper: Wait for BMC reset and power on the host
     /// Returns true if successful, false if any step failed
-    async fn execute_wait_bmc_and_power_on(
-        &self,
-        redfish_client: &dyn libredfish::Redfish,
-        endpoint: &ExploredEndpoint,
-    ) -> bool {
-        if let Err(e) = redfish_client.get_tasks().await {
+    async fn execute_wait_bmc_and_power_on(&self, bmc: &BmcRef, endpoint: &ExploredEndpoint) -> bool {
+        if let Err(e) = self.redfish_platform.bmc_status(bmc.clone()).await {
             tracing::info!(
                 "Waiting for {} BMC reset to complete: {e}",
                 endpoint.address
@@ -1533,7 +1563,11 @@ impl PreingestionManagerStatic {
             return false;
         }
 
-        match redfish_client.power(SystemPowerControl::On).await {
+        match self
+            .redfish_platform
+            .set_power(bmc.clone(), PowerAction::On)
+            .await
+        {
             Ok(()) => {}
             Err(e) if matches!(e, RedfishError::UnnecessaryOperation) => {
                 // ignore because it is already on
@@ -1545,7 +1579,7 @@ impl PreingestionManagerStatic {
             }
         }
 
-        let status = match redfish_client.get_power_state().await {
+        let status = match self.redfish_platform.power_state(bmc.clone()).await {
             Ok(status) => status,
             Err(e) => {
                 tracing::warn!("Could not get power of {}: {e}", endpoint.address);
@@ -1582,12 +1616,8 @@ impl PreingestionManagerStatic {
         phase: Option<&InitialResetPhase>,
         last_time: Option<&DateTime<Utc>>,
     ) -> Result<(), DatabaseError> {
-        let redfish_client = match self
-            .redfish_client_pool
-            .create_client_for_ingested_host(endpoint.address, db)
-            .await
-        {
-            Ok(redfish_client) => redfish_client,
+        let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+            Ok(bmc) => bmc,
             Err(e) => {
                 tracing::warn!("Redfish connection to {} failed: {e}", endpoint.address);
                 return Ok(());
@@ -1596,10 +1626,7 @@ impl PreingestionManagerStatic {
 
         match phase.unwrap_or(&InitialResetPhase::Start) {
             InitialResetPhase::Start => {
-                if !self
-                    .execute_power_off_and_bmc_reset(redfish_client.as_ref(), endpoint)
-                    .await
-                {
+                if !self.execute_power_off_and_bmc_reset(&bmc, endpoint).await {
                     return Ok(());
                 }
                 tracing::info!("{} initial reset BMC reset intiated", endpoint.address);
@@ -1615,10 +1642,7 @@ impl PreingestionManagerStatic {
                 Ok(())
             }
             InitialResetPhase::BMCWasReset => {
-                if !self
-                    .execute_wait_bmc_and_power_on(redfish_client.as_ref(), endpoint)
-                    .await
-                {
+                if !self.execute_wait_bmc_and_power_on(&bmc, endpoint).await {
                     return Ok(());
                 }
                 tracing::info!(
@@ -1668,12 +1692,8 @@ impl PreingestionManagerStatic {
         // instead of going terminal on the first miss.
         const MAX_TIME_SYNC_RESET_ATTEMPTS: u32 = 3;
 
-        let redfish_client = match self
-            .redfish_client_pool
-            .create_client_for_ingested_host(endpoint.address, db)
-            .await
-        {
-            Ok(redfish_client) => redfish_client,
+        let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+            Ok(bmc) => bmc,
             Err(e) => {
                 tracing::warn!("Redfish connection to {} failed: {e}", endpoint.address);
                 return Ok(false);
@@ -1682,14 +1702,11 @@ impl PreingestionManagerStatic {
 
         match phase {
             TimeSyncResetPhase::Start => {
-                if let Err(e) = redfish_client.set_utc_timezone().await {
+                if let Err(e) = self.redfish_platform.set_bmc_time_utc(bmc.clone()).await {
                     tracing::error!("Could not set UTC timezone on {}: {e}", endpoint.address);
                     return Err(PreingestionManagerError::RedfishError(e));
                 }
-                if !self
-                    .execute_power_off_and_bmc_reset(redfish_client.as_ref(), endpoint)
-                    .await
-                {
+                if !self.execute_power_off_and_bmc_reset(&bmc, endpoint).await {
                     return Ok(false);
                 }
                 tracing::info!("{} time sync reset BMC reset initiated", endpoint.address);
@@ -1706,10 +1723,7 @@ impl PreingestionManagerStatic {
                 Ok(false)
             }
             TimeSyncResetPhase::BMCWasReset => {
-                if !self
-                    .execute_wait_bmc_and_power_on(redfish_client.as_ref(), endpoint)
-                    .await
-                {
+                if !self.execute_wait_bmc_and_power_on(&bmc, endpoint).await {
                     return Ok(false);
                 }
                 tracing::info!(
@@ -1978,25 +1992,28 @@ impl PreingestionManagerStatic {
         endpoint: &ExploredEndpoint,
     ) -> PreingestionManagerResult<bool> {
         tracing::debug!("Checking BMC time sync for {:?}", endpoint);
-        let redfish_client = match self
-            .redfish_client_pool
-            .create_client_for_ingested_host(endpoint.address, db)
-            .await
-        {
-            Ok(redfish_client) => redfish_client,
+        let bmc = match self.bmc_ref_for_ingested_host(endpoint.address, db).await {
+            Ok(bmc) => bmc,
             Err(e) => {
                 return Err(e);
             }
         };
 
         // Get the manager's DateTime from Redfish
-        let bmc_time = match redfish_client
-            .get_manager()
+        let bmc_time = match self
+            .redfish_platform
+            .bmc_status(bmc)
             .await
             .map_err(PreingestionManagerError::RedfishError)?
             .date_time
         {
-            Some(time) => time,
+            Some(time) => DateTime::parse_from_rfc3339(&time)
+                .map_err(|e| {
+                    PreingestionManagerError::internal(format!(
+                        "Failed to parse BMC time {time:?}: {e}"
+                    ))
+                })?
+                .with_timezone(&Utc),
             None => {
                 return Err(PreingestionManagerError::internal(
                     "Failed to get BMC time".to_string(),
@@ -2079,12 +2096,8 @@ impl PreingestionManagerStatic {
 
         match phase {
             BfbPlatformPowercyclePhase::PowerOff => {
-                let redfish_client = match self
-                    .redfish_client_pool
-                    .create_client_for_ingested_host(*host_bmc_ip, db)
-                    .await
-                {
-                    Ok(c) => c,
+                let bmc = match self.bmc_ref_for_ingested_host(*host_bmc_ip, db).await {
+                    Ok(bmc) => bmc,
                     Err(e) => {
                         tracing::error!(%address, host_ip=%host_bmc_ip, error=%e, "{label}: failed to create Redfish client for host, will retry");
                         return Ok(());
@@ -2092,7 +2105,11 @@ impl PreingestionManagerStatic {
                 };
 
                 tracing::info!(%address, host_ip=%host_bmc_ip, "{label}: powering off host");
-                if let Err(e) = redfish_client.power(SystemPowerControl::ForceOff).await {
+                if let Err(e) = self
+                    .redfish_platform
+                    .set_power(bmc, PowerAction::ForceOff)
+                    .await
+                {
                     tracing::error!(%address, host_ip=%host_bmc_ip, error=%e, "{label}: failed to power off host, will retry");
                     return Ok(());
                 }
@@ -2110,12 +2127,8 @@ impl PreingestionManagerStatic {
                 .await??;
             }
             BfbPlatformPowercyclePhase::PowerOn => {
-                let redfish_client = match self
-                    .redfish_client_pool
-                    .create_client_for_ingested_host(*host_bmc_ip, db)
-                    .await
-                {
-                    Ok(c) => c,
+                let bmc = match self.bmc_ref_for_ingested_host(*host_bmc_ip, db).await {
+                    Ok(bmc) => bmc,
                     Err(e) => {
                         tracing::error!(%address, host_ip=%host_bmc_ip, error=%e, "{label}: failed to create Redfish client for host, will retry");
                         return Ok(());
@@ -2123,7 +2136,11 @@ impl PreingestionManagerStatic {
                 };
 
                 tracing::info!(%address, host_ip=%host_bmc_ip, "{label}: powering on host");
-                if let Err(e) = redfish_client.power(SystemPowerControl::On).await {
+                if let Err(e) = self
+                    .redfish_platform
+                    .set_power(bmc, PowerAction::On)
+                    .await
+                {
                     tracing::error!(%address, host_ip=%host_bmc_ip, error=%e, "{label}: failed to power on host, will retry");
                     return Ok(());
                 }
@@ -2142,11 +2159,7 @@ impl PreingestionManagerStatic {
             }
             BfbPlatformPowercyclePhase::WaitingForDpuBmc => {
                 let dpu_addr = std::net::SocketAddr::new(address, 443);
-                match self
-                    .redfish_client_pool
-                    .probe_redfish_endpoint(dpu_addr)
-                    .await
-                {
+                match self.redfish_platform.probe_endpoint(dpu_addr).await {
                     Ok(()) if post_install => {
                         tracing::info!(%address, "DPU BMC online after post-install power-cycle, completing preingestion");
                         db.with_txn(|txn| {
@@ -2561,7 +2574,7 @@ fn need_upgrade(
 ///  on the next go.
 async fn initiate_update(
     endpoint_clone: &ExploredEndpoint,
-    redfish_client_pool: &Arc<dyn RedfishClientPool>,
+    redfish_platform: &Arc<dyn RedfishPlatformService>,
     to_install: &FirmwareEntry,
     firmware_type: &FirmwareComponentType,
     downloader: &FirmwareDownloader,
@@ -2584,12 +2597,9 @@ async fn initiate_update(
         return Ok(());
     }
 
-    // Setup the Redfish connection
-    let redfish_client = match redfish_client_pool
-        .create_client_for_ingested_host(endpoint_clone.address, db_pool)
-        .await
-    {
-        Ok(redfish_client) => redfish_client,
+    // Look up the BMC reference for the Redfish platform service
+    let bmc = match bmc_ref_for_ingested_host(endpoint_clone.address, db_pool).await {
+        Ok(bmc) => bmc,
         Err(e) => {
             tracing::debug!(
                 "Failed to open redfish to {}: {e}",
@@ -2603,14 +2613,13 @@ async fn initiate_update(
         "initiate_update: Started upload of firmware to {}",
         endpoint_clone.address
     );
-    let redfish_component_type: libredfish::model::update_service::ComponentType =
-        match to_install.install_only_specified {
-            false => libredfish::model::update_service::ComponentType::Unknown,
-            true => firmware_type.into_libredfish(),
-        };
+    let component_hint = match to_install.install_only_specified {
+        false => None,
+        true => Some(firmware_type.to_string()),
+    };
     let task = if to_install.get_filename(firmware_number).ends_with("bfb") {
-        let _ = redfish_client
-            .enable_rshim_bmc()
+        let _ = redfish_platform
+            .set_host_rshim(bmc.clone(), true)
             .await
             .map_err(|e| tracing::error!("initiate_update: Failed to call enable_rshim_bmc: {e}"));
         let image_uri = format!(
@@ -2622,15 +2631,32 @@ async fn initiate_update(
             "initiate_update: Using simple_update with image URI: {}",
             image_uri
         );
-        match redfish_client
-            .update_firmware_simple_update(
-                image_uri.as_str(),
-                vec!["redfish/v1/UpdateService/FirmwareInventory/DPU_OS".to_string()],
-                TransferProtocolType::HTTP,
+        match redfish_platform
+            .start_update(
+                bmc.clone(),
+                FirmwareUpdateRequest {
+                    source: FirmwareSource::RemoteUri {
+                        uri: image_uri.clone(),
+                        protocol: Some(FirmwareTransferProtocol::Http),
+                    },
+                    targets: vec![
+                        "redfish/v1/UpdateService/FirmwareInventory/DPU_OS".to_string(),
+                    ],
+                    preserve_config: false,
+                    component_hint: None,
+                    upload_timeout_secs: None,
+                },
             )
             .await
         {
-            Ok(task) => task.id,
+            Ok(Some(job)) => job.id,
+            Ok(None) => {
+                tracing::error!(
+                    "initiate_update: Firmware update on {} returned no task to poll",
+                    endpoint_clone.address
+                );
+                return Ok(());
+            }
             Err(e) => {
                 tracing::error!(
                     "initiate_update: Failed to call update_firmware_simple_update {}: {e}",
@@ -2640,38 +2666,35 @@ async fn initiate_update(
             }
         }
     } else {
-        match redfish_client
-            .update_firmware_multipart(
-                to_install.get_filename(firmware_number).as_path(),
-                true,
-                Duration::from_secs(120),
-                redfish_component_type,
+        match redfish_platform
+            .start_update(
+                bmc.clone(),
+                FirmwareUpdateRequest {
+                    source: FirmwareSource::LocalFile {
+                        path: to_install
+                            .get_filename(firmware_number)
+                            .display()
+                            .to_string(),
+                    },
+                    targets: Vec::new(),
+                    preserve_config: true,
+                    component_hint,
+                    upload_timeout_secs: Some(120),
+                },
             )
             .await
         {
-            Ok(task) => task,
-            Err(RedfishError::NotSupported(err)) => {
-                tracing::warn!(
-                    "Multipart update is not supported: {err}. Trying to use HttpPushUri"
+            Ok(Some(job)) => job.id,
+            Ok(None) => {
+                tracing::error!(
+                    "initiate_update: Firmware update on {} returned no task to poll",
+                    endpoint_clone.address
                 );
-                let file =
-                    match File::open(to_install.get_filename(firmware_number).as_path()).await {
-                        Ok(f) => f,
-                        Err(e) => {
-                            tracing::error!("Failed to open a file: {e}");
-                            return Ok(());
-                        }
-                    };
-                match redfish_client.update_firmware(file).await {
-                    Ok(task) => task.id,
-                    Err(e) => {
-                        tracing::error!(
-                            "initiate_update: Failed uploading firmware to {}: {e}",
-                            endpoint_clone.address
-                        );
-                        return Ok(());
-                    }
-                }
+                return Ok(());
+            }
+            Err(RedfishError::NotSupported(err)) => {
+                tracing::warn!("Firmware update is not supported: {err}");
+                return Ok(());
             }
             Err(e) => {
                 tracing::warn!(
@@ -2705,30 +2728,17 @@ async fn initiate_update(
     Ok(())
 }
 
-trait CreateClientForIngestedHost {
-    async fn create_client_for_ingested_host(
-        &self,
-        ip: IpAddr,
-        db_pool: &PgPool,
-    ) -> PreingestionManagerResult<Box<dyn Redfish>>;
-}
+/// bmc_ref_for_ingested_host looks up the BMC access info for the given IP and builds a
+/// [`BmcRef`] for it. No explicit credentials are attached: the Redfish platform runtime
+/// resolves them itself from the BMC MAC address via its credential provider.
+async fn bmc_ref_for_ingested_host(
+    ip: IpAddr,
+    db_pool: &PgPool,
+) -> PreingestionManagerResult<BmcRef> {
+    let bmc_access_info = db::machine_interface::lookup_bmc_access_info(db_pool, ip, None).await?;
 
-impl CreateClientForIngestedHost for Arc<dyn RedfishClientPool> {
-    async fn create_client_for_ingested_host(
-        &self,
-        ip: IpAddr,
-        db_pool: &PgPool,
-    ) -> PreingestionManagerResult<Box<dyn Redfish>> {
-        let bmc_access_info =
-            db::machine_interface::lookup_bmc_access_info(db_pool, ip, None).await?;
-
-        self.client_by_info(&bmc_access_info)
-            .await
-            .map_err(|e| match e {
-                RedfishClientCreationError::RedfishError(e) => {
-                    PreingestionManagerError::RedfishError(e)
-                }
-                _ => PreingestionManagerError::internal(format!("{e}")),
-            })
-    }
+    let address = std::net::SocketAddr::new(ip, bmc_access_info.port.unwrap_or(443));
+    let mut bmc = BmcRef::new(address, BmcEndpointKind::HostBmc);
+    bmc.mac_address = Some(bmc_access_info.mac_address);
+    Ok(bmc)
 }

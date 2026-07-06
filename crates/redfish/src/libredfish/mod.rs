@@ -329,7 +329,7 @@ pub fn redact_password(err: libredfish::RedfishError, password: &str) -> libredf
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 mod tests {
     use libredfish::PowerState;
 

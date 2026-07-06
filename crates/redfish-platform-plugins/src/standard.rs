@@ -28,8 +28,8 @@
 use async_trait::async_trait;
 use carbide_redfish_platform_api::RedfishError;
 use carbide_redfish_platform_api::model::{
-    BmcResetKind, BmcStatus, MatchSpecificity, PlatformIdentity, PlatformMetadata, PluginId,
-    PowerAction, PowerState, SupportLevel,
+    BmcResetKind, BmcStatus, ChassisResetRequest, MatchSpecificity, PlatformIdentity,
+    PlatformMetadata, PluginId, PowerAction, PowerState, SupportLevel,
 };
 use carbide_redfish_platform_api::ops::PlatformExecutionContext;
 use carbide_redfish_platform_api::plugin::{BmcResetCap, HostPowerCap, PlatformPlugin};
@@ -118,10 +118,11 @@ impl BmcResetCap for StandardBmcResetCap {
         &self,
         ctx: &PlatformExecutionContext<'_>,
     ) -> Result<BmcStatus, RedfishError> {
-        let firmware_version = providers::standard_manager_firmware(ctx).await?;
+        let (firmware_version, date_time) = providers::standard_manager_status(ctx).await?;
         Ok(BmcStatus {
             ready: true,
             firmware_version,
+            date_time,
         })
     }
 
@@ -140,6 +141,30 @@ impl BmcResetCap for StandardBmcResetCap {
             }
         };
         providers::standard_reset_bmc(ctx, reset_type).await
+    }
+
+    async fn reset_chassis(
+        &self,
+        ctx: &PlatformExecutionContext<'_>,
+        req: ChassisResetRequest,
+    ) -> Result<(), RedfishError> {
+        let reset_type = match req.kind {
+            BmcResetKind::GracefulRestart => "GracefulRestart",
+            BmcResetKind::ForceRestart => "ForceRestart",
+            BmcResetKind::ResetToDefaults => {
+                return Err(RedfishError::not_supported(
+                    "ResetToDefaults is not a chassis reset",
+                ));
+            }
+        };
+        providers::standard_chassis_reset(ctx, &req.chassis_id, reset_type).await
+    }
+
+    async fn set_bmc_time_utc(
+        &self,
+        ctx: &PlatformExecutionContext<'_>,
+    ) -> Result<(), RedfishError> {
+        providers::standard_set_bmc_time_utc(ctx).await
     }
 }
 

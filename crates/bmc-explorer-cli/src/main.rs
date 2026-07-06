@@ -103,7 +103,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let rotate_switch_nvos_credentials = Default::default();
 
+    // Platform service resolving every BMC to the CLI-provided credentials.
+    struct CliCredentials(carbide_redfish_platform_runtime::BmcCredentials);
+    #[async_trait::async_trait]
+    impl carbide_redfish_platform_runtime::BmcCredentialProvider for CliCredentials {
+        async fn credentials_for(
+            &self,
+            _bmc: &carbide_redfish_platform_api::model::BmcRef,
+        ) -> Result<
+            carbide_redfish_platform_runtime::BmcCredentials,
+            carbide_redfish_platform_api::RedfishError,
+        > {
+            Ok(self.0.clone())
+        }
+    }
+    let Credentials::UsernamePassword { username, password } = fallback_credentials.clone();
+    let platform = carbide_redfish_platform_runtime::build_runtime(Arc::new(CliCredentials(
+        carbide_redfish_platform_runtime::BmcCredentials::new(username, password),
+    )));
+
     let explorer = BmcEndpointExplorer::new(
+        platform,
         redfish_client_pool,
         Arc::new(NvRedfishClientPool::new(proxy_address)),
         carbide_ipmi::test_support(),

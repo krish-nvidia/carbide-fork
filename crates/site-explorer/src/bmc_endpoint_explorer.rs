@@ -24,8 +24,8 @@ use std::time::Duration;
 use carbide_ipmi::IPMITool;
 use carbide_redfish::boot_interface::BootInterfaceTarget;
 use carbide_redfish::libredfish::RedfishClientPool;
-use carbide_redfish::libredfish::conv::IntoLibredfish;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
+use carbide_redfish_platform_api::service::RedfishPlatformService;
 use carbide_secrets::credentials::{CredentialManager, Credentials};
 use libredfish::model::service_root::RedfishVendor;
 use mac_address::MacAddress;
@@ -55,6 +55,7 @@ pub struct BmcEndpointExplorer {
 
 impl BmcEndpointExplorer {
     pub fn new(
+        platform: Arc<dyn RedfishPlatformService>,
         redfish_client_pool: Arc<dyn RedfishClientPool>,
         nv_redfish_client_pool: Arc<NvRedfishClientPool>,
         ipmi_tool: Arc<dyn IPMITool>,
@@ -63,7 +64,7 @@ impl BmcEndpointExplorer {
         mode: SiteExplorerExploreMode,
     ) -> Self {
         Self {
-            redfish_client: RedfishClient::new(redfish_client_pool, nv_redfish_client_pool),
+            redfish_client: RedfishClient::new(platform, redfish_client_pool, nv_redfish_client_pool),
             ipmi_tool,
             credential_client: CredentialClient::new(credential_manager),
             rotate_switch_nvos_credentials,
@@ -221,6 +222,8 @@ impl BmcEndpointExplorer {
                     "Expected entity for {bmc_mac_address} has no BMC password configured"
                 ),
             });
+
+            
         }
 
         let current_bmc_credentials = Credentials::UsernamePassword {
@@ -360,10 +363,13 @@ impl BmcEndpointExplorer {
         &self,
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
-        boot_interface: Option<&BootInterfaceTarget>,
+        // Unused since the platform-service migration: the selected plugin
+        // owns boot-interface resolution. Kept so the `EndpointExplorer`
+        // trait stays source-compatible.
+        _boot_interface: Option<&BootInterfaceTarget>,
     ) -> Result<(), EndpointExplorationError> {
         self.redfish_client
-            .machine_setup(bmc_ip_address, credentials, boot_interface)
+            .machine_setup(bmc_ip_address, credentials)
             .await
     }
 
@@ -371,10 +377,13 @@ impl BmcEndpointExplorer {
         &self,
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
-        boot_interface: &BootInterfaceTarget,
+        // Unused since the platform-service migration: the selected plugin
+        // resolves the DPU NIC. Kept so the `EndpointExplorer` trait stays
+        // source-compatible.
+        _boot_interface: &BootInterfaceTarget,
     ) -> Result<(), EndpointExplorationError> {
         self.redfish_client
-            .set_boot_order_dpu_first(bmc_ip_address, credentials, boot_interface)
+            .set_boot_order_dpu_first(bmc_ip_address, credentials)
             .await
     }
 
@@ -385,7 +394,7 @@ impl BmcEndpointExplorer {
         mode: NicMode,
     ) -> Result<(), EndpointExplorationError> {
         self.redfish_client
-            .set_nic_mode(bmc_ip_address, credentials, mode.into_libredfish())
+            .set_nic_mode(bmc_ip_address, credentials, mode)
             .await
     }
 

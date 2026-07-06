@@ -450,7 +450,13 @@ pub async fn start_api(
         carbide_config.allow_bmc_basic_auth_fallback,
     ));
 
+    // Platform service for site-explorer's Redfish mutations (exploration
+    // report reads stay on the legacy pools). Stateless per call, so building
+    // a second instance for the controllers later is fine.
+    let bmc_explorer_platform =
+        crate::redfish_platform::build_platform_service(credential_manager.clone());
     let bmc_explorer = carbide_site_explorer::new_bmc_explorer(
+        bmc_explorer_platform,
         shared_redfish_pool.clone(),
         shared_nv_redfish_pool,
         ipmi_tool.clone(),
@@ -1414,7 +1420,7 @@ async fn initialize_and_start_controllers<'a>(
     PreingestionManager::new(
         db_pool.clone(),
         carbide_config.preingestion_manager(),
-        shared_redfish_pool.clone(),
+        redfish_platform.clone(),
         meter.clone(),
         Some(downloader.clone()),
         Some(upload_limiter),

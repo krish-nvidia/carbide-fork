@@ -50,6 +50,37 @@ pub enum BmcEndpointKind {
     Unknown,
 }
 
+/// BMC login credentials, passed explicitly by callers that own credential
+/// selection (site exploration's credential ladder, password rotation) instead
+/// of the runtime's provider lookup.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BmcCredentials {
+    /// BMC username.
+    pub username: String,
+    /// BMC password.
+    pub password: String,
+}
+
+impl BmcCredentials {
+    /// Construct credentials.
+    pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
+        Self {
+            username: username.into(),
+            password: password.into(),
+        }
+    }
+}
+
+// Manual impl: never leak the password through logs/errors.
+impl std::fmt::Debug for BmcCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BmcCredentials")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Everything the runtime needs to resolve and reach one BMC. Carries no
 /// database handles or controller state.
 #[derive(Debug, Clone)]
@@ -63,6 +94,11 @@ pub struct BmcRef {
     pub address: SocketAddr,
     /// BMC MAC, used as the credential lookup key (as today).
     pub mac_address: Option<MacAddress>,
+    /// Explicit login credentials. When set, the runtime uses these verbatim
+    /// and skips its credential provider. Used by callers that own credential
+    /// selection: site exploration's expected/factory-default ladder and
+    /// password rotation (which must log in with the *current* password).
+    pub credentials: Option<BmcCredentials>,
     /// What kind of BMC this is.
     pub endpoint_kind: BmcEndpointKind,
     /// Advisory plugin hint, typically the plugin id stored for this endpoint
@@ -81,9 +117,16 @@ impl BmcRef {
             site_id: None,
             address,
             mac_address: None,
+            credentials: None,
             endpoint_kind,
             platform_hint: None,
         }
+    }
+
+    /// Attach explicit credentials, bypassing the runtime's provider.
+    pub fn with_credentials(mut self, credentials: BmcCredentials) -> Self {
+        self.credentials = Some(credentials);
+        self
     }
 }
 
@@ -278,6 +321,8 @@ pub enum PowerAction {
     GracefulRestart,
     /// Hard reset.
     ForceRestart,
+    /// Power cycle (off-then-on as one action).
+    PowerCycle,
     /// Full AC power cycle (vendor-gated).
     AcPowerCycle,
 }
@@ -315,6 +360,19 @@ pub struct BmcStatus {
     pub ready: bool,
     /// Manager firmware version, if known.
     pub firmware_version: Option<String>,
+    /// The manager's current clock (`Manager.DateTime`, RFC 3339), if reported.
+    /// Used by preingestion's NTP-drift check.
+    pub date_time: Option<String>,
+}
+
+/// Request to reset a chassis sub-resource (e.g. the BlueField ERoT chassis
+/// after a CEC firmware update).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChassisResetRequest {
+    /// Chassis member id (e.g. "Bluefield_ERoT").
+    pub chassis_id: String,
+    /// Graceful or forced restart. `ResetToDefaults` is not valid for chassis.
+    pub kind: BmcResetKind,
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +428,8 @@ pub struct BootOrderRequest {
 pub struct BootOrderStatus {
     /// Whether the DPU/network device is first in boot order.
     pub dpu_first: bool,
+    /// Whether infinite boot retry is enabled, when the platform reports it.
+    pub infinite_boot: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -469,15 +529,48 @@ pub struct DpuNicModeStatus {
 // Firmware
 // ---------------------------------------------------------------------------
 
+/// Transfer protocol for a remote firmware image URI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirmwareTransferProtocol {
+    /// Plain HTTP.
+    Http,
+    /// HTTPS.
+    Https,
+}
+
+/// Where the firmware image comes from. The plugin owns the vendor upload
+/// mechanics (SimpleUpdate vs multipart vs HttpPushUri).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirmwareSource {
+    /// A remote image URI the BMC pulls (Redfish `SimpleUpdate`).
+    RemoteUri {
+        /// Image URI.
+        uri: String,
+        /// Transfer protocol, when the BMC needs it stated explicitly.
+        protocol: Option<FirmwareTransferProtocol>,
+    },
+    /// A local file NICo pushes to the BMC. The plugin picks multipart vs
+    /// `HttpPushUri` per its write policy.
+    LocalFile {
+        /// Path to the image on the calling host.
+        path: String,
+    },
+}
+
 /// Request to start a firmware update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareUpdateRequest {
-    /// URI or local path to the firmware image.
-    pub image_uri: String,
+    /// Where the image comes from.
+    pub source: FirmwareSource,
     /// Optional target component ids (vendor-specific).
     pub targets: Vec<String>,
     /// Whether to preserve existing configuration where supported.
     pub preserve_config: bool,
+    /// Component being updated (e.g. "BMC", "UEFI", "CEC"), used by plugins
+    /// that map components to upload targets or parameters.
+    pub component_hint: Option<String>,
+    /// Upload timeout override in seconds for pushed images.
+    pub upload_timeout_secs: Option<u64>,
 }
 
 /// A single firmware component and its version.

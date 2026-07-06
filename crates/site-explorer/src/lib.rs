@@ -90,6 +90,7 @@ use std::sync::atomic::AtomicBool;
 use carbide_ipmi::IPMITool;
 use carbide_redfish::libredfish::RedfishClientPool;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
+use carbide_redfish_platform_api::service::RedfishPlatformService;
 use errors::{SiteExplorerError, SiteExplorerResult};
 
 use self::metrics::{PairingBlockerReason, exploration_error_to_metric_label};
@@ -97,6 +98,7 @@ use crate::config::SiteExplorerExploreMode;
 use crate::explored_endpoint_index::ExploredEndpointIndex;
 
 pub fn new_bmc_explorer(
+    platform: Arc<dyn RedfishPlatformService>,
     redfish_client_pool: Arc<dyn RedfishClientPool>,
     nv_redfish_client_pool: Arc<NvRedfishClientPool>,
     ipmi_tool: Arc<dyn IPMITool>,
@@ -105,6 +107,7 @@ pub fn new_bmc_explorer(
     mode: SiteExplorerExploreMode,
 ) -> Arc<BmcEndpointExplorer> {
     BmcEndpointExplorer::new(
+        platform,
         redfish_client_pool,
         nv_redfish_client_pool,
         ipmi_tool,

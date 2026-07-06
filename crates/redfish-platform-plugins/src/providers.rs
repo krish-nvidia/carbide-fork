@@ -38,8 +38,50 @@ pub fn reset_type(action: PowerAction) -> Option<&'static str> {
         PowerAction::ForceOff => "ForceOff",
         PowerAction::GracefulRestart => "GracefulRestart",
         PowerAction::ForceRestart => "ForceRestart",
+        PowerAction::PowerCycle => "PowerCycle",
         PowerAction::AcPowerCycle => return None,
     })
+}
+
+/// Standard `Chassis.Reset` on a chassis member.
+pub async fn standard_chassis_reset(
+    ctx: &PlatformExecutionContext<'_>,
+    chassis_id: &str,
+    reset_type: &str,
+) -> Result<(), RedfishError> {
+    let target = format!("/redfish/v1/Chassis/{chassis_id}/Actions/Chassis.Reset");
+    ctx.ops()
+        .post_action(&target, json!({ "ResetType": reset_type }))
+        .await?;
+    Ok(())
+}
+
+/// Set the canonical manager's timezone offset to UTC.
+pub async fn standard_set_bmc_time_utc(
+    ctx: &PlatformExecutionContext<'_>,
+) -> Result<(), RedfishError> {
+    let manager_path = ctx.ops().manager_path().await?;
+    ctx.ops()
+        .patch(&manager_path, json!({ "DateTimeLocalOffset": "+00:00" }))
+        .await?;
+    Ok(())
+}
+
+/// Read the canonical manager's firmware version and clock in one GET.
+pub async fn standard_manager_status(
+    ctx: &PlatformExecutionContext<'_>,
+) -> Result<(Option<String>, Option<String>), RedfishError> {
+    let manager_path = ctx.ops().manager_path().await?;
+    let manager = ctx.ops().get(&manager_path).await?;
+    let firmware = manager
+        .get("FirmwareVersion")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let date_time = manager
+        .get("DateTime")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    Ok((firmware, date_time))
 }
 
 /// Read host power state via the canonical system.

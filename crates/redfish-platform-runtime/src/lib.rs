@@ -58,14 +58,9 @@ pub fn select_plugin_id(identity: &PlatformIdentity) -> Option<PluginId> {
         .map(|(plugin, _)| plugin.metadata().id.clone())
 }
 
-/// Resolved BMC login credentials.
-#[derive(Debug, Clone)]
-pub struct BmcCredentials {
-    /// BMC username.
-    pub username: String,
-    /// BMC password.
-    pub password: String,
-}
+// The credential DTO lives in the API crate (callers attach it to `BmcRef`);
+// re-exported here for the provider implementations the binary writes.
+pub use carbide_redfish_platform_api::model::BmcCredentials;
 
 /// Resolves BMC credentials for a [`BmcRef`]. Implemented by the binary,
 /// typically by adapting `carbide_secrets::CredentialReader` keyed by the BMC

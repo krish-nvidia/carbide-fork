@@ -24,13 +24,16 @@
 
 use async_trait::async_trait;
 
+use std::net::SocketAddr;
+
 use crate::error::RedfishError;
 use crate::model::{
     BmcAccountPolicyRequest, BmcDeleteUserRequest, BmcPasswordRequest, BmcRef, BmcResetKind,
     BmcStatus, BmcUserRequest, BootOrderRequest, BootOrderStatus, BossController,
-    CreateVolumeRequest, DecommissionRequest, DpuNicMode, DpuNicModeStatus, FirmwareInventory,
-    FirmwareUpdateRequest, JobHandle, JobState, LockdownStatus, MachineSetupRequest,
-    MachineSetupStatus, PowerAction, PowerState, SecureBootStatus, SelectedPlatform,
+    ChassisResetRequest, CreateVolumeRequest, DecommissionRequest, DpuNicMode, DpuNicModeStatus,
+    FirmwareInventory, FirmwareUpdateRequest, JobHandle, JobState, LockdownStatus,
+    MachineSetupRequest, MachineSetupStatus, PowerAction, PowerState, SecureBootStatus,
+    SelectedPlatform,
 };
 
 /// Plugin selection / introspection.
@@ -38,6 +41,11 @@ use crate::model::{
 pub trait PlatformSelection: Send + Sync {
     /// Resolve which plugin handles this BMC (read-only; for logging/branching).
     async fn selected_platform(&self, bmc: BmcRef) -> Result<SelectedPlatform, RedfishError>;
+
+    /// Anonymous reachability probe: is a Redfish service root responding at
+    /// this address? Needs no credentials; used to wait out BMC reboots (e.g.
+    /// a DPU BMC coming back during BFB recovery).
+    async fn probe_endpoint(&self, address: SocketAddr) -> Result<(), RedfishError>;
 }
 
 /// Host power control.
@@ -62,6 +70,14 @@ pub trait BmcResetOps: Send + Sync {
 
     /// Reset the BMC/manager.
     async fn reset_bmc(&self, bmc: BmcRef, kind: BmcResetKind) -> Result<(), RedfishError>;
+
+    /// Reset a chassis sub-resource (e.g. the BlueField ERoT after a CEC
+    /// firmware update).
+    async fn reset_chassis(&self, bmc: BmcRef, req: ChassisResetRequest)
+    -> Result<(), RedfishError>;
+
+    /// Set the manager clock/timezone to UTC (preingestion time-sync).
+    async fn set_bmc_time_utc(&self, bmc: BmcRef) -> Result<(), RedfishError>;
 }
 
 /// Machine/BIOS setup, NVRAM clear, and the UEFI/BIOS setup password.

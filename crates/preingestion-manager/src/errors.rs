@@ -21,8 +21,8 @@ use db::DatabaseError;
 pub enum PreingestionManagerError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] DatabaseError),
-    #[error("Error in libredfish: {0}")]
-    RedfishError(#[from] libredfish::RedfishError),
+    #[error("Redfish error: {0}")]
+    RedfishError(#[from] carbide_redfish_platform_api::RedfishError),
     #[error("Argument is invalid: {0}")]
     InvalidArgument(String),
     #[error("Internal error: {message}")]

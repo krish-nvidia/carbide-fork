@@ -26,10 +26,10 @@ use carbide_redfish_platform_api::error::RedfishError;
 use carbide_redfish_platform_api::model::{
     BmcAccountPolicyRequest, BmcDeleteUserRequest, BmcPasswordRequest, BmcRef, BmcResetKind,
     BmcStatus, BmcUserRequest, BootOrderRequest, BootOrderStatus, BossController,
-    CreateVolumeRequest, DecommissionRequest, DpuNicMode, DpuNicModeStatus, FirmwareInventory,
-    FirmwareUpdateRequest, JobHandle, JobState, LockdownStatus, MachineSetupRequest,
-    MachineSetupStatus, MatchSpecificity, PlatformIdentity, PowerAction, PowerState,
-    ResetTransport, SecureBootStatus, SelectedPlatform,
+    ChassisResetRequest, CreateVolumeRequest, DecommissionRequest, DpuNicMode, DpuNicModeStatus,
+    FirmwareInventory, FirmwareUpdateRequest, JobHandle, JobState, LockdownStatus,
+    MachineSetupRequest, MachineSetupStatus, MatchSpecificity, PlatformIdentity, PowerAction,
+    PowerState, ResetTransport, SecureBootStatus, SelectedPlatform,
 };
 use carbide_redfish_platform_api::ops::PlatformExecutionContext;
 use carbide_redfish_platform_api::plugin::PlatformPlugin;
@@ -81,7 +81,13 @@ impl RedfishPlatformRuntime {
     /// Resolve credentials, connect, gather identity, and select the plugin --
     /// the full per-call preparation.
     async fn prepare(&self, bmc: &BmcRef) -> Result<Prepared, RedfishError> {
-        let creds = self.credentials.credentials_for(bmc).await?;
+        // Callers that own credential selection (exploration ladder, password
+        // rotation) attach credentials to the BmcRef; otherwise use the
+        // provider (BMC MAC -> vault, as today).
+        let creds = match &bmc.credentials {
+            Some(creds) => creds.clone(),
+            None => self.credentials.credentials_for(bmc).await?,
+        };
         let ops =
             NvRedfishOps::connect(bmc.address, creds.username, creds.password, self.auth_mode)
                 .await?;
@@ -156,6 +162,10 @@ impl PlatformSelection for RedfishPlatformRuntime {
         let prepared = self.prepare(&bmc).await?;
         Ok(selected_platform(&prepared))
     }
+
+    async fn probe_endpoint(&self, address: std::net::SocketAddr) -> Result<(), RedfishError> {
+        NvRedfishOps::probe(address).await
+    }
 }
 
 #[async_trait]
@@ -188,6 +198,24 @@ impl BmcResetOps for RedfishPlatformRuntime {
         let prepared = self.prepare(&bmc).await?;
         cap!(prepared, bmc_reset, "bmc reset")
             .reset_bmc(&prepared.ctx(), kind)
+            .await
+    }
+
+    async fn reset_chassis(
+        &self,
+        bmc: BmcRef,
+        req: ChassisResetRequest,
+    ) -> Result<(), RedfishError> {
+        let prepared = self.prepare(&bmc).await?;
+        cap!(prepared, bmc_reset, "bmc reset")
+            .reset_chassis(&prepared.ctx(), req)
+            .await
+    }
+
+    async fn set_bmc_time_utc(&self, bmc: BmcRef) -> Result<(), RedfishError> {
+        let prepared = self.prepare(&bmc).await?;
+        cap!(prepared, bmc_reset, "bmc reset")
+            .set_bmc_time_utc(&prepared.ctx())
             .await
     }
 }

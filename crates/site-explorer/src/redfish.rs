@@ -22,16 +22,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use carbide_network::deserialize_input_mac_to_address;
-use carbide_redfish::boot_interface::BootInterfaceTarget;
 use carbide_redfish::libredfish::conv::{IntoModel, bmc_vendor};
 use carbide_redfish::libredfish::dpu_bios::is_dpu_bios_attributes_not_ready;
-use carbide_redfish::libredfish::{
-    RedfishAuth, RedfishClientCreationError, RedfishClientPool, redact_password,
-};
+use carbide_redfish::libredfish::{RedfishAuth, RedfishClientCreationError, RedfishClientPool};
 use carbide_redfish::nv_redfish::{NvRedfishClientPool, ServiceRoot};
-use carbide_redfish_platform_api::model::PlatformIdentity;
+use carbide_redfish_platform_api::RedfishError as PlatformRedfishError;
+use carbide_redfish_platform_api::model::{
+    BmcAccountPolicyRequest, BmcCredentials, BmcDeleteUserRequest, BmcEndpointKind,
+    BmcPasswordRequest, BmcRef, BmcResetKind, BmcUserRequest, BootOrderRequest, DpuNicMode,
+    MachineSetupRequest, PlatformIdentity, PowerAction,
+};
+use carbide_redfish_platform_api::service::RedfishPlatformService;
 use carbide_secrets::credentials::Credentials;
-use libredfish::model::oem::nvidia_dpu::NicMode;
 use libredfish::model::service_root::RedfishVendor;
 use libredfish::{BootInterfaceRef, Redfish, RedfishError};
 use mac_address::MacAddress;
@@ -39,7 +41,7 @@ use model::site_explorer::{
     BootOption, BootOrder, Chassis, ComputerSystem, ComputerSystemAttributes,
     EndpointExplorationError, EndpointExplorationReport, EndpointType, EthernetInterface,
     InternalLockdownStatus, Inventory, LockdownStatus, MachineSetupDiff, MachineSetupStatus,
-    Manager, NetworkAdapter, PCIeDevice, SecureBootStatus, Service, UefiDevicePath,
+    Manager, NetworkAdapter, NicMode, PCIeDevice, SecureBootStatus, Service, UefiDevicePath,
 };
 use regex::Regex;
 
@@ -74,19 +76,34 @@ fn select_platform_plugin_id(
 // TODO: In the future, we should refactor a lot of this client's work to api/src/redfish.rs because other components in carbide can utilize this functionality.
 // Eventually, this file should only have code related to generating the site exploration report.
 pub struct RedfishClient {
+    // Mutations (power, lockdown, accounts, ...) go through the platform
+    // service; the legacy pools below remain only for read-only exploration
+    // and report generation.
+    platform: Arc<dyn RedfishPlatformService>,
     redfish_client_pool: Arc<dyn RedfishClientPool>,
     nv_redfish_client_pool: Arc<NvRedfishClientPool>,
 }
 
 impl RedfishClient {
     pub fn new(
+        platform: Arc<dyn RedfishPlatformService>,
         redfish_client_pool: Arc<dyn RedfishClientPool>,
         nv_redfish_client_pool: Arc<NvRedfishClientPool>,
     ) -> Self {
         Self {
+            platform,
             redfish_client_pool,
             nv_redfish_client_pool,
         }
+    }
+
+    /// Build a [`BmcRef`] for a platform-service call, attaching the explicit
+    /// credentials site-explorer selected (it owns the vault/factory credential
+    /// ladder, so the runtime's credential provider is always bypassed).
+    fn bmc_ref(bmc_ip_address: SocketAddr, credentials: &Credentials) -> BmcRef {
+        let Credentials::UsernamePassword { username, password } = credentials;
+        BmcRef::new(bmc_ip_address, BmcEndpointKind::Unknown)
+            .with_credentials(BmcCredentials::new(username.clone(), password.clone()))
     }
 
     async fn create_redfish_client(
@@ -190,119 +207,54 @@ impl RedfishClient {
         current_bmc_root_credentials: Credentials,
         new_password: String,
     ) -> Result<(), EndpointExplorationError> {
-        let (curr_user, curr_password) = match &current_bmc_root_credentials {
-            Credentials::UsernamePassword { username, password } => (username, password),
-        };
-        // We're about to PATCH /AccountService to rotate the BMC password.
-        // That's the only Redfish endpoint we need at this stage, so use an
-        // uninitialized "Unknown" client to skip libredfish's full init
-        // path (which fetches /Systems, /Managers, /Chassis up front).
-        //
-        // Those fetches are unnecessary here, and they actively break
-        // rotation on factory BMCs that refuse reads until the password
-        // has been changed. Notably, NVIDIA GBx00 in factory state
-        // authenticates the supplied creds just fine, but returns HTTP 403
-        // with "Base.1.18.1.PasswordChangeRequired" on /Systems -- so if
-        // we let libredfish initialize first, we never reach the PATCH
-        // that would actually unblock us.
-        //
-        // The vendor-specific client is created below, *after* the rotation
-        // has succeeded, so set_machine_password_policy gets the right
-        // vendor impl (e.g. Lite-On's, which omits
-        // AccountLockoutCounterResetAfter).
-        let client = self
-            .create_direct_redfish_client(
-                bmc_ip_address,
-                current_bmc_root_credentials.clone(),
-                Some(RedfishVendor::Unknown),
+        let Credentials::UsernamePassword {
+            username: curr_user,
+            password: curr_password,
+        } = &current_bmc_root_credentials;
+
+        // Rotate the password with the CURRENT credentials attached. Which
+        // account gets PATCHed (by id "1"/"2", by current user, by name) is
+        // plugin policy now. The platform runtime gathers identity from the
+        // service root only and tolerates HTTP 403 PasswordChangeRequired on
+        // /Systems, so factory-state BMCs (e.g. NVIDIA GBx00) still select a
+        // plugin -- this replaces the old deliberate `RedfishVendor::Unknown`
+        // uninitialized-client trick that skipped libredfish's full init.
+        let bmc = Self::bmc_ref(bmc_ip_address, &current_bmc_root_credentials);
+        self.platform
+            .change_password(
+                bmc,
+                BmcPasswordRequest {
+                    username: curr_user.clone(),
+                    new_password: new_password.clone(),
+                },
             )
             .await
-            .map_err(|e| {
+            .map_err(|err| redact_platform_password(err, new_password.as_str()))
+            .map_err(|err| redact_platform_password(err, curr_password.as_str()))
+            .map_err(|err| {
                 tracing::error!(
-                    "Failed to create Redfish client while setting BMC password for vendor {:?} (bmc_ip = {}): {:?}",
+                    "Failed to rotate BMC password for vendor {:?} (bmc_ip = {}): {:?}",
                     vendor,
                     bmc_ip_address,
-                    e
+                    err
                 );
-                map_redfish_client_creation_error(e)
+                map_platform_error(err)
             })?;
 
-        match vendor {
-            RedfishVendor::Lenovo => {
-                // Change (factory_user, factory_pass) to (factory_user, site_pass)
-                client
-                    .change_password_by_id("1", new_password.as_str())
-                    .await
-                    .map_err(|err| redact_password(err, new_password.as_str()))
-                    .map_err(|err| redact_password(err, curr_password.as_str()))
-                    .map_err(map_redfish_error)?;
-            }
-            RedfishVendor::NvidiaDpu
-            | RedfishVendor::NvidiaGH200
-            | RedfishVendor::NvidiaGBSwitch
-            | RedfishVendor::P3809
-            | RedfishVendor::LiteOnPowerShelf
-            | RedfishVendor::DeltaPowerShelf
-            | RedfishVendor::NvidiaGBx00 => {
-                // change_password does things that require a password and DPUs need a first
-                // password use to be change, so just change it directly
-                //
-                // GH200 doesn't require change-on-first-use, but it's good practice. GB200
-                // probably will.
-                client
-                    .change_password_by_id(curr_user.as_str(), new_password.as_str())
-                    .await
-                    .map_err(|err| redact_password(err, new_password.as_str()))
-                    .map_err(|err| redact_password(err, curr_password.as_str()))
-                    .map_err(map_redfish_error)?;
-            }
-            // Handle Vikings
-            RedfishVendor::AMI => {
-                /*
-                https://docs.nvidia.com/dgx/dgxh100-user-guide/redfish-api-supp.html
-
-                You should set the password after the first boot. The following curl command changes the password for the admin user.
-                curl -k -u <bmc-user>:<password> --request PATCH 'https://<bmc-ip-address>/redfish/v1/AccountService/Accounts/2' --header 'If-Match: *'  --header 'Content-Type: application/json' --data-raw '{ "Password" : "<password>" }'
-                */
-                client
-                    .change_password_by_id("2", new_password.as_str())
-                    .await
-                    .map_err(|err| redact_password(err, new_password.as_str()))
-                    .map_err(|err| redact_password(err, curr_password.as_str()))
-                    .map_err(map_redfish_error)?;
-            }
-            RedfishVendor::LenovoAMI
-            | RedfishVendor::Supermicro
-            | RedfishVendor::Dell
-            | RedfishVendor::Hpe => {
-                client
-                    .change_password(curr_user.as_str(), new_password.as_str())
-                    .await
-                    .map_err(|err| redact_password(err, new_password.as_str()))
-                    .map_err(|err| redact_password(err, curr_password.as_str()))
-                    .map_err(map_redfish_error)?;
-            }
-            RedfishVendor::Unknown => {
-                return Err(EndpointExplorationError::UnsupportedVendor {
-                    vendor: vendor.to_string(),
-                });
-            }
-        };
-
-        // Log in using the new credentials and set the vendor-specific password policy.
+        // Log in using the new credentials and set the account/password policy
+        // (mirrors the legacy `set_machine_password_policy`). The legacy impls
+        // only tuned vendor-specific `AccountLockout*` knobs, whose values the
+        // plugin owns now, so neither policy field is pinned here.
         let new_credentials = Credentials::UsernamePassword {
             username: curr_user.to_string(),
-            password: new_password,
+            password: new_password.clone(),
         };
-        let vendored_client = self
-            .create_direct_redfish_client(bmc_ip_address, new_credentials, Some(vendor))
+        let bmc = Self::bmc_ref(bmc_ip_address, &new_credentials);
+        self.platform
+            .set_account_policy(bmc, BmcAccountPolicyRequest::default())
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        vendored_client
-            .set_machine_password_policy()
-            .await
-            .map_err(map_redfish_error)?;
+            .map_err(|err| redact_platform_password(err, new_password.as_str()))
+            .map_err(map_platform_error)?;
 
         Ok(())
     }
@@ -450,14 +402,13 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        self.platform
+            .reset_bmc(
+                Self::bmc_ref(bmc_ip_address, &credentials),
+                BmcResetKind::GracefulRestart,
+            )
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client.bmc_reset().await.map_err(map_redfish_error)?;
-
-        Ok(())
+            .map_err(map_platform_error)
     }
 
     pub async fn get_power_state(
@@ -465,12 +416,19 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<libredfish::PowerState, EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        let state = self
+            .platform
+            .power_state(Self::bmc_ref(bmc_ip_address, &credentials))
             .await
-            .map_err(map_redfish_client_creation_error)?;
+            .map_err(map_platform_error)?;
 
-        client.get_power_state().await.map_err(map_redfish_error)
+        Ok(match state {
+            carbide_redfish_platform_api::model::PowerState::On => libredfish::PowerState::On,
+            carbide_redfish_platform_api::model::PowerState::Off => libredfish::PowerState::Off,
+            carbide_redfish_platform_api::model::PowerState::Unknown => {
+                libredfish::PowerState::Unknown
+            }
+        })
     }
 
     pub async fn power(
@@ -479,13 +437,20 @@ impl RedfishClient {
         credentials: Credentials,
         action: libredfish::SystemPowerControl,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
-            .await
-            .map_err(map_redfish_client_creation_error)?;
+        let action = match action {
+            libredfish::SystemPowerControl::On => PowerAction::On,
+            libredfish::SystemPowerControl::GracefulShutdown => PowerAction::GracefulShutdown,
+            libredfish::SystemPowerControl::ForceOff => PowerAction::ForceOff,
+            libredfish::SystemPowerControl::GracefulRestart => PowerAction::GracefulRestart,
+            libredfish::SystemPowerControl::ForceRestart => PowerAction::ForceRestart,
+            libredfish::SystemPowerControl::PowerCycle => PowerAction::PowerCycle,
+            libredfish::SystemPowerControl::ACPowercycle => PowerAction::AcPowerCycle,
+        };
 
-        client.power(action).await.map_err(map_redfish_error)?;
-        Ok(())
+        self.platform
+            .set_power(Self::bmc_ref(bmc_ip_address, &credentials), action)
+            .await
+            .map_err(map_platform_error)
     }
 
     pub async fn disable_secure_boot(
@@ -493,17 +458,10 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        self.platform
+            .set_secure_boot(Self::bmc_ref(bmc_ip_address, &credentials), false)
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client
-            .disable_secure_boot()
-            .await
-            .map_err(map_redfish_error)?;
-
-        Ok(())
+            .map_err(map_platform_error)
     }
 
     pub async fn lockdown(
@@ -512,12 +470,17 @@ impl RedfishClient {
         credentials: Credentials,
         action: libredfish::EnabledDisabled,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
-            .await
-            .map_err(map_redfish_client_creation_error)?;
+        // The legacy full-platform lockdown covers both scopes: host and BMC.
+        let enabled = action.is_enabled();
 
-        client.lockdown(action).await.map_err(map_redfish_error)?;
+        self.platform
+            .set_host_lockdown(Self::bmc_ref(bmc_ip_address, &credentials), enabled)
+            .await
+            .map_err(map_platform_error)?;
+        self.platform
+            .set_bmc_lockdown(Self::bmc_ref(bmc_ip_address, &credentials), enabled)
+            .await
+            .map_err(map_platform_error)?;
 
         Ok(())
     }
@@ -527,16 +490,27 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<LockdownStatus, EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        let status = self
+            .platform
+            .lockdown_status(Self::bmc_ref(bmc_ip_address, &credentials))
             .await
-            .map_err(map_redfish_client_creation_error)?;
+            .map_err(map_platform_error)?;
 
-        let response = fetch_lockdown_status(client.as_ref())
-            .await
-            .map_err(map_redfish_error)?;
+        // Derive the legacy classification: both scopes locked = Enabled,
+        // neither = Disabled, mixed = Partial.
+        let internal_status = match (status.host_enabled, status.bmc_enabled) {
+            (true, true) => InternalLockdownStatus::Enabled,
+            (false, false) => InternalLockdownStatus::Disabled,
+            _ => InternalLockdownStatus::Partial,
+        };
 
-        Ok(response)
+        Ok(LockdownStatus {
+            status: internal_status,
+            message: format!(
+                "host lockdown enabled: {}, BMC lockdown enabled: {}",
+                status.host_enabled, status.bmc_enabled
+            ),
+        })
     }
 
     pub async fn enable_infinite_boot(
@@ -544,17 +518,11 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        self.platform
+            .set_infinite_boot(Self::bmc_ref(bmc_ip_address, &credentials), true)
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client
-            .enable_infinite_boot()
-            .await
-            .map_err(map_redfish_error)?;
-
-        Ok(())
+            .map(|_job| ())
+            .map_err(map_platform_error)
     }
 
     pub async fn is_infinite_boot_enabled(
@@ -562,77 +530,49 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<Option<bool>, EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        let status = self
+            .platform
+            .boot_order_status(Self::bmc_ref(bmc_ip_address, &credentials))
             .await
-            .map_err(map_redfish_client_creation_error)?;
+            .map_err(map_platform_error)?;
 
-        client
-            .is_infinite_boot_enabled()
-            .await
-            .map_err(map_redfish_error)
+        // `None` = the platform doesn't report infinite boot, matching the
+        // legacy `Ok(None)` on unsupported platforms.
+        Ok(status.infinite_boot)
     }
 
     pub async fn machine_setup(
         &self,
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
-        boot_interface: Option<&BootInterfaceTarget>,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        // The plugin owns boot-interface resolution and the vendor BIOS
+        // attributes, so the legacy boot-interface and BIOS-profile arguments
+        // are gone.
+        self.platform
+            .apply_machine_setup(
+                Self::bmc_ref(bmc_ip_address, &credentials),
+                MachineSetupRequest::default(),
+            )
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        // We will be redoing machine_setup later and can worry about getting the profile right then.
-        // Bind the empty profiles outside the fallback closure so they outlive both attempts.
-        let empty_profiles: libredfish::BiosProfileVendor = HashMap::default();
-        let result = match boot_interface {
-            Some(target) => {
-                target
-                    .run(|bi| {
-                        client.machine_setup(
-                            Some(bi),
-                            &empty_profiles,
-                            libredfish::BiosProfileType::Performance,
-                            &empty_profiles,
-                        )
-                    })
-                    .await
-            }
-            None => {
-                client
-                    .machine_setup(
-                        None,
-                        &empty_profiles,
-                        libredfish::BiosProfileType::Performance,
-                        &empty_profiles,
-                    )
-                    .await
-            }
-        };
-        result.map_err(map_redfish_error)?;
-
-        Ok(())
+            .map(|_job| ())
+            .map_err(map_platform_error)
     }
 
     pub async fn set_boot_order_dpu_first(
         &self,
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
-        boot_interface: &BootInterfaceTarget,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        // The plugin resolves the DPU NIC; no boot-interface argument needed.
+        self.platform
+            .set_dpu_first_boot(
+                Self::bmc_ref(bmc_ip_address, &credentials),
+                BootOrderRequest { http_boot: false },
+            )
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        boot_interface
-            .run(|bi| client.set_boot_order_dpu_first(bi))
-            .await
-            .map_err(map_redfish_error)?;
-
-        Ok(())
+            .map(|_job| ())
+            .map_err(map_platform_error)
     }
 
     pub async fn set_nic_mode(
@@ -641,14 +581,15 @@ impl RedfishClient {
         credentials: Credentials,
         mode: NicMode,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        let mode = match mode {
+            NicMode::Dpu => DpuNicMode::Dpu,
+            NicMode::Nic => DpuNicMode::Nic,
+        };
+
+        self.platform
+            .set_nic_mode(Self::bmc_ref(bmc_ip_address, &credentials), mode)
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client.set_nic_mode(mode).await.map_err(map_redfish_error)?;
-
-        Ok(())
+            .map_err(map_platform_error)
     }
 
     pub async fn is_viking(
@@ -656,19 +597,21 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<bool, EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        let selected = self
+            .platform
+            .selected_platform(Self::bmc_ref(bmc_ip_address, &credentials))
             .await
-            .map_err(map_redfish_client_creation_error)?;
+            .map_err(map_platform_error)?;
 
-        let service_root = client.get_service_root().await.map_err(map_redfish_error)?;
-        let system = client.get_system().await.map_err(map_redfish_error)?;
-        let manager = client.get_manager().await.map_err(map_redfish_error)?;
-        Ok(
-            service_root.vendor().unwrap_or(RedfishVendor::Unknown) == RedfishVendor::AMI
-                && system.id == "DGX"
-                && manager.id == "BMC",
-        )
+        // Same predicate the legacy path computed from the service root,
+        // system, and manager: an AMI BMC on a "DGX" system.
+        let identity = &selected.identity;
+        Ok(identity
+            .service_root_vendor
+            .as_deref()
+            .is_some_and(|vendor| vendor.eq_ignore_ascii_case("ami"))
+            && identity.system_id.as_deref() == Some("DGX")
+            && identity.manager_id.as_deref() == Some("BMC"))
     }
 
     pub async fn clear_nvram(
@@ -676,13 +619,10 @@ impl RedfishClient {
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        self.platform
+            .clear_nvram(Self::bmc_ref(bmc_ip_address, &credentials))
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client.clear_nvram().await.map_err(map_redfish_error)?;
-        Ok(())
+            .map_err(map_platform_error)
     }
 
     pub async fn create_bmc_user(
@@ -693,16 +633,17 @@ impl RedfishClient {
         new_password: &str,
         new_user_role_id: libredfish::RoleId,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        self.platform
+            .ensure_user(
+                Self::bmc_ref(bmc_ip_address, &credentials),
+                BmcUserRequest {
+                    username: new_username.to_string(),
+                    password: new_password.to_string(),
+                    role_id: Some(new_user_role_id.to_string()),
+                },
+            )
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client
-            .create_user(new_username, new_password, new_user_role_id)
-            .await
-            .map_err(map_redfish_error)?;
-        Ok(())
+            .map_err(map_platform_error)
     }
 
     pub async fn delete_bmc_user(
@@ -711,16 +652,15 @@ impl RedfishClient {
         credentials: Credentials,
         delete_user: &str,
     ) -> Result<(), EndpointExplorationError> {
-        let client = self
-            .create_authenticated_redfish_client(bmc_ip_address, credentials)
+        self.platform
+            .delete_user(
+                Self::bmc_ref(bmc_ip_address, &credentials),
+                BmcDeleteUserRequest {
+                    username: delete_user.to_string(),
+                },
+            )
             .await
-            .map_err(map_redfish_client_creation_error)?;
-
-        client
-            .delete_user(delete_user)
-            .await
-            .map_err(map_redfish_error)?;
-        Ok(())
+            .map_err(map_platform_error)
     }
 
     pub async fn probe_vendor_name_from_chassis(
@@ -1379,6 +1319,87 @@ pub(crate) fn map_redfish_error(error: RedfishError) -> EndpointExplorationError
     }
 }
 
+/// Classify a platform-service [`PlatformRedfishError`] into the same
+/// site-explorer error enum `map_redfish_error` produces for the legacy
+/// client, so callers (notably `explore_endpoint`'s AvoidLockout and HPE
+/// intermittent-401 ladder) keep keying off `Unauthorized` as before.
+pub(crate) fn map_platform_error(error: PlatformRedfishError) -> EndpointExplorationError {
+    match &error {
+        PlatformRedfishError::Network { url, source } => EndpointExplorationError::Unreachable {
+            details: Some(format!("url: {url};\nsource: {source};\nerror: {error}")),
+        },
+        PlatformRedfishError::HttpStatus {
+            status_code,
+            response_body,
+            url,
+        } if *status_code == http::StatusCode::FORBIDDEN.as_u16()
+            && url.contains("FirmwareInventory") =>
+        {
+            EndpointExplorationError::VikingFWInventoryForbiddenError {
+                details: format!(
+                    "HTTP {status_code} at {url} - this is a known, intermittent issue for Vikings."
+                ),
+                response_body: Some(response_body.clone()),
+                response_code: Some(*status_code),
+            }
+        }
+        PlatformRedfishError::HttpStatus {
+            status_code,
+            response_body,
+            url,
+        } if error.is_unauthorized() => EndpointExplorationError::Unauthorized {
+            details: format!("HTTP {status_code} at {url}"),
+            response_body: Some(response_body.clone()),
+            response_code: Some(*status_code),
+        },
+        PlatformRedfishError::HttpStatus {
+            status_code,
+            response_body,
+            url,
+        } => EndpointExplorationError::RedfishError {
+            details: format!("HTTP {status_code} at {url}"),
+            response_body: Some(response_body.clone()),
+            response_code: Some(*status_code),
+        },
+        PlatformRedfishError::Deserialize { url, source } => {
+            EndpointExplorationError::RedfishError {
+                details: format!("Failed to deserialize data from {url}: {source}"),
+                response_body: None,
+                response_code: None,
+            }
+        }
+        _ => EndpointExplorationError::RedfishError {
+            details: error.to_string(),
+            response_body: None,
+            response_code: None,
+        },
+    }
+}
+
+/// Scrub a password from a platform-service error before it can reach logs or
+/// the exploration report (mirrors the legacy `redact_password` for
+/// `libredfish::RedfishError`).
+fn redact_platform_password(
+    error: PlatformRedfishError,
+    password: &str,
+) -> PlatformRedfishError {
+    const REDACTED: &str = "REDACTED";
+    let redact = |v: String| v.replace(password, REDACTED);
+    match error {
+        PlatformRedfishError::HttpStatus {
+            url,
+            status_code,
+            response_body,
+        } => PlatformRedfishError::HttpStatus {
+            url,
+            status_code,
+            response_body: redact(response_body),
+        },
+        PlatformRedfishError::Generic(message) => PlatformRedfishError::Generic(redact(message)),
+        err => err,
+    }
+}
+
 fn nv_error_classifier(
     err: &carbide_redfish::nv_redfish::BmcError,
 ) -> Option<bmc_explorer::ErrorClass> {
@@ -1493,43 +1514,365 @@ fn map_nv_redfish_explore_error(
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use arc_swap::ArcSwap;
+    use async_trait::async_trait;
     use carbide_redfish::libredfish::test_support::RedfishSim;
     use carbide_redfish::nv_redfish::NvRedfishClientPool;
+    use carbide_redfish_platform_api::RedfishError as PlatformRedfishError;
+    use carbide_redfish_platform_api::model::{
+        BmcAccountPolicyRequest, BmcCredentials, BmcDeleteUserRequest, BmcPasswordRequest, BmcRef,
+        BmcResetKind, BmcStatus, BmcUserRequest, BootOrderRequest, BootOrderStatus, BossController,
+        ChassisResetRequest, CreateVolumeRequest, DecommissionRequest, DpuNicMode,
+        DpuNicModeStatus, FirmwareInventory, FirmwareUpdateRequest, JobHandle, JobState,
+        LockdownStatus, MachineSetupRequest, MachineSetupStatus, PowerAction, PowerState,
+        SecureBootStatus, SelectedPlatform,
+    };
+    use carbide_redfish_platform_api::service::{
+        BmcAccountOps, BmcResetOps, BootOrderOps, DpuOps, FirmwareOps, HostPowerOps, JobPollOps,
+        LockdownOps, MachineSetupOps, PlatformSelection, RedfishPlatformService, SecureBootOps,
+        StorageOps,
+    };
     use carbide_secrets::credentials::Credentials;
-    use carbide_test_support::Outcome::*;
-    use carbide_test_support::{Case, check_cases_async};
     use libredfish::model::service_root::RedfishVendor;
 
-    use super::{EndpointExplorationError, RedfishClient};
+    use super::RedfishClient;
 
     fn test_addr() -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443)
     }
 
-    fn build_redfish_client(sim: Arc<RedfishSim>) -> RedfishClient {
-        let proxy_address = Arc::new(ArcSwap::new(Arc::new(None)));
-        let nv_pool = Arc::new(NvRedfishClientPool::new(proxy_address));
-        RedfishClient::new(sim, nv_pool)
+    /// A password-rotation call recorded by [`RecordingPlatform`], with the
+    /// credentials the caller attached to the `BmcRef`.
+    #[derive(Debug, PartialEq)]
+    enum RecordedCall {
+        ChangePassword {
+            credentials: Option<BmcCredentials>,
+            username: String,
+            new_password: String,
+        },
+        SetAccountPolicy {
+            credentials: Option<BmcCredentials>,
+        },
     }
 
-    /// Rotate a BMC's root password against the sim and report the vendor
-    /// each `create_client` call was made with, in order.
-    ///
-    /// This is what the password-rotation contract is asserted against: the
-    /// FIRST client (which makes the actual `change_password_by_id` PATCH to
-    /// `/AccountService`) must be uninitialized (`Some(RedfishVendor::Unknown)`),
-    /// and only the SECOND client (which sets the password policy afterward)
-    /// should carry the real `vendor`.
-    async fn password_change_client_vendors(
-        vendor: RedfishVendor,
-    ) -> Result<Vec<Option<RedfishVendor>>, EndpointExplorationError> {
-        let sim = Arc::new(RedfishSim::default());
-        sim.seed_user("root", "factory_pass");
+    /// Minimal `RedfishPlatformService` mock recording the account calls the
+    /// rotation flow makes. All other capabilities are unreachable in these
+    /// tests. (Local because `RedfishSim` does not implement the platform
+    /// service trait yet.)
+    #[derive(Default)]
+    struct RecordingPlatform {
+        calls: Mutex<Vec<RecordedCall>>,
+    }
 
-        let redfish = build_redfish_client(sim.clone());
+    #[async_trait]
+    impl BmcAccountOps for RecordingPlatform {
+        async fn ensure_user(
+            &self,
+            _bmc: BmcRef,
+            _req: BmcUserRequest,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn delete_user(
+            &self,
+            _bmc: BmcRef,
+            _req: BmcDeleteUserRequest,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn change_password(
+            &self,
+            bmc: BmcRef,
+            req: BmcPasswordRequest,
+        ) -> Result<(), PlatformRedfishError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::ChangePassword {
+                    credentials: bmc.credentials,
+                    username: req.username,
+                    new_password: req.new_password,
+                });
+            Ok(())
+        }
+
+        async fn set_account_policy(
+            &self,
+            bmc: BmcRef,
+            _req: BmcAccountPolicyRequest,
+        ) -> Result<(), PlatformRedfishError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::SetAccountPolicy {
+                    credentials: bmc.credentials,
+                });
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl PlatformSelection for RecordingPlatform {
+        async fn selected_platform(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<SelectedPlatform, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn probe_endpoint(&self, _address: SocketAddr) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl HostPowerOps for RecordingPlatform {
+        async fn power_state(&self, _bmc: BmcRef) -> Result<PowerState, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_power(
+            &self,
+            _bmc: BmcRef,
+            _action: PowerAction,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl BmcResetOps for RecordingPlatform {
+        async fn bmc_status(&self, _bmc: BmcRef) -> Result<BmcStatus, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn reset_bmc(
+            &self,
+            _bmc: BmcRef,
+            _kind: BmcResetKind,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn reset_chassis(
+            &self,
+            _bmc: BmcRef,
+            _req: ChassisResetRequest,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_bmc_time_utc(&self, _bmc: BmcRef) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl MachineSetupOps for RecordingPlatform {
+        async fn apply_machine_setup(
+            &self,
+            _bmc: BmcRef,
+            _req: MachineSetupRequest,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn machine_setup_status(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<MachineSetupStatus, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_uefi_password(
+            &self,
+            _bmc: BmcRef,
+            _password: String,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn clear_nvram(&self, _bmc: BmcRef) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl BootOrderOps for RecordingPlatform {
+        async fn set_dpu_first_boot(
+            &self,
+            _bmc: BmcRef,
+            _req: BootOrderRequest,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn boot_order_status(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<BootOrderStatus, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_infinite_boot(
+            &self,
+            _bmc: BmcRef,
+            _enabled: bool,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl SecureBootOps for RecordingPlatform {
+        async fn secure_boot_status(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<SecureBootStatus, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_secure_boot(
+            &self,
+            _bmc: BmcRef,
+            _enabled: bool,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn add_certificate(
+            &self,
+            _bmc: BmcRef,
+            _certificate: Vec<u8>,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl LockdownOps for RecordingPlatform {
+        async fn lockdown_status(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<LockdownStatus, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_host_lockdown(
+            &self,
+            _bmc: BmcRef,
+            _enabled: bool,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_bmc_lockdown(
+            &self,
+            _bmc: BmcRef,
+            _enabled: bool,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl DpuOps for RecordingPlatform {
+        async fn nic_mode(&self, _bmc: BmcRef) -> Result<DpuNicModeStatus, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_nic_mode(
+            &self,
+            _bmc: BmcRef,
+            _mode: DpuNicMode,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn set_host_rshim(
+            &self,
+            _bmc: BmcRef,
+            _enabled: bool,
+        ) -> Result<(), PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl FirmwareOps for RecordingPlatform {
+        async fn start_update(
+            &self,
+            _bmc: BmcRef,
+            _req: FirmwareUpdateRequest,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn firmware_inventory(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<FirmwareInventory, PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl StorageOps for RecordingPlatform {
+        async fn boss_controller(
+            &self,
+            _bmc: BmcRef,
+        ) -> Result<Option<BossController>, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn decommission(
+            &self,
+            _bmc: BmcRef,
+            _req: DecommissionRequest,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+
+        async fn create_volume(
+            &self,
+            _bmc: BmcRef,
+            _req: CreateVolumeRequest,
+        ) -> Result<Option<JobHandle>, PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl JobPollOps for RecordingPlatform {
+        async fn poll(
+            &self,
+            _bmc: BmcRef,
+            _job: &JobHandle,
+        ) -> Result<JobState, PlatformRedfishError> {
+            unimplemented!()
+        }
+    }
+
+    impl RedfishPlatformService for RecordingPlatform {}
+
+    fn build_redfish_client(platform: Arc<dyn RedfishPlatformService>) -> RedfishClient {
+        let proxy_address = Arc::new(ArcSwap::new(Arc::new(None)));
+        let nv_pool = Arc::new(NvRedfishClientPool::new(proxy_address));
+        RedfishClient::new(platform, Arc::new(RedfishSim::default()), nv_pool)
+    }
+
+    /// Password rotation must first change the password on a `BmcRef` carrying
+    /// the CURRENT credentials (factory-state BMCs only accept that login),
+    /// and only then set the account policy on a fresh `BmcRef` carrying the
+    /// NEW credentials.
+    #[tokio::test]
+    async fn set_bmc_root_password_changes_password_then_sets_policy_with_new_credentials() {
+        let platform = Arc::new(RecordingPlatform::default());
+        let redfish = build_redfish_client(platform.clone());
 
         let factory_creds = Credentials::UsernamePassword {
             username: "root".to_string(),
@@ -1537,57 +1880,28 @@ mod tests {
         };
 
         redfish
-            .set_bmc_root_password(test_addr(), vendor, factory_creds, "site_pass".to_string())
-            .await?;
+            .set_bmc_root_password(
+                test_addr(),
+                RedfishVendor::NvidiaDpu,
+                factory_creds,
+                "site_pass".to_string(),
+            )
+            .await
+            .expect("password rotation should succeed");
 
-        Ok(sim
-            .create_client_calls()
-            .into_iter()
-            .map(|call| call.vendor)
-            .collect())
-    }
-
-    /// When site-explorer rotates a BMC's root password it must make the
-    /// rotation PATCH with an uninitialized `Unknown` client and only use the
-    /// real vendor on the follow-up policy client.
-    ///
-    /// The vendor-specific client triggers libredfish's full init path
-    /// (fetches `/Systems`, `/Managers`, `/Chassis`) which is unnecessary just
-    /// to PATCH `/AccountService`. Worse, factory BMCs like NVIDIA GBx00
-    /// authenticate the supplied creds but return HTTP 403
-    /// `Base.1.18.1.PasswordChangeRequired` on `/Systems` until the password is
-    /// rotated -- so an init-first flow blocks the very PATCH that would unblock
-    /// it. Only the SECOND client (set after the rotation succeeds) should be
-    /// vendor-specific, so `set_machine_password_policy` gets the right impl
-    /// (e.g. Lite-On omits `AccountLockoutCounterResetAfter`).
-    ///
-    /// Asserted as a table over vendors: each yields exactly two
-    /// `create_client` calls -- always `Unknown` first, then the real vendor --
-    /// which pins the call count, the uninitialized rotation client, and the
-    /// vendor-specific policy client all at once.
-    #[tokio::test]
-    async fn set_bmc_root_password_rotates_with_unknown_then_real_vendor() {
-        check_cases_async(
-            [
-                Case {
-                    scenario: "Lite-On power shelf gets a vendor-specific policy client",
-                    input: RedfishVendor::LiteOnPowerShelf,
-                    expect: Yields(vec![
-                        Some(RedfishVendor::Unknown),
-                        Some(RedfishVendor::LiteOnPowerShelf),
-                    ]),
+        let calls = platform.calls.lock().unwrap();
+        assert_eq!(
+            *calls,
+            vec![
+                RecordedCall::ChangePassword {
+                    credentials: Some(BmcCredentials::new("root", "factory_pass")),
+                    username: "root".to_string(),
+                    new_password: "site_pass".to_string(),
                 },
-                Case {
-                    scenario: "NVIDIA DPU gets a vendor-specific policy client too",
-                    input: RedfishVendor::NvidiaDpu,
-                    expect: Yields(vec![
-                        Some(RedfishVendor::Unknown),
-                        Some(RedfishVendor::NvidiaDpu),
-                    ]),
+                RecordedCall::SetAccountPolicy {
+                    credentials: Some(BmcCredentials::new("root", "site_pass")),
                 },
-            ],
-            password_change_client_vendors,
-        )
-        .await;
+            ]
+        );
     }
 }

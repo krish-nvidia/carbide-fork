@@ -197,6 +197,9 @@ impl TestApiBuilder {
         ));
 
         let endpoint_explorer = carbide_site_explorer::new_bmc_explorer(
+            // Tests use MockEndpointExplorer; this explorer's platform service
+            // is never exercised.
+            crate::redfish_platform::unconfigured_platform_service(),
             redfish_pool.clone(),
             nv_redfish_pool,
             carbide_ipmi::test_support(),

@@ -29,10 +29,11 @@ use async_trait::async_trait;
 use crate::error::RedfishError;
 use crate::model::{
     BmcAccountPolicyRequest, BmcDeleteUserRequest, BmcPasswordRequest, BmcResetKind, BmcStatus,
-    BmcUserRequest, BootOrderRequest, BootOrderStatus, BossController, CreateVolumeRequest,
-    DecommissionRequest, DpuNicMode, DpuNicModeStatus, FirmwareInventory, FirmwareUpdateRequest,
-    JobHandle, JobState, LockdownStatus, MachineSetupRequest, MachineSetupStatus, MatchSpecificity,
-    PlatformIdentity, PlatformMetadata, PowerAction, PowerState, ResetTransport, SecureBootStatus,
+    BmcUserRequest, BootOrderRequest, BootOrderStatus, BossController, ChassisResetRequest,
+    CreateVolumeRequest, DecommissionRequest, DpuNicMode, DpuNicModeStatus, FirmwareInventory,
+    FirmwareUpdateRequest, JobHandle, JobState, LockdownStatus, MachineSetupRequest,
+    MachineSetupStatus, MatchSpecificity, PlatformIdentity, PlatformMetadata, PowerAction,
+    PowerState, ResetTransport, SecureBootStatus,
 };
 use crate::ops::PlatformExecutionContext;
 
@@ -73,6 +74,25 @@ pub trait BmcResetCap: Send + Sync {
         ctx: &PlatformExecutionContext<'_>,
         kind: BmcResetKind,
     ) -> Result<(), RedfishError>;
+
+    /// Reset a chassis sub-resource. Defaults to unsupported.
+    async fn reset_chassis(
+        &self,
+        ctx: &PlatformExecutionContext<'_>,
+        req: ChassisResetRequest,
+    ) -> Result<(), RedfishError> {
+        let _ = (ctx, req);
+        Err(RedfishError::not_supported("chassis reset"))
+    }
+
+    /// Set the manager clock/timezone to UTC. Defaults to unsupported.
+    async fn set_bmc_time_utc(
+        &self,
+        ctx: &PlatformExecutionContext<'_>,
+    ) -> Result<(), RedfishError> {
+        let _ = ctx;
+        Err(RedfishError::not_supported("bmc time/timezone"))
+    }
 }
 
 /// Machine/BIOS setup capability.

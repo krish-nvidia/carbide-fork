@@ -14,7 +14,7 @@ bmc-vendor = { path = "../bmc-vendor" }
 carbide-api-db = { path = "../api-db" }
 carbide-api-model = { path = "../api-model" }
 carbide-firmware = { path = "../firmware" }
-carbide-redfish = { path = "../redfish" }
+carbide-redfish-platform-api = { path = "../redfish-platform-api" }
 carbide-secrets = { path = "../secrets" }
 carbide-ssh = { path = "../ssh" }
 carbide-utils = { path = "../utils" }
@@ -22,7 +22,6 @@ carbide-utils = { path = "../utils" }
 # these are alphabetized
 chrono = { workspace = true }
 futures-util = { workspace = true }
-libredfish = { workspace = true }
 opentelemetry = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
@@ -33,6 +32,7 @@ tracing = { workspace = true }
 version-compare = { workspace = true }
 
 [dev-dependencies]
+carbide-utils = { path = "../utils", features = ["test-support"] }
 prometheus-text-parser = { path = "../prometheus-text-parser" }
 
 [lints]

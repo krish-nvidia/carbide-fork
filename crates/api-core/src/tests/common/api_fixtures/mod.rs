@@ -325,7 +325,7 @@ impl TestEnv {
             db_pool: self.pool.clone(),
             db_reader: self.pool.clone().into(),
             redfish_client_pool: self.redfish_sim.clone(),
-            redfish_platform: crate::redfish_platform::unconfigured_platform_service(),
+            redfish_platform: self.redfish_sim.clone(),
             ipmi_tool: self.ipmi_tool.clone(),
             site_config: self.config.machine_state_handler_site_config().into(),
         }
@@ -1357,7 +1357,7 @@ pub async fn create_test_env_with_overrides(
                 db_pool: db_pool.clone(),
                 db_reader: db_pool.clone().into(),
                 redfish_client_pool: redfish_sim.clone(),
-                redfish_platform: crate::redfish_platform::unconfigured_platform_service(),
+                redfish_platform: redfish_sim.clone(),
                 ipmi_tool: ipmi_tool.clone(),
                 site_config: config.machine_state_handler_site_config().into(),
             }

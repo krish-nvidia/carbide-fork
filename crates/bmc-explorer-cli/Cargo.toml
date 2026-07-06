@@ -8,10 +8,13 @@ authors.workspace = true
 [dependencies]
 carbide-ipmi = { path = "../ipmi" }
 carbide-redfish = { path = "../redfish" }
+carbide-redfish-platform-api = { path = "../redfish-platform-api" }
+carbide-redfish-platform-runtime = { path = "../redfish-platform-runtime" }
 carbide-secrets = { path = "../secrets", features = ["test-support"] }
 carbide-site-explorer = { path = "../site-explorer" }
 
 arc-swap = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 libredfish = { workspace = true }
 mac_address = { workspace = true }

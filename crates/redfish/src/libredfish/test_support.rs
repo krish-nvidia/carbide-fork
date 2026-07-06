@@ -216,6 +216,12 @@ pub enum RedfishSimAction {
     SetBootOrderDpuFirst {
         boot_interface_mac: String,
     },
+    /// Records a call to the platform-service
+    /// [`carbide_redfish_platform_api::service::BmcResetOps::reset_chassis`]
+    /// with the targeted chassis id. The legacy `Redfish::chassis_reset` sim
+    /// method was a silent no-op, so this variant is only produced through the
+    /// new `RedfishPlatformService` surface.
+    ChassisReset(String),
 }
 
 pub struct RedfishSimActions {
@@ -1780,6 +1786,13 @@ impl Redfish for RedfishSimClient {
             Ok(())
         })
     }
+
+    fn set_ntp_servers<'a>(
+        &'a self,
+        _servers: &'a [String],
+    ) -> libredfish::RedfishFuture<'a, Result<(), RedfishError>> {
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 #[async_trait]
@@ -1826,5 +1839,729 @@ impl RedfishClientPool for RedfishSim {
         _dpu: bool,
     ) -> Result<Option<String>, RedfishClientCreationError> {
         Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RedfishPlatformService implementation
+// ---------------------------------------------------------------------------
+//
+// The sim also implements the new `carbide_redfish_platform_api` contract so
+// tests can inject it as `Arc<dyn RedfishPlatformService>` while unmigrated
+// callers keep using the legacy `RedfishClientPool` path above. Both paths
+// share the same per-host state, keyed by the bare IP string: legacy callers
+// pass `bmc_ip` as the `create_client` host, platform callers carry a
+// `SocketAddr` in `BmcRef`, so `bmc.address.ip().to_string()` lands on the
+// same key and actions/state recorded through either path stay visible to the
+// same assertions.
+
+use carbide_redfish_platform_api::error::RedfishError as PlatformError;
+use carbide_redfish_platform_api::model::{
+    BmcAccountPolicyRequest, BmcDeleteUserRequest, BmcPasswordRequest, BmcRef, BmcResetKind,
+    BmcStatus, BmcUserRequest, BootOrderRequest, BootOrderStatus, BossController,
+    ChassisResetRequest, CreateVolumeRequest, DecommissionRequest, DpuNicMode, DpuNicModeStatus,
+    FirmwareComponent, FirmwareInventory, FirmwareUpdateRequest, JobHandle,
+    JobState as PlatformJobState, LockdownStatus, MachineSetupRequest,
+    MachineSetupStatus as PlatformMachineSetupStatus, MatchSpecificity, PlatformIdentity,
+    PluginId, PowerAction, PowerState as PlatformPowerState, ResetTransport, SecureBootStatus,
+    SelectedPlatform,
+};
+use carbide_redfish_platform_api::service::{
+    BmcAccountOps, BmcResetOps, BootOrderOps, DpuOps, FirmwareOps, HostPowerOps, JobPollOps,
+    LockdownOps, MachineSetupOps, PlatformSelection, RedfishPlatformService, SecureBootOps,
+    StorageOps,
+};
+
+impl RedfishSim {
+    /// Key per-host sim state by the bare IP, matching the `host` string the
+    /// legacy `RedfishClientPool::create_client` callers passed.
+    fn platform_host_key(bmc: &BmcRef) -> String {
+        bmc.address.ip().to_string()
+    }
+
+    /// Mirror `create_client`'s lazy host-state initialization for platform
+    /// calls: an unseen host is auto-created powered on and unlocked, and the
+    /// default firmware version is seeded.
+    fn ensure_platform_host(&self, bmc: &BmcRef) -> String {
+        let key = Self::platform_host_key(bmc);
+        let mut state = self.state.lock().unwrap();
+        state
+            .hosts
+            .entry(key.clone())
+            .or_insert(RedfishSimHostState {
+                power: PowerState::On,
+                lockdown: EnabledDisabled::Disabled,
+                actions: Default::default(),
+            });
+        if state.fw_version.is_empty() {
+            state.fw_version = Arc::new("24.10-17".to_string());
+        }
+        key
+    }
+
+    /// Validate explicit credentials carried on the [`BmcRef`] against the
+    /// sim's stored user table. Backs the site-explorer password-rotation
+    /// flow: a login with a stale password fails with HTTP 401, while a login
+    /// with the currently stored password (including one just set through
+    /// `change_password`) succeeds. Usernames the sim does not track are not
+    /// validated, matching how the legacy pool ignored auth entirely.
+    fn check_platform_credentials(&self, bmc: &BmcRef) -> Result<(), PlatformError> {
+        if let Some(credentials) = &bmc.credentials {
+            let state = self.state.lock().unwrap();
+            if let Some(stored) = state.users.get(&credentials.username) {
+                if stored != &credentials.password {
+                    return Err(PlatformError::HttpStatus {
+                        url: format!("https://{}/redfish/v1", bmc.address),
+                        status_code: 401,
+                        response_body: "simulated authentication failure: wrong password"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stringify the BMC MAC on the [`BmcRef`] for boot-order action records.
+    /// The legacy actions recorded the boot-interface MAC passed to
+    /// `set_boot_order_dpu_first` / `is_boot_order_setup`; the platform
+    /// request types do not carry one, so the closest stable stand-in is the
+    /// BMC MAC (empty string when absent).
+    fn boot_interface_mac_for(bmc: &BmcRef) -> String {
+        bmc.mac_address.map(|m| m.to_string()).unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl PlatformSelection for RedfishSim {
+    async fn selected_platform(&self, bmc: BmcRef) -> Result<SelectedPlatform, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        Ok(SelectedPlatform {
+            plugin_id: PluginId("nico.redfish.standard".to_string()),
+            plugin_version: "0.0.1".to_string(),
+            vendor: "Nvidia".to_string(),
+            specificity: MatchSpecificity::Generic,
+            reset_transport: ResetTransport::Redfish,
+            identity: PlatformIdentity::default(),
+        })
+    }
+
+    async fn probe_endpoint(&self, _address: std::net::SocketAddr) -> Result<(), PlatformError> {
+        // The legacy sim never simulated unreachable endpoints; every host is
+        // always up.
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl HostPowerOps for RedfishSim {
+    async fn power_state(&self, bmc: BmcRef) -> Result<PlatformPowerState, PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let state = self.state.lock().unwrap();
+        Ok(match state.hosts[&key].power {
+            PowerState::On => PlatformPowerState::On,
+            PowerState::Off => PlatformPowerState::Off,
+            _ => PlatformPowerState::Unknown,
+        })
+    }
+
+    async fn set_power(&self, bmc: BmcRef, action: PowerAction) -> Result<(), PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        // Record the same `SystemPowerControl` entry the legacy `power()`
+        // recorded so existing action assertions keep passing.
+        let control = match action {
+            PowerAction::On => SystemPowerControl::On,
+            PowerAction::GracefulShutdown => SystemPowerControl::GracefulShutdown,
+            PowerAction::ForceOff => SystemPowerControl::ForceOff,
+            PowerAction::GracefulRestart => SystemPowerControl::GracefulRestart,
+            PowerAction::ForceRestart => SystemPowerControl::ForceRestart,
+            PowerAction::PowerCycle => SystemPowerControl::PowerCycle,
+            PowerAction::AcPowerCycle => SystemPowerControl::ACPowercycle,
+        };
+        // Same state transition as the legacy sim `power()`: off for the two
+        // off-actions, on for everything else, no `UnnecessaryOperation`
+        // short-circuit (the legacy sim never raised it).
+        let power_state = match control {
+            SystemPowerControl::ForceOff | SystemPowerControl::GracefulShutdown => PowerState::Off,
+            _ => PowerState::On,
+        };
+        let mut state = self.state.lock().unwrap();
+        let host_state = state.hosts.get_mut(&key).unwrap();
+        host_state.power = power_state;
+        host_state.actions.push(RedfishSimAction::Power(control));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BmcResetOps for RedfishSim {
+    async fn bmc_status(&self, bmc: BmcRef) -> Result<BmcStatus, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        let state = self.state.lock().unwrap();
+        // Mirror the legacy `get_manager` sim: always reachable, and
+        // `DateTime` is the controller clock plus the configured offset (this
+        // backs the migrated `check_bmc_time_sync`).
+        let date_time = (Utc::now() + chrono::Duration::seconds(state.bmc_time_offset_seconds))
+            .to_rfc3339();
+        Ok(BmcStatus {
+            ready: true,
+            firmware_version: Some(state.fw_version.as_str().to_string()),
+            date_time: Some(date_time),
+        })
+    }
+
+    async fn reset_bmc(&self, bmc: BmcRef, _kind: BmcResetKind) -> Result<(), PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let mut state = self.state.lock().unwrap();
+        // Same side effects as the legacy `bmc_reset()`: record the action,
+        // no simulated downtime.
+        state
+            .hosts
+            .get_mut(&key)
+            .unwrap()
+            .actions
+            .push(RedfishSimAction::BmcReset);
+        Ok(())
+    }
+
+    async fn reset_chassis(
+        &self,
+        bmc: BmcRef,
+        req: ChassisResetRequest,
+    ) -> Result<(), PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let mut state = self.state.lock().unwrap();
+        state
+            .hosts
+            .get_mut(&key)
+            .unwrap()
+            .actions
+            .push(RedfishSimAction::ChassisReset(req.chassis_id));
+        Ok(())
+    }
+
+    async fn set_bmc_time_utc(&self, bmc: BmcRef) -> Result<(), PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let mut state = self.state.lock().unwrap();
+        // Mirror the legacy `set_utc_timezone()`: record the action only; the
+        // configured time offset is deliberately left untouched (tests clear
+        // it themselves via `set_bmc_time_offset_seconds`).
+        state
+            .hosts
+            .get_mut(&key)
+            .unwrap()
+            .actions
+            .push(RedfishSimAction::SetUtcTimezone);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MachineSetupOps for RedfishSim {
+    async fn apply_machine_setup(
+        &self,
+        bmc: BmcRef,
+        _req: MachineSetupRequest,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let mut state = self.state.lock().unwrap();
+        let job_id = state.machine_setup_bios_job_id.clone();
+        // The platform request carries no vendor BIOS profiles, so the
+        // recorded profile map is empty (the legacy path recorded whatever
+        // the caller passed).
+        state
+            .hosts
+            .get_mut(&key)
+            .unwrap()
+            .actions
+            .push(RedfishSimAction::MachineSetup {
+                oem_manager_profiles: Default::default(),
+            });
+        Ok(job_id.map(JobHandle::vendor_job))
+    }
+
+    async fn machine_setup_status(
+        &self,
+        bmc: BmcRef,
+    ) -> Result<PlatformMachineSetupStatus, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Mirror the legacy `is_bios_setup`: configured via
+        // `set_is_bios_setup`, defaulting to done.
+        let applied = self.state.lock().unwrap().is_bios_setup.unwrap_or(true);
+        Ok(PlatformMachineSetupStatus {
+            applied,
+            reboot_required: false,
+        })
+    }
+
+    async fn set_uefi_password(
+        &self,
+        bmc: BmcRef,
+        _password: String,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `change_uefi_password` sim returned Ok(None).
+        Ok(None)
+    }
+
+    async fn clear_nvram(&self, bmc: BmcRef) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `clear_nvram` sim was a no-op.
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BootOrderOps for RedfishSim {
+    async fn set_dpu_first_boot(
+        &self,
+        bmc: BmcRef,
+        _req: BootOrderRequest,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let boot_interface_mac = Self::boot_interface_mac_for(&bmc);
+        let mut state = self.state.lock().unwrap();
+        state
+            .hosts
+            .get_mut(&key)
+            .unwrap()
+            .actions
+            .push(RedfishSimAction::SetBootOrderDpuFirst { boot_interface_mac });
+        // Legacy `set_boot_order_dpu_first` sim returned Ok(None).
+        Ok(None)
+    }
+
+    async fn boot_order_status(&self, bmc: BmcRef) -> Result<BootOrderStatus, PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let boot_interface_mac = Self::boot_interface_mac_for(&bmc);
+        let mut state = self.state.lock().unwrap();
+        state
+            .hosts
+            .get_mut(&key)
+            .unwrap()
+            .actions
+            .push(RedfishSimAction::IsBootOrderSetup { boot_interface_mac });
+        // Legacy `is_boot_order_setup` always answered true and
+        // `is_infinite_boot_enabled` answered None (not reported).
+        Ok(BootOrderStatus {
+            dpu_first: true,
+            infinite_boot: None,
+        })
+    }
+
+    async fn set_infinite_boot(
+        &self,
+        bmc: BmcRef,
+        _enabled: bool,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `enable_infinite_boot` sim was a no-op.
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl SecureBootOps for RedfishSim {
+    async fn secure_boot_status(&self, bmc: BmcRef) -> Result<SecureBootStatus, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        let enabled = self
+            .state
+            .lock()
+            .unwrap()
+            .secure_boot
+            .load(Ordering::Relaxed);
+        Ok(SecureBootStatus { enabled })
+    }
+
+    async fn set_secure_boot(&self, bmc: BmcRef, enabled: bool) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `enable_secure_boot` stored true; the legacy
+        // `disable_secure_boot` sim never cleared the flag, but storing the
+        // requested value keeps set/status symmetric for new callers.
+        self.state
+            .lock()
+            .unwrap()
+            .secure_boot
+            .store(enabled, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn add_certificate(
+        &self,
+        bmc: BmcRef,
+        _certificate: Vec<u8>,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `add_secure_boot_certificate` returned an empty synchronous
+        // task; no job to poll.
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl LockdownOps for RedfishSim {
+    async fn lockdown_status(&self, bmc: BmcRef) -> Result<LockdownStatus, PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let state = self.state.lock().unwrap();
+        Ok(LockdownStatus {
+            host_enabled: state.hosts[&key].lockdown == EnabledDisabled::Enabled,
+            // The legacy sim's `lockdown_bmc` was a stateless no-op; there is
+            // no BMC-scope lockdown state to report.
+            bmc_enabled: false,
+        })
+    }
+
+    async fn set_host_lockdown(&self, bmc: BmcRef, enabled: bool) -> Result<(), PlatformError> {
+        let key = self.ensure_platform_host(&bmc);
+        let target = if enabled {
+            EnabledDisabled::Enabled
+        } else {
+            EnabledDisabled::Disabled
+        };
+        self.state.lock().unwrap().hosts.get_mut(&key).unwrap().lockdown = target;
+        Ok(())
+    }
+
+    async fn set_bmc_lockdown(&self, bmc: BmcRef, _enabled: bool) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `lockdown_bmc` sim was a no-op.
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BmcAccountOps for RedfishSim {
+    async fn ensure_user(&self, bmc: BmcRef, req: BmcUserRequest) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        self.check_platform_credentials(&bmc)?;
+        let mut state = self.state.lock().unwrap();
+        if let Some(existing) = state.users.get(&req.username) {
+            if existing == &req.password {
+                // Already in the desired state: "ensure" is satisfied.
+                return Ok(());
+            }
+            // Mirror the legacy `create_user` sim: an existing user with a
+            // different password surfaces the BMC's ResourceAlreadyExists
+            // rejection.
+            return Err(PlatformError::HttpStatus {
+                url: "AccountService/Accounts".to_string(),
+                status_code: 400,
+                response_body: format!(
+                    "The requested resource of type ManagerAccount with the property UserName \
+                     with the value {} already exists.",
+                    req.username
+                ),
+            });
+        }
+        state.users.insert(req.username, req.password);
+        Ok(())
+    }
+
+    async fn delete_user(
+        &self,
+        bmc: BmcRef,
+        req: BmcDeleteUserRequest,
+    ) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        self.check_platform_credentials(&bmc)?;
+        // The legacy `delete_user` sim was a no-op that left the user table
+        // untouched; removing the entry is the minimal extension that keeps
+        // ensure/delete round trips coherent for new callers.
+        self.state.lock().unwrap().users.remove(&req.username);
+        Ok(())
+    }
+
+    async fn change_password(
+        &self,
+        bmc: BmcRef,
+        req: BmcPasswordRequest,
+    ) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        self.check_platform_credentials(&bmc)?;
+        let mut state = self.state.lock().unwrap();
+        if !state.users.contains_key(&req.username) {
+            // Mirror the legacy `change_password` sim.
+            return Err(PlatformError::UserNotFound(req.username));
+        }
+        // Apply to stored credentials so a subsequent call carrying the new
+        // password authenticates (site-explorer rotation flow).
+        state.users.insert(req.username, req.new_password);
+        Ok(())
+    }
+
+    async fn set_account_policy(
+        &self,
+        bmc: BmcRef,
+        _req: BmcAccountPolicyRequest,
+    ) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        self.check_platform_credentials(&bmc)?;
+        // Legacy `set_machine_password_policy` sim was a no-op.
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DpuOps for RedfishSim {
+    async fn nic_mode(&self, bmc: BmcRef) -> Result<DpuNicModeStatus, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `get_nic_mode` sim reported no mode.
+        Ok(DpuNicModeStatus { mode: None })
+    }
+
+    async fn set_nic_mode(&self, bmc: BmcRef, _mode: DpuNicMode) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `set_nic_mode` sim was a no-op.
+        Ok(())
+    }
+
+    async fn set_host_rshim(&self, bmc: BmcRef, _enabled: bool) -> Result<(), PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `enable_rshim_bmc` / `set_host_rshim` sims were no-ops.
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl FirmwareOps for RedfishSim {
+    async fn start_update(
+        &self,
+        bmc: BmcRef,
+        _req: FirmwareUpdateRequest,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Mirror the legacy `update_firmware` sim: bump the stored firmware
+        // version so `in_upgrade_firmware_wait`-style version checks observe
+        // the post-update version, and hand back task "0" (which `poll`
+        // serves from the configured job-state sequence).
+        self.state.lock().unwrap().fw_version = Arc::new("24.10-17".to_string());
+        Ok(Some(JobHandle::task("0")))
+    }
+
+    async fn firmware_inventory(&self, bmc: BmcRef) -> Result<FirmwareInventory, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        let fw_version = self.state.lock().unwrap().fw_version.clone();
+        // Same three components (and version strings) the legacy
+        // `get_software_inventories` + `get_firmware` pair reported.
+        Ok(FirmwareInventory {
+            components: vec![
+                FirmwareComponent {
+                    id: "BMC_Firmware".to_string(),
+                    version: Some(format!("BF-{fw_version}")),
+                },
+                FirmwareComponent {
+                    id: "Bluefield_FW_ERoT".to_string(),
+                    version: Some("00.02.0180.0000".to_string()),
+                },
+                FirmwareComponent {
+                    id: "DPU_NIC".to_string(),
+                    version: Some("32.39.2048".to_string()),
+                },
+            ],
+        })
+    }
+}
+
+#[async_trait]
+impl StorageOps for RedfishSim {
+    async fn boss_controller(&self, bmc: BmcRef) -> Result<Option<BossController>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `get_boss_controller` sim reported none.
+        Ok(None)
+    }
+
+    async fn decommission(
+        &self,
+        bmc: BmcRef,
+        _req: DecommissionRequest,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `decommission_storage_controller` sim returned no job.
+        Ok(None)
+    }
+
+    async fn create_volume(
+        &self,
+        bmc: BmcRef,
+        _req: CreateVolumeRequest,
+    ) -> Result<Option<JobHandle>, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        // Legacy `create_storage_volume` sim returned no job.
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl JobPollOps for RedfishSim {
+    async fn poll(&self, bmc: BmcRef, job: &JobHandle) -> Result<PlatformJobState, PlatformError> {
+        self.ensure_platform_host(&bmc);
+        let mut state = self.state.lock().unwrap();
+        // Honor the SPDM trigger-evidence override the legacy `get_task`
+        // honored: that task id reports as interrupted (a terminal failure).
+        if state.get_task_trigger_evidence_returns_interrupted && job.id == TRIGGER_EVIDENCE_TASK_ID
+        {
+            return Ok(PlatformJobState::Failed {
+                detail: "Interrupted".to_string(),
+            });
+        }
+        // Drive from the same sequence `get_job_state` consumed; once the
+        // sequence is exhausted fall back to Completed, mirroring the legacy
+        // `get_task` sim which reported every task as completed.
+        Ok(match state.job_state_sequence.pop_front() {
+            Some(JobState::Scheduled) => PlatformJobState::Pending,
+            Some(JobState::Running) | Some(JobState::Unknown) => {
+                PlatformJobState::Running { percent: None }
+            }
+            Some(
+                failed @ (JobState::ScheduledWithErrors
+                | JobState::CompletedWithErrors
+                | JobState::Failed),
+            ) => PlatformJobState::Failed {
+                detail: format!("{failed:?}"),
+            },
+            Some(JobState::Completed) | None => PlatformJobState::Completed,
+        })
+    }
+}
+
+impl RedfishPlatformService for RedfishSim {}
+
+#[cfg(test)]
+mod platform_service_tests {
+    use carbide_redfish_platform_api::model::{BmcCredentials, BmcEndpointKind};
+
+    use super::*;
+
+    fn bmc() -> BmcRef {
+        BmcRef::new("10.1.2.3:443".parse().unwrap(), BmcEndpointKind::HostBmc)
+    }
+
+    #[tokio::test]
+    async fn set_power_records_action_and_flips_state() {
+        let sim = RedfishSim::default();
+        let timepoint = sim.timepoint();
+
+        sim.set_power(bmc(), PowerAction::ForceOff).await.unwrap();
+        assert_eq!(
+            sim.power_state(bmc()).await.unwrap(),
+            PlatformPowerState::Off
+        );
+
+        sim.set_power(bmc(), PowerAction::On).await.unwrap();
+        assert_eq!(
+            sim.power_state(bmc()).await.unwrap(),
+            PlatformPowerState::On
+        );
+
+        let actions = sim.actions_since(&timepoint).all_hosts();
+        assert_eq!(
+            actions,
+            vec![
+                RedfishSimAction::Power(SystemPowerControl::ForceOff),
+                RedfishSimAction::Power(SystemPowerControl::On),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_follows_configured_job_sequence() {
+        let sim = RedfishSim::default();
+        sim.set_job_state_sequence(vec![
+            JobState::Scheduled,
+            JobState::Running,
+            JobState::Failed,
+            JobState::Completed,
+        ]);
+
+        let job = JobHandle::task("0");
+        assert_eq!(
+            sim.poll(bmc(), &job).await.unwrap(),
+            PlatformJobState::Pending
+        );
+        assert_eq!(
+            sim.poll(bmc(), &job).await.unwrap(),
+            PlatformJobState::Running { percent: None }
+        );
+        assert!(matches!(
+            sim.poll(bmc(), &job).await.unwrap(),
+            PlatformJobState::Failed { .. }
+        ));
+        assert_eq!(
+            sim.poll(bmc(), &job).await.unwrap(),
+            PlatformJobState::Completed
+        );
+        // Exhausted sequence mirrors the legacy `get_task` sim: completed.
+        assert_eq!(
+            sim.poll(bmc(), &job).await.unwrap(),
+            PlatformJobState::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn change_password_updates_stored_credentials() {
+        let sim = RedfishSim::default();
+        sim.seed_user("admin", "old-password");
+
+        // Logging in with the wrong current password fails (401).
+        let wrong = bmc().with_credentials(BmcCredentials::new("admin", "bogus"));
+        let err = sim
+            .change_password(
+                wrong,
+                BmcPasswordRequest {
+                    username: "admin".to_string(),
+                    new_password: "new-password".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.is_unauthorized());
+
+        // Rotation with the current password succeeds and updates storage.
+        let current = bmc().with_credentials(BmcCredentials::new("admin", "old-password"));
+        sim.change_password(
+            current,
+            BmcPasswordRequest {
+                username: "admin".to_string(),
+                new_password: "new-password".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // A subsequent call authenticating with the new password succeeds.
+        let rotated = bmc().with_credentials(BmcCredentials::new("admin", "new-password"));
+        sim.set_account_policy(rotated, BmcAccountPolicyRequest::default())
+            .await
+            .unwrap();
+
+        // Unknown users still surface UserNotFound.
+        let err = sim
+            .change_password(
+                bmc(),
+                BmcPasswordRequest {
+                    username: "ghost".to_string(),
+                    new_password: "x".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PlatformError::UserNotFound(user) if user == "ghost"));
+    }
+
+    #[tokio::test]
+    async fn bmc_status_date_time_reflects_offset() {
+        let sim = RedfishSim::default();
+        sim.set_bmc_time_offset_seconds(600);
+
+        let status = sim.bmc_status(bmc()).await.unwrap();
+        assert!(status.ready);
+        let reported = chrono::DateTime::parse_from_rfc3339(status.date_time.as_deref().unwrap())
+            .unwrap()
+            .with_timezone(&Utc);
+        let drift = (reported - Utc::now()).num_seconds();
+        assert!(
+            (570..=630).contains(&drift),
+            "expected ~600s of simulated clock drift, got {drift}s"
+        );
     }
 }

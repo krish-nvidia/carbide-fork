@@ -253,9 +253,11 @@ impl BmcResetCap for IloBmcReset {
         &self,
         ctx: &PlatformExecutionContext<'_>,
     ) -> Result<BmcStatus, RedfishError> {
+        let (firmware_version, date_time) = providers::standard_manager_status(ctx).await?;
         Ok(BmcStatus {
             ready: true,
-            firmware_version: providers::standard_manager_firmware(ctx).await?,
+            firmware_version,
+            date_time,
         })
     }
 
@@ -451,7 +453,10 @@ impl BootOrderCap for IloBootOrder {
         let dpu_first = order
             .first()
             .is_some_and(|first| first.to_ascii_lowercase().contains("nic."));
-        Ok(BootOrderStatus { dpu_first })
+        Ok(BootOrderStatus {
+            dpu_first,
+            infinite_boot: None,
+        })
     }
 
     async fn set_infinite_boot(
@@ -715,7 +720,17 @@ impl FirmwareCap for IloFirmware {
         ctx: &PlatformExecutionContext<'_>,
         req: FirmwareUpdateRequest,
     ) -> Result<Option<JobHandle>, RedfishError> {
-        let mut body = json!({ "ImageURI": req.image_uri });
+        let uri = match &req.source {
+            carbide_redfish_platform_api::model::FirmwareSource::RemoteUri { uri, .. } => {
+                uri.clone()
+            }
+            carbide_redfish_platform_api::model::FirmwareSource::LocalFile { .. } => {
+                return Err(RedfishError::not_supported(
+                    "iLO local-file firmware push is not implemented",
+                ));
+            }
+        };
+        let mut body = json!({ "ImageURI": uri });
         if !req.targets.is_empty() {
             body["Targets"] = json!(req.targets);
         }
