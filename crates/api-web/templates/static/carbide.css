@@ -1958,20 +1958,22 @@ span.page-link.disabled {
 }
 
 .config-version {
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  align-self: stretch;
   padding-right: 1.25rem;
   border-right: 1px solid var(--border-color);
 }
 
 .config-version-label {
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .config-version code {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: 0.9rem;
   color: var(--text-primary);
 }
 
@@ -2043,10 +2045,26 @@ span.page-link.disabled {
   margin-left: 0.5rem;
 }
 
+/* Fixed layout so column widths hold regardless of content: Option and
+   Description get the room, Value and Default usually hold short content
+   like "true" or "none". */
 table.config-options {
   width: 100%;
   margin: 0;
   border-collapse: collapse;
+  table-layout: fixed;
+}
+
+table.config-options th:nth-child(1) {
+  width: 24%;
+}
+
+table.config-options th:nth-child(2) {
+  width: 13%;
+}
+
+table.config-options th:nth-child(3) {
+  width: 8%;
 }
 
 table.config-options th {
@@ -2074,8 +2092,8 @@ tr.config-row.unset .config-value,
   font-style: italic;
 }
 
-td.config-name {
-  width: 22%;
+td.config-name code {
+  word-break: break-word;
 }
 
 .config-type {
@@ -2087,7 +2105,6 @@ td.config-name {
 }
 
 td.config-value {
-  width: 22%;
   word-break: break-word;
 }
 
@@ -2129,7 +2146,6 @@ td.config-value pre {
 }
 
 td.config-default {
-  width: 12%;
   color: var(--text-muted);
   word-break: break-word;
 }

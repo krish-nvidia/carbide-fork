@@ -61,6 +61,12 @@ pub trait Base {
     fn tools() -> &'static [ToolLink] {
         carbide_api_core::configured_tools()
     }
+
+    /// Site name rendered in the sidebar header as "nico.<site>". Falls back
+    /// to "local" when the config doesn't set `sitename`.
+    fn site_name() -> &'static str {
+        carbide_api_core::configured_site_name().unwrap_or("local")
+    }
 }
 
 /// Reusable template for rendering metadata (name, description, labels, version)
