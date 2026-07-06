@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -1527,6 +1527,27 @@ fn validate_tool_url(name: &str, url: &str) -> eyre::Result<()> {
 }
 
 impl CarbideConfig {
+    /// Returns the dotted paths of every configuration key that was
+    /// explicitly provided by one of the merged configuration sources (the
+    /// base config file, the site config file, or `CARBIDE_API_*` environment
+    /// variables), mapped to a human-readable source label such as the
+    /// providing file's name or `CARBIDE_API_ environment variable(s)`.
+    ///
+    /// Keys absent from the map fall back to their compiled-in defaults.
+    /// Returns an empty map for configs that weren't produced by
+    /// `parse_carbide_config` (test fixtures, programmatic construction).
+    pub fn explicit_value_paths(&self) -> BTreeMap<String, String> {
+        let mut paths = BTreeMap::new();
+        let Some(figment) = self.config_ctx.as_ref() else {
+            return paths;
+        };
+        let Ok(root) = figment.extract::<figment::value::Value>() else {
+            return paths;
+        };
+        collect_explicit_paths(figment, &root, String::new(), &mut paths);
+        paths
+    }
+
     /// Returns a version of CarbideConfig where secrets are erased
     pub fn redacted(&self) -> Self {
         let mut config = self.clone();
@@ -1705,6 +1726,43 @@ impl CarbideConfig {
                 .clone(),
             firmware: self.get_firmware_config(),
         }
+    }
+}
+
+/// Walk the merged figment value tree, recording each leaf key's dotted path
+/// and the label of the source that provided it. Dicts recurse; arrays and
+/// scalars are leaves (an array is always provided wholesale by one source).
+fn collect_explicit_paths(
+    figment: &Figment,
+    value: &figment::value::Value,
+    path: String,
+    paths: &mut BTreeMap<String, String>,
+) {
+    if let figment::value::Value::Dict(_, dict) = value {
+        for (key, child) in dict {
+            let child_path = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{path}.{key}")
+            };
+            collect_explicit_paths(figment, child, child_path, paths);
+        }
+    } else {
+        let source = figment
+            .find_metadata(&path)
+            .map(explicit_source_label)
+            .unwrap_or_else(|| "configuration".to_string());
+        paths.insert(path, source);
+    }
+}
+
+fn explicit_source_label(metadata: &figment::Metadata) -> String {
+    match metadata.source.as_ref() {
+        Some(figment::Source::File(path)) => path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string()),
+        _ => metadata.name.to_string(),
     }
 }
 

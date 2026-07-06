@@ -28,7 +28,7 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{Router, get, post};
 use axum_extra::extract::cookie::{Cookie, Key, PrivateCookieJar};
-use carbide_api_core::cfg::file::{CarbideConfig, ToolLink};
+use carbide_api_core::cfg::file::ToolLink;
 use carbide_api_core::{Api, AuthContext, CarbideError, DefaultCredential};
 use carbide_authn::middleware::Principal;
 use http::header::CONTENT_TYPE;
@@ -227,6 +227,7 @@ mod action_status;
 mod attestation;
 mod auth;
 mod compute_allocation;
+mod configuration;
 mod domain;
 mod dpa;
 mod dpu_versions;
@@ -942,8 +943,9 @@ struct Index {
     log_filter: String,
     site_explorer_enabled: String,
     create_machines: String,
-    carbide_config: CarbideConfig,
     bmc_proxy: String,
+    tracing_enabled: String,
+    config: configuration::ConfigPageView,
     missing_default_credentials: Vec<DefaultCredential>,
 }
 
@@ -986,6 +988,24 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
         .clone()
         .map(|p| p.to_string())
         .unwrap_or("<None>".to_string());
+    let tracing_enabled = state
+        .dynamic_settings
+        .tracing_enabled
+        .load(Ordering::Relaxed)
+        .to_string();
+
+    let effective = match serde_json::to_value(state.runtime_config.redacted()) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::error!(%err, "serializing runtime config");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html(err.to_string()));
+        }
+    };
+    let config = configuration::build_config_page(
+        carbide_api_core::cfg::CONFIG_REFERENCE_MD,
+        &effective,
+        &state.runtime_config.explicit_value_paths(),
+    );
 
     let index = Index {
         version: carbide_version::v!(build_version),
@@ -993,8 +1013,9 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
         agent_upgrade_policy,
         site_explorer_enabled,
         create_machines,
-        carbide_config: state.runtime_config.redacted(),
         bmc_proxy,
+        tracing_enabled,
+        config,
         missing_default_credentials: state.missing_default_credentials().await,
     };
 
@@ -1034,4 +1055,51 @@ pub(crate) fn not_found_response(resource: String) -> Response {
 
 pub(crate) fn invalid_machine_id() -> String {
     "INVALID_MACHINE".to_string()
+}
+
+#[cfg(test)]
+mod index_template_tests {
+    use askama::Template as _;
+
+    use super::*;
+
+    /// Renders the Configuration page template against the real reference doc
+    /// to catch template/view-model mismatches without a running server.
+    #[test]
+    fn index_renders_config_page() {
+        let effective = serde_json::json!({
+            "listen": "[::]:1079",
+            "asn": 65001,
+            "attestation_enabled": false,
+        });
+        let mut explicit = std::collections::BTreeMap::new();
+        explicit.insert("asn".to_string(), "site-config.toml".to_string());
+        let config = configuration::build_config_page(
+            carbide_api_core::cfg::CONFIG_REFERENCE_MD,
+            &effective,
+            &explicit,
+        );
+
+        let index = Index {
+            version: "test-version",
+            agent_upgrade_policy: "Off",
+            log_filter: "info".to_string(),
+            site_explorer_enabled: "true".to_string(),
+            create_machines: "false".to_string(),
+            bmc_proxy: "<None>".to_string(),
+            tracing_enabled: "false".to_string(),
+            config,
+            missing_default_credentials: Vec::new(),
+        };
+        let html = index.render().expect("index template renders");
+
+        assert!(html.contains("Runtime Settings"));
+        // The overridden option shows its value and source badge.
+        assert!(html.contains("65001"));
+        assert!(html.contains("site-config.toml"));
+        // Grouping and catalog rendering are present.
+        assert!(html.contains("config-group-title"));
+        assert!(html.contains("attestation_enabled"));
+        assert!(html.contains("site_explorer"));
+    }
 }
