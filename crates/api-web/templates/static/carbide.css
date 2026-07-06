@@ -1944,40 +1944,21 @@ span.page-link.disabled {
 /* ------------------------------------------------------------------------
    CONFIGURATION PAGE (/admin)
 
-   Generated option catalog: grouped, collapsible sections with per-option
-   value, default, provenance, and description. Overridden options carry a
-   green accent bar and a source badge.
+   Generated option catalog: one tab per group, plain sections of option
+   tables. Overridden options carry a green accent bar and a source tag.
+   While the filter is active, all tabs with matches are shown at once.
    ------------------------------------------------------------------------ */
 
 .config-page {
   max-width: 1400px;
 }
 
-.config-summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-  color: var(--text-muted);
-}
-
-.config-summary-stat strong {
-  color: var(--text-primary);
-}
-
 .config-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  padding: 0.75rem 0;
-  background-color: var(--bg-primary);
-  border-bottom: 1px solid var(--border-color);
+  gap: 1rem;
+  margin: 1rem 0;
 }
 
 .config-toolbar input[type="search"] {
@@ -2005,70 +1986,25 @@ span.page-link.disabled {
   user-select: none;
 }
 
-.config-toolbar button {
-  padding: 0.45rem 0.9rem;
-  font-size: 0.85rem;
-}
-
-.config-group-title {
-  margin: 2rem 0 0.75rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 2px solid var(--accent-green-light);
+.config-note {
+  margin: 0 0 1rem;
+  max-width: 70rem;
+  color: var(--text-muted);
 }
 
 .config-section {
-  margin: 0.75rem 0;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
+  margin-bottom: 2.5rem;
 }
 
-.config-section summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  width: auto;
-  margin-bottom: 0;
-  border: none;
-  border-radius: 8px;
-}
-
-.config-section[open] summary {
-  border-bottom: 1px solid var(--border-color);
-}
-
-.config-section-title {
-  font-weight: 600;
-  color: var(--text-primary);
+.config-section h3 {
+  margin: 0 0 0.5rem;
 }
 
 .config-section-path {
-  color: var(--text-muted);
   font-size: 0.85rem;
-}
-
-.config-section-meta {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.config-section-meta .bubble,
-.config-section .bubble {
-  padding: 0.1rem 0.7rem;
-  margin: 0;
-  font-size: 0.8rem;
-}
-
-.config-count {
+  font-weight: normal;
   color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.config-section-note {
-  margin: 0.75rem 1rem;
-  color: var(--text-muted);
+  margin-left: 0.5rem;
 }
 
 table.config-options {
@@ -2079,26 +2015,21 @@ table.config-options {
 
 table.config-options th {
   text-align: left;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  font-size: 0.85rem;
+  font-weight: 500;
   color: var(--text-muted);
-  background-color: var(--bg-secondary);
-  padding: 0.5rem 0.75rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
 }
 
 table.config-options td {
   padding: 0.6rem 0.75rem;
-  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
   vertical-align: top;
 }
 
 tr.config-row.overridden td:first-child {
   box-shadow: inset 3px 0 0 var(--accent-green);
-}
-
-tr.config-row.overridden {
-  background-color: rgba(118, 185, 0, 0.05);
 }
 
 tr.config-row.unset .config-value,
@@ -2109,11 +2040,6 @@ tr.config-row.unset .config-value,
 
 td.config-name {
   width: 22%;
-}
-
-td.config-name code {
-  font-weight: 600;
-  color: var(--text-primary);
 }
 
 .config-type {
@@ -2152,7 +2078,6 @@ td.config-value pre {
   padding: 0.05rem 0.5rem;
   border-radius: 10px;
   font-size: 0.75rem;
-  font-weight: 600;
   color: var(--accent-green-hover);
   background-color: var(--accent-green-light);
 }
@@ -2167,14 +2092,28 @@ td.config-desc {
   color: var(--text-secondary);
 }
 
-.config-required {
-  padding: 0.1rem 0.6rem;
-  margin: 0;
-  font-size: 0.75rem;
+/* Filtering mode: bypass the tab system and show every group with matches,
+   labeled so rows from different tabs stay attributable. */
+.config-group-label {
+  display: none;
 }
 
-.config-runtime {
-  border-color: var(--accent-green);
+.config-filtering .config-group-label {
+  display: block;
+  margin: 1.5rem 0 1rem;
+}
+
+.config-filtering .tab-nav {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.config-filtering .tab-content {
+  display: block;
+}
+
+.config-filtering .tab-content:not(.config-has-matches) {
+  display: none;
 }
 
 .config-empty {

@@ -35,10 +35,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// Everything the Configuration page template needs.
 pub(crate) struct ConfigPageView {
     pub groups: Vec<ConfigGroupView>,
-    pub total_options: usize,
-    pub overridden_options: usize,
-    /// Distinct source labels (file names / env) that provided overrides.
-    pub sources: Vec<String>,
 }
 
 pub(crate) struct ConfigGroupView {
@@ -52,7 +48,6 @@ pub(crate) struct ConfigSectionView {
     /// Dotted TOML path prefix of this section ("" for top-level options).
     pub path: String,
     pub rows: Vec<ConfigRowView>,
-    pub overridden: usize,
 }
 
 pub(crate) struct ConfigRowView {
@@ -84,14 +79,14 @@ struct FieldDoc {
 /// Display groups, in page order. Sections land in a group via
 /// `group_for_top_level_field`; unknown fields fall through to "Other".
 const GROUP_ORDER: &[&str] = &[
-    "Server & API",
+    "Server",
     "Networking",
-    "Machines & Lifecycle",
-    "DPUs & Provisioning",
-    "Firmware & Updates",
-    "Security & Attestation",
-    "Hardware Discovery & Racks",
-    "Observability & Diagnostics",
+    "Machines",
+    "DPUs",
+    "Firmware",
+    "Security",
+    "Hardware",
+    "Observability",
     "Integrations",
     "Other",
 ];
@@ -101,7 +96,7 @@ fn group_for_top_level_field(name: &str) -> &'static str {
         "listen" | "listen_only" | "listen_mode" | "tls" | "database_url"
         | "max_database_connections" | "max_find_by_ids" | "auth" | "bypass_rbac"
         | "enable_admin_ui" | "web_ui_sidebar_tools" | "sitename" | "initial_objects_file" => {
-            "Server & API"
+            "Server"
         }
         "asn" | "dhcp_servers" | "ntp_servers" | "route_servers" | "enable_route_servers"
         | "deny_prefixes" | "site_fabric_prefixes" | "anycast_site_prefixes"
@@ -114,24 +109,24 @@ fn group_for_top_level_field(name: &str) -> &'static str {
         "host_naming_strategy" | "machine_state_controller" | "machine_validation_config"
         | "auto_machine_repair_plugin" | "host_health" | "initial_domain_name"
         | "min_dpu_functioning_links" | "bom_validation" | "compute_allocation_enforcement" => {
-            "Machines & Lifecycle"
+            "Machines"
         }
         "dpu_config" | "dpu_ipmi_tool_impl" | "dpu_ipmi_reboot_attempts" | "nvue_enabled"
         | "dpf" | "initial_dpu_agent_upgrade_policy" | "x86_pxe_boot_url_override"
         | "arm_pxe_boot_url_override" | "pxe_public_base_url" | "set_http_boot_uri_for_vendors"
-        | "retained_boot_interface_window" => "DPUs & Provisioning",
+        | "retained_boot_interface_window" => "DPUs",
         "host_models" | "firmware_global" | "machine_updater"
         | "max_concurrent_machine_updates" | "machine_update_run_interval"
-        | "mlxconfig_profiles" | "supernic_firmware_profiles" => "Firmware & Updates",
+        | "mlxconfig_profiles" | "supernic_firmware_profiles" => "Firmware",
         "attestation_enabled" | "tpm_required" | "machine_identity" | "spdm"
         | "spdm_state_controller" | "measured_boot_collector" | "bmc_session_lockout_threshold"
-        | "secrets" | "kms" => "Security & Attestation",
+        | "secrets" | "kms" => "Security",
         "site_explorer" | "ib_config" | "ib_fabrics" | "nvlink_config"
         | "rack_management_enabled" | "rms" | "rack_profiles" | "rack_state_controller"
         | "power_shelf_state_controller" | "switch_state_controller" | "power_manager_options"
-        | "ib_partition_state_controller" | "component_manager" => "Hardware Discovery & Racks",
+        | "ib_partition_state_controller" | "component_manager" => "Hardware",
         "metrics_endpoint" | "alt_metric_prefix" | "tracing" | "observability"
-        | "log_history" => "Observability & Diagnostics",
+        | "log_history" => "Observability",
         "vmaas_config" | "dsx_exchange_event_bus" | "mqtt" => "Integrations",
         _ => "Other",
     }
@@ -214,43 +209,23 @@ pub(crate) fn build_config_page(
     }
 
     let mut groups = Vec::new();
-    let mut total_options = 0;
-    let mut overridden_options = 0;
-    let mut sources: Vec<String> = Vec::new();
-
     for title in GROUP_ORDER {
         let mut sections = Vec::new();
         if let Some(rows) = top_level_rows.remove(title) {
-            let overridden = rows.iter().filter(|r| r.overridden).count();
             sections.push(ConfigSectionView {
                 title: "Core Options".to_string(),
                 anchor: format!("cfg-{}-core", slugify(title)),
                 path: String::new(),
                 rows,
-                overridden,
             });
         }
         sections.extend(grouped.remove(title).unwrap_or_default());
-        for section in &sections {
-            total_options += section.rows.len();
-            overridden_options += section.overridden;
-            for row in &section.rows {
-                if row.overridden && !row.source.is_empty() && !sources.contains(&row.source) {
-                    sources.push(row.source.clone());
-                }
-            }
-        }
         if !sections.is_empty() {
             groups.push(ConfigGroupView { title, sections });
         }
     }
 
-    ConfigPageView {
-        groups,
-        total_options,
-        overridden_options,
-        sources,
-    }
+    ConfigPageView { groups }
 }
 
 /// If the field's type refers to a documented sub-struct section (and isn't a
@@ -306,13 +281,11 @@ fn build_section(
             None => rows.push(build_row(field, &field_path, effective, explicit_paths, false)),
         }
     }
-    let overridden = rows.iter().filter(|r| r.overridden).count();
     out.push(ConfigSectionView {
         anchor: format!("cfg-{}", slugify(&path)),
         title,
         path,
         rows,
-        overridden,
     });
     out.extend(nested);
 }
@@ -447,7 +420,7 @@ fn format_default(default: &str) -> String {
     let trimmed = default.trim();
     match trimmed {
         "" | "—" | "-" => "<span class=\"config-unset\">—</span>".to_string(),
-        "**required**" => "<span class=\"bubble error config-required\">required</span>".to_string(),
+        "**required**" => "<em>required</em>".to_string(),
         "*(see below)*" | "*(default)*" => "<span class=\"config-unset\">—</span>".to_string(),
         other => markdown_lite(other),
     }
@@ -707,16 +680,13 @@ mod configuration_tests {
             &effective,
             &explicit,
         );
-        assert!(page.total_options > 100);
-        assert!(page.overridden_options >= 2);
-        assert!(page.sources.contains(&"site.toml".to_string()));
-
         let rows: Vec<&ConfigRowView> = page
             .groups
             .iter()
             .flat_map(|g| g.sections.iter())
             .flat_map(|s| s.rows.iter())
             .collect();
+        assert!(rows.len() > 150, "expected full catalog, got {}", rows.len());
         let asn = rows.iter().find(|r| r.path == "asn").unwrap();
         assert!(asn.overridden);
         assert_eq!(asn.source, "site.toml");

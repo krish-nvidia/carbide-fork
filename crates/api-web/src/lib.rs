@@ -1093,12 +1093,13 @@ mod index_template_tests {
         };
         let html = index.render().expect("index template renders");
 
-        assert!(html.contains("Runtime Settings"));
-        // The overridden option shows its value and source badge.
+        // Tab navigation with the runtime tab active.
+        assert!(html.contains(r#"data-tab="runtime""#));
+        assert!(html.contains(r#"id="tab-networking""#));
+        // The overridden option shows its value and source tag.
         assert!(html.contains("65001"));
         assert!(html.contains("site-config.toml"));
-        // Grouping and catalog rendering are present.
-        assert!(html.contains("config-group-title"));
+        // Catalog rendering is present.
         assert!(html.contains("attestation_enabled"));
         assert!(html.contains("site_explorer"));
     }

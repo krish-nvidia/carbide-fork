@@ -8,109 +8,103 @@
 {% include "missing_credentials_warning.html" %}
 
 <div class="config-page">
-	<div class="config-summary">
-		<span class="bubble">version {{ version }}</span>
-		<span class="config-summary-stat">{{ config.total_options }} options</span>
-		{% if config.overridden_options > 0 %}
-		<span class="config-summary-stat"><strong>{{ config.overridden_options }} overridden</strong> via
-			{% for source in config.sources %}{% if !loop.first %}, {% endif %}<code>{{ source }}</code>{% endfor %}
-		</span>
-		{% else %}
-		<span class="config-summary-stat">all values at compiled-in defaults</span>
-		{% endif %}
-	</div>
-
 	<div class="config-toolbar">
 		<input type="search" id="config-search" placeholder="Filter options by name, value, or description&hellip;" autocomplete="off">
 		<label class="config-toggle">
 			<input type="checkbox" id="config-overridden-only"> Overridden only
 		</label>
-		<button type="button" id="config-expand-all">Expand all</button>
-		<button type="button" id="config-collapse-all">Collapse all</button>
 	</div>
 
-	<details class="config-section config-runtime" open>
-		<summary>
-			<span class="config-section-title">Runtime Settings</span>
-			<span class="bubble">runtime-adjustable</span>
-		</summary>
-		<p class="config-section-note">
-			These settings can be changed on a live server with <code>nico-admin-cli set</code>.
-			Overrides carry an expiry (default 1h) and revert to their startup values when it
-			passes, or on restart.
-		</p>
-		<table class="config-options">
-			<thead><tr><th>Setting</th><th>Current value</th><th>Description</th></tr></thead>
-			<tbody>
-				<tr class="config-row">
-					<td class="config-name"><code>log_filter</code></td>
-					<td class="config-value"><code>{{ log_filter }}</code></td>
-					<td class="config-desc">Active <code>RUST_LOG</code> log filter.</td>
-				</tr>
-				<tr class="config-row">
-					<td class="config-name"><code>site_explorer_enabled</code></td>
-					<td class="config-value"><code>{{ site_explorer_enabled }}</code></td>
-					<td class="config-desc">Whether site explorer runs periodic hardware explorations.</td>
-				</tr>
-				<tr class="config-row">
-					<td class="config-name"><code>create_machines</code></td>
-					<td class="config-value"><code>{{ create_machines }}</code></td>
-					<td class="config-desc">Whether site explorer creates machines from discovered endpoints.</td>
-				</tr>
-				<tr class="config-row">
-					<td class="config-name"><code>bmc_proxy</code></td>
-					<td class="config-value"><code>{{ bmc_proxy }}</code></td>
-					<td class="config-desc">Proxy used for talking to BMCs.</td>
-				</tr>
-				<tr class="config-row">
-					<td class="config-name"><code>tracing_enabled</code></td>
-					<td class="config-value"><code>{{ tracing_enabled }}</code></td>
-					<td class="config-desc">Whether log tracing is enabled.</td>
-				</tr>
-				<tr class="config-row">
-					<td class="config-name"><code>dpu_agent_upgrade_policy</code></td>
-					<td class="config-value"><code>{{ agent_upgrade_policy }}</code></td>
-					<td class="config-desc">Active DPU agent upgrade policy.</td>
-				</tr>
-			</tbody>
-		</table>
-	</details>
+	<div class="tab-nav">
+		<button class="tab-button active" data-tab="runtime">Runtime</button>
+		{% for group in config.groups %}
+		<button class="tab-button" data-tab="{{ group.title|lower }}">{{ group.title }}</button>
+		{% endfor %}
+		<div class="tab-indicator"></div>
+	</div>
+
+	<div class="tab-content active" id="tab-runtime">
+		<h2 class="config-group-label">Runtime</h2>
+		<section class="config-section">
+			<p class="config-note">
+				These settings can be changed on a live server with <code>nico-admin-cli set</code>.
+				Overrides carry an expiry (default 1h) and revert to their startup values when it
+				passes, or on restart. Everything under the other tabs is file configuration:
+				changing it means editing the config file and restarting.
+			</p>
+			<table class="config-options">
+				<thead><tr><th>Setting</th><th>Current value</th><th>Description</th></tr></thead>
+				<tbody>
+					<tr class="config-row">
+						<td class="config-name"><code>version</code></td>
+						<td class="config-value"><code>{{ version }}</code></td>
+						<td class="config-desc">Build version of this server (read-only).</td>
+					</tr>
+					<tr class="config-row">
+						<td class="config-name"><code>log_filter</code></td>
+						<td class="config-value"><code>{{ log_filter }}</code></td>
+						<td class="config-desc">Active <code>RUST_LOG</code> log filter.</td>
+					</tr>
+					<tr class="config-row">
+						<td class="config-name"><code>site_explorer_enabled</code></td>
+						<td class="config-value"><code>{{ site_explorer_enabled }}</code></td>
+						<td class="config-desc">Whether site explorer runs periodic hardware explorations.</td>
+					</tr>
+					<tr class="config-row">
+						<td class="config-name"><code>create_machines</code></td>
+						<td class="config-value"><code>{{ create_machines }}</code></td>
+						<td class="config-desc">Whether site explorer creates machines from discovered endpoints.</td>
+					</tr>
+					<tr class="config-row">
+						<td class="config-name"><code>bmc_proxy</code></td>
+						<td class="config-value"><code>{{ bmc_proxy }}</code></td>
+						<td class="config-desc">Proxy used for talking to BMCs.</td>
+					</tr>
+					<tr class="config-row">
+						<td class="config-name"><code>tracing_enabled</code></td>
+						<td class="config-value"><code>{{ tracing_enabled }}</code></td>
+						<td class="config-desc">Whether log tracing is enabled.</td>
+					</tr>
+					<tr class="config-row">
+						<td class="config-name"><code>dpu_agent_upgrade_policy</code></td>
+						<td class="config-value"><code>{{ agent_upgrade_policy }}</code></td>
+						<td class="config-desc">Active DPU agent upgrade policy.</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+	</div>
 
 	{% for group in config.groups %}
-	<h2 class="config-group-title">{{ group.title }}</h2>
-	{% for section in group.sections %}
-	<details class="config-section" id="{{ section.anchor }}" {% if section.overridden > 0 %}open{% endif %}>
-		<summary>
-			<span class="config-section-title">{{ section.title }}</span>
-			{% if !section.path.is_empty() %}<code class="config-section-path">[{{ section.path }}]</code>{% endif %}
-			<span class="config-section-meta">
-				{% if section.overridden > 0 %}<span class="bubble success">{{ section.overridden }} overridden</span>{% endif %}
-				<span class="config-count">{{ section.rows.len() }} option{% if section.rows.len() != 1 %}s{% endif %}</span>
-			</span>
-		</summary>
-		<table class="config-options">
-			<thead><tr><th>Option</th><th>Value</th><th>Default</th><th>Description</th></tr></thead>
-			<tbody>
-				{% for row in section.rows %}
-				<tr class="config-row{% if row.overridden %} overridden{% endif %}{% if row.unset %} unset{% endif %}">
-					<td class="config-name">
-						<code title="{{ row.path }}">{{ row.name }}</code>
-						{% if !row.ty.is_empty() %}<span class="config-type">{{ row.ty }}</span>{% endif %}
-						{% if row.undocumented %}<span class="bubble warning">undocumented</span>{% endif %}
-					</td>
-					<td class="config-value">
-						{% if row.multiline %}<details><summary>show value</summary><pre>{{ row.value_html|safe }}</pre></details>
-						{% else %}{{ row.value_html|safe }}{% endif %}
-						{% if row.overridden %}<span class="config-source" title="Explicitly set — not the compiled-in default">{{ row.source }}</span>{% endif %}
-					</td>
-					<td class="config-default">{{ row.default_html|safe }}</td>
-					<td class="config-desc">{{ row.description_html|safe }}</td>
-				</tr>
-				{% endfor %}
-			</tbody>
-		</table>
-	</details>
-	{% endfor %}
+	<div class="tab-content" id="tab-{{ group.title|lower }}">
+		<h2 class="config-group-label">{{ group.title }}</h2>
+		{% for section in group.sections %}
+		<section class="config-section" id="{{ section.anchor }}">
+			<h3>{{ section.title }}{% if section.path.len() > 0 %} <code class="config-section-path">[{{ section.path }}]</code>{% endif %}</h3>
+			<table class="config-options">
+				<thead><tr><th>Option</th><th>Value</th><th>Default</th><th>Description</th></tr></thead>
+				<tbody>
+					{% for row in section.rows %}
+					<tr class="config-row{% if row.overridden %} overridden{% endif %}{% if row.unset %} unset{% endif %}">
+						<td class="config-name">
+							<code title="{{ row.path }}">{{ row.name }}</code>
+							{% if !row.ty.is_empty() %}<span class="config-type">{{ row.ty }}</span>{% endif %}
+							{% if row.undocumented %}<span class="config-type">undocumented</span>{% endif %}
+						</td>
+						<td class="config-value">
+							{% if row.multiline %}<details><summary>show value</summary><pre>{{ row.value_html|safe }}</pre></details>
+							{% else %}{{ row.value_html|safe }}{% endif %}
+							{% if row.overridden %}<span class="config-source" title="Explicitly set — not the compiled-in default">{{ row.source }}</span>{% endif %}
+						</td>
+						<td class="config-default">{{ row.default_html|safe }}</td>
+						<td class="config-desc">{{ row.description_html|safe }}</td>
+					</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</section>
+		{% endfor %}
+	</div>
 	{% endfor %}
 
 	<p class="config-empty" id="config-no-matches" hidden>No options match the current filter.</p>
@@ -118,48 +112,40 @@
 
 <script>
 (() => {
+	const page = document.querySelector('.config-page');
 	const search = document.getElementById('config-search');
 	const overriddenOnly = document.getElementById('config-overridden-only');
-	const sections = [...document.querySelectorAll('.config-section:not(.config-runtime)')];
-	const groups = [...document.querySelectorAll('.config-group-title')];
+	const contents = [...page.querySelectorAll('.tab-content')];
 	const noMatches = document.getElementById('config-no-matches');
 
+	// While a filter is active the tab nav is bypassed: every group with
+	// matches is shown (with its label), so search covers the whole catalog.
 	function applyFilter() {
 		const query = search.value.trim().toLowerCase();
-		const onlyOverridden = overriddenOnly.checked;
+		const filtering = query !== '' || overriddenOnly.checked;
+		page.classList.toggle('config-filtering', filtering);
 		let anyVisible = false;
-		for (const section of sections) {
-			let visibleRows = 0;
-			for (const row of section.querySelectorAll('.config-row')) {
-				const matches = (!query || row.textContent.toLowerCase().includes(query))
-					&& (!onlyOverridden || row.classList.contains('overridden'));
-				row.hidden = !matches;
-				if (matches) visibleRows++;
+		for (const content of contents) {
+			let contentVisible = 0;
+			for (const section of content.querySelectorAll('.config-section')) {
+				let visibleRows = 0;
+				for (const row of section.querySelectorAll('.config-row')) {
+					const matches = (!query || row.textContent.toLowerCase().includes(query))
+						&& (!overriddenOnly.checked || row.classList.contains('overridden'));
+					row.hidden = !matches;
+					if (matches) visibleRows++;
+				}
+				section.hidden = filtering && visibleRows === 0;
+				contentVisible += visibleRows;
 			}
-			section.hidden = visibleRows === 0;
-			if (visibleRows > 0) {
-				anyVisible = true;
-				if (query || onlyOverridden) section.open = true;
-			}
+			content.classList.toggle('config-has-matches', contentVisible > 0);
+			if (contentVisible > 0) anyVisible = true;
 		}
-		// Hide group headings whose sections are all hidden.
-		for (const heading of groups) {
-			let node = heading.nextElementSibling, visible = false;
-			while (node && !node.classList.contains('config-group-title')) {
-				if (node.classList.contains('config-section') && !node.hidden) visible = true;
-				node = node.nextElementSibling;
-			}
-			heading.hidden = !visible;
-		}
-		noMatches.hidden = anyVisible;
+		noMatches.hidden = !filtering || anyVisible;
 	}
 
 	search.addEventListener('input', applyFilter);
 	overriddenOnly.addEventListener('change', applyFilter);
-	document.getElementById('config-expand-all').addEventListener('click',
-		() => sections.forEach(s => { s.open = true; }));
-	document.getElementById('config-collapse-all').addEventListener('click',
-		() => sections.forEach(s => { s.open = false; }));
 })();
 </script>
 {% endblock %}
