@@ -2045,9 +2045,8 @@ span.page-link.disabled {
   margin-left: 0.5rem;
 }
 
-/* Fixed layout so column widths hold regardless of content: Option and
-   Description get the room, Value and Default usually hold short content
-   like "true" or "none". */
+/* Fixed layout so column widths hold regardless of content: equal columns,
+   with a slightly bigger allowance for Description. */
 table.config-options {
   width: 100%;
   margin: 0;
@@ -2055,16 +2054,10 @@ table.config-options {
   table-layout: fixed;
 }
 
-table.config-options th:nth-child(1) {
-  width: 24%;
-}
-
-table.config-options th:nth-child(2) {
-  width: 13%;
-}
-
+table.config-options th:nth-child(1),
+table.config-options th:nth-child(2),
 table.config-options th:nth-child(3) {
-  width: 8%;
+  width: 22%;
 }
 
 table.config-options th {
