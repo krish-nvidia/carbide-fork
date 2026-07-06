@@ -628,7 +628,6 @@ async fn test_instance_upgrading_actual(
         // Simulate a tenant OKing the request
         let request = rpc::forge::InstancePowerRequest {
             instance_id: tinstance.id.into(),
-            machine_id: None,
             operation: rpc::forge::instance_power_request::Operation::PowerReset.into(),
             boot_with_custom_ipxe: false,
             apply_updates_on_reboot: true,

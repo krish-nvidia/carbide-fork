@@ -1847,7 +1847,7 @@ func (uih UpdateInstanceHandler) handleReboot(c echo.Context, logger *zerolog.Lo
 
 		// Prepare the config update request workflow object
 		rebootInstanceRequest := &cwssaws.InstancePowerRequest{
-			MachineId:            &cwssaws.MachineId{Id: *instance.MachineID},
+			InstanceId:           &cwssaws.InstanceId{Value: instance.GetSiteID().String()},
 			Operation:            cwssaws.InstancePowerRequest_POWER_RESET,
 			BootWithCustomIpxe:   rebootWithCustomIpxe,
 			ApplyUpdatesOnReboot: applyUpdatesOnReboot,

@@ -2647,9 +2647,8 @@ message MachineState {
 }
 
 message InstancePowerRequest {
-  // The Machine to perform power operation on.
-  // Deprecated: User `instance_id` field instead.
-  common.MachineId machine_id = 1;
+  reserved 1;
+  reserved "machine_id";
 
   enum Operation {
     POWER_RESET = 0;
