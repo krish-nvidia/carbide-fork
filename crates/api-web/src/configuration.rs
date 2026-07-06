@@ -68,6 +68,8 @@ pub(crate) struct ConfigRowView {
     /// The option resolves to null/absent (unset optional value).
     pub unset: bool,
     pub undocumented: bool,
+    /// The value shown is the live, runtime-adjustable value.
+    pub runtime: bool,
 }
 
 /// Placeholder cells for absent content, kept to plain words -- no dashes
@@ -75,6 +77,17 @@ pub(crate) struct ConfigRowView {
 const UNSET_HTML: &str = "<span class=\"config-unset\">unset</span>";
 const EMPTY_HTML: &str = "<span class=\"config-unset\">empty</span>";
 const NONE_HTML: &str = "<span class=\"config-unset\">none</span>";
+
+/// A dynamic setting whose live value is folded into the catalog: attached to
+/// the config option at `path` when one is documented, otherwise rendered as
+/// its own row (with `description`) in that path's group.
+pub(crate) struct RuntimeSetting {
+    pub path: &'static str,
+    /// Live value; `None` renders as "unset".
+    pub value: Option<String>,
+    /// Used only when no documented option matches `path`.
+    pub description: &'static str,
+}
 
 /// One `| field | type | default | description |` row of the reference doc.
 struct FieldDoc {
@@ -129,7 +142,9 @@ fn group_for_top_level_field(name: &str) -> &'static str {
         | "power_shelf_state_controller" | "switch_state_controller" | "power_manager_options"
         | "ib_partition_state_controller" | "component_manager" => "Hardware & Racks",
         "metrics_endpoint" | "alt_metric_prefix" | "tracing" | "observability" | "log_history"
-        | "vmaas_config" | "dsx_exchange_event_bus" | "mqtt" => "Integrations & Observability",
+        | "log_filter" | "vmaas_config" | "dsx_exchange_event_bus" | "mqtt" => {
+            "Integrations & Observability"
+        }
         _ => "Other",
     }
 }
@@ -140,6 +155,7 @@ pub(crate) fn build_config_page(
     reference_md: &str,
     effective: &serde_json::Value,
     explicit_paths: &BTreeMap<String, String>,
+    runtime_settings: Vec<RuntimeSetting>,
 ) -> ConfigPageView {
     let sections = parse_reference(reference_md);
 
@@ -208,6 +224,41 @@ pub(crate) fn build_config_page(
                 .or_default()
                 .push(row);
         }
+    }
+
+    // Fold live runtime values into their documented rows; settings without a
+    // documented option become their own rows in the matching group.
+    'settings: for setting in runtime_settings {
+        let all_rows = top_level_rows
+            .values_mut()
+            .chain(grouped.values_mut().flatten().map(|s| &mut s.rows));
+        for rows in all_rows {
+            if let Some(row) = rows.iter_mut().find(|row| row.path == setting.path) {
+                row.value_html = runtime_value_html(&setting);
+                row.multiline = false;
+                row.unset = setting.value.is_none();
+                row.runtime = true;
+                continue 'settings;
+            }
+        }
+        let top = setting.path.split('.').next().unwrap_or(setting.path);
+        top_level_rows
+            .entry(group_for_top_level_field(top))
+            .or_default()
+            .push(ConfigRowView {
+                name: setting.path.rsplit('.').next().unwrap_or(setting.path).to_string(),
+                path: setting.path.to_string(),
+                ty: String::new(),
+                value_html: runtime_value_html(&setting),
+                multiline: false,
+                overridden: false,
+                source: String::new(),
+                default_html: NONE_HTML.to_string(),
+                description_html: markdown_lite(setting.description),
+                unset: setting.value.is_none(),
+                undocumented: false,
+                runtime: true,
+            });
     }
 
     let mut groups = Vec::new();
@@ -321,6 +372,14 @@ fn build_row(
         },
         unset,
         undocumented,
+        runtime: false,
+    }
+}
+
+fn runtime_value_html(setting: &RuntimeSetting) -> String {
+    match &setting.value {
+        Some(value) => format!("<code>{}</code>", escape_html(value)),
+        None => UNSET_HTML.to_string(),
     }
 }
 
@@ -680,6 +739,7 @@ mod configuration_tests {
             carbide_api_core::cfg::CONFIG_REFERENCE_MD,
             &effective,
             &explicit,
+            Vec::new(),
         );
         let rows: Vec<&ConfigRowView> = page
             .groups

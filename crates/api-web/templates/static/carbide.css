@@ -1949,10 +1949,6 @@ span.page-link.disabled {
    While the filter is active, all tabs with matches are shown at once.
    ------------------------------------------------------------------------ */
 
-.config-page {
-  max-width: 1400px;
-}
-
 .config-toolbar {
   display: flex;
   align-items: center;
@@ -1999,10 +1995,18 @@ span.page-link.disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  align-self: stretch;
+  padding-left: 1.25rem;
+  border-left: 1px solid var(--border-color);
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+}
+
+.config-toggle input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent-green);
 }
 
 /* Tighten the tab nav toward the toolbar so the header reads as one unit,
@@ -2102,6 +2106,16 @@ td.config-value pre {
   background-color: var(--bg-tertiary);
   border-radius: 6px;
   font-size: 0.8rem;
+}
+
+.config-runtime {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  color: var(--info);
+  background-color: rgba(49, 130, 206, 0.12);
 }
 
 .config-source {

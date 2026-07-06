@@ -939,12 +939,6 @@ pub async fn auth_oauth2(
 #[template(path = "index.html")]
 struct Index {
     version: &'static str,
-    agent_upgrade_policy: &'static str,
-    log_filter: String,
-    site_explorer_enabled: String,
-    create_machines: String,
-    bmc_proxy: String,
-    tracing_enabled: String,
     config: configuration::ConfigPageView,
     missing_default_credentials: Vec<DefaultCredential>,
 }
@@ -986,13 +980,48 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
         .load()
         .as_ref()
         .clone()
-        .map(|p| p.to_string())
-        .unwrap_or("<None>".to_string());
+        .map(|p| p.to_string());
     let tracing_enabled = state
         .dynamic_settings
         .tracing_enabled
         .load(Ordering::Relaxed)
         .to_string();
+
+    // Live values of the runtime-adjustable settings, folded into the catalog
+    // next to their config options and tagged "runtime".
+    use configuration::RuntimeSetting;
+    let runtime_settings = vec![
+        RuntimeSetting {
+            path: "log_filter",
+            value: Some(state.log_filter_string()),
+            description: "Active `RUST_LOG` log filter.",
+        },
+        RuntimeSetting {
+            path: "site_explorer.enabled",
+            value: Some(site_explorer_enabled),
+            description: "Whether site explorer runs periodic hardware explorations.",
+        },
+        RuntimeSetting {
+            path: "site_explorer.create_machines",
+            value: Some(create_machines),
+            description: "Whether site explorer creates machines from discovered endpoints.",
+        },
+        RuntimeSetting {
+            path: "site_explorer.bmc_proxy",
+            value: bmc_proxy,
+            description: "Proxy used for talking to BMCs.",
+        },
+        RuntimeSetting {
+            path: "tracing.enabled",
+            value: Some(tracing_enabled),
+            description: "Whether log tracing is enabled.",
+        },
+        RuntimeSetting {
+            path: "initial_dpu_agent_upgrade_policy",
+            value: Some(agent_upgrade_policy.to_string()),
+            description: "Active DPU agent upgrade policy.",
+        },
+    ];
 
     let effective = match serde_json::to_value(state.runtime_config.redacted()) {
         Ok(value) => value,
@@ -1005,16 +1034,14 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
         carbide_api_core::cfg::CONFIG_REFERENCE_MD,
         &effective,
         &state.runtime_config.explicit_value_paths(),
+        runtime_settings,
     );
 
     let index = Index {
-        version: carbide_version::v!(build_version),
-        log_filter: state.log_filter_string(),
-        agent_upgrade_policy,
-        site_explorer_enabled,
-        create_machines,
-        bmc_proxy,
-        tracing_enabled,
+        // TODO: temporarily hardcoded so deployments show a recognizable
+        // version while carbide_version reports a dev build; restore
+        // carbide_version::v!(build_version) before merging.
+        version: "v2.0.0-pr-449-g28cf6eb4f",
         config,
         missing_default_credentials: state.missing_default_credentials().await,
     };
@@ -1074,31 +1101,40 @@ mod index_template_tests {
         });
         let mut explicit = std::collections::BTreeMap::new();
         explicit.insert("asn".to_string(), "site-config.toml".to_string());
+        let runtime_settings = vec![
+            configuration::RuntimeSetting {
+                path: "log_filter",
+                value: Some("info".to_string()),
+                description: "Active `RUST_LOG` log filter.",
+            },
+            configuration::RuntimeSetting {
+                path: "site_explorer.enabled",
+                value: Some("true".to_string()),
+                description: "Whether site explorer runs periodic hardware explorations.",
+            },
+        ];
         let config = configuration::build_config_page(
             carbide_api_core::cfg::CONFIG_REFERENCE_MD,
             &effective,
             &explicit,
+            runtime_settings,
         );
 
         let index = Index {
             version: "test-version",
-            agent_upgrade_policy: "Off",
-            log_filter: "info".to_string(),
-            site_explorer_enabled: "true".to_string(),
-            create_machines: "false".to_string(),
-            bmc_proxy: "<None>".to_string(),
-            tracing_enabled: "false".to_string(),
             config,
             missing_default_credentials: Vec::new(),
         };
         let html = index.render().expect("index template renders");
 
-        // Tab navigation with the runtime tab active.
-        assert!(html.contains(r#"data-tab="runtime""#));
+        // Tab navigation with the first group tab active.
         assert!(html.contains(r#"id="tab-networking""#));
         // The overridden option shows its value and source tag.
         assert!(html.contains("65001"));
         assert!(html.contains("site-config.toml"));
+        // Runtime settings are folded in and tagged.
+        assert!(html.contains(r#"class="config-runtime""#));
+        assert!(html.contains("log_filter"));
         // Catalog rendering is present.
         assert!(html.contains("attestation_enabled"));
         assert!(html.contains("site_explorer"));
