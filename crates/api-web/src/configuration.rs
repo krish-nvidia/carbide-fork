@@ -39,6 +39,8 @@ pub(crate) struct ConfigPageView {
 
 pub(crate) struct ConfigGroupView {
     pub title: &'static str,
+    /// Stable identifier used for the tab's `data-tab` / `id` attributes.
+    pub slug: &'static str,
     pub sections: Vec<ConfigSectionView>,
 }
 
@@ -68,6 +70,12 @@ pub(crate) struct ConfigRowView {
     pub undocumented: bool,
 }
 
+/// Placeholder cells for absent content, kept to plain words -- no dashes
+/// or empty strings, and one consistent word per situation.
+const UNSET_HTML: &str = "<span class=\"config-unset\">unset</span>";
+const EMPTY_HTML: &str = "<span class=\"config-unset\">empty</span>";
+const NONE_HTML: &str = "<span class=\"config-unset\">none</span>";
+
 /// One `| field | type | default | description |` row of the reference doc.
 struct FieldDoc {
     name: String,
@@ -78,17 +86,14 @@ struct FieldDoc {
 
 /// Display groups, in page order. Sections land in a group via
 /// `group_for_top_level_field`; unknown fields fall through to "Other".
-const GROUP_ORDER: &[&str] = &[
-    "Server",
-    "Networking",
-    "Machines",
-    "DPUs",
-    "Firmware",
-    "Security",
-    "Hardware",
-    "Observability",
-    "Integrations",
-    "Other",
+const GROUP_ORDER: &[(&str, &str)] = &[
+    ("Server & API", "server"),
+    ("Networking", "networking"),
+    ("Machines & Firmware", "machines"),
+    ("Security", "security"),
+    ("Hardware & Racks", "hardware"),
+    ("Integrations & Observability", "integrations"),
+    ("Other", "other"),
 ];
 
 fn group_for_top_level_field(name: &str) -> &'static str {
@@ -96,7 +101,7 @@ fn group_for_top_level_field(name: &str) -> &'static str {
         "listen" | "listen_only" | "listen_mode" | "tls" | "database_url"
         | "max_database_connections" | "max_find_by_ids" | "auth" | "bypass_rbac"
         | "enable_admin_ui" | "web_ui_sidebar_tools" | "sitename" | "initial_objects_file" => {
-            "Server"
+            "Server & API"
         }
         "asn" | "dhcp_servers" | "ntp_servers" | "route_servers" | "enable_route_servers"
         | "deny_prefixes" | "site_fabric_prefixes" | "anycast_site_prefixes"
@@ -108,26 +113,23 @@ fn group_for_top_level_field(name: &str) -> &'static str {
         | "dpu_network_monitor_pinger_type" => "Networking",
         "host_naming_strategy" | "machine_state_controller" | "machine_validation_config"
         | "auto_machine_repair_plugin" | "host_health" | "initial_domain_name"
-        | "min_dpu_functioning_links" | "bom_validation" | "compute_allocation_enforcement" => {
-            "Machines"
-        }
-        "dpu_config" | "dpu_ipmi_tool_impl" | "dpu_ipmi_reboot_attempts" | "nvue_enabled"
+        | "min_dpu_functioning_links" | "bom_validation" | "compute_allocation_enforcement"
+        | "dpu_config" | "dpu_ipmi_tool_impl" | "dpu_ipmi_reboot_attempts" | "nvue_enabled"
         | "dpf" | "initial_dpu_agent_upgrade_policy" | "x86_pxe_boot_url_override"
         | "arm_pxe_boot_url_override" | "pxe_public_base_url" | "set_http_boot_uri_for_vendors"
-        | "retained_boot_interface_window" => "DPUs",
-        "host_models" | "firmware_global" | "machine_updater"
-        | "max_concurrent_machine_updates" | "machine_update_run_interval"
-        | "mlxconfig_profiles" | "supernic_firmware_profiles" => "Firmware",
+        | "retained_boot_interface_window" | "host_models" | "firmware_global"
+        | "machine_updater" | "max_concurrent_machine_updates" | "machine_update_run_interval"
+        | "mlxconfig_profiles" | "supernic_firmware_profiles" | "bios_profiles"
+        | "selected_profile" => "Machines & Firmware",
         "attestation_enabled" | "tpm_required" | "machine_identity" | "spdm"
         | "spdm_state_controller" | "measured_boot_collector" | "bmc_session_lockout_threshold"
         | "secrets" | "kms" => "Security",
         "site_explorer" | "ib_config" | "ib_fabrics" | "nvlink_config"
         | "rack_management_enabled" | "rms" | "rack_profiles" | "rack_state_controller"
         | "power_shelf_state_controller" | "switch_state_controller" | "power_manager_options"
-        | "ib_partition_state_controller" | "component_manager" => "Hardware",
-        "metrics_endpoint" | "alt_metric_prefix" | "tracing" | "observability"
-        | "log_history" => "Observability",
-        "vmaas_config" | "dsx_exchange_event_bus" | "mqtt" => "Integrations",
+        | "ib_partition_state_controller" | "component_manager" => "Hardware & Racks",
+        "metrics_endpoint" | "alt_metric_prefix" | "tracing" | "observability" | "log_history"
+        | "vmaas_config" | "dsx_exchange_event_bus" | "mqtt" => "Integrations & Observability",
         _ => "Other",
     }
 }
@@ -209,19 +211,19 @@ pub(crate) fn build_config_page(
     }
 
     let mut groups = Vec::new();
-    for title in GROUP_ORDER {
+    for (title, slug) in GROUP_ORDER {
         let mut sections = Vec::new();
         if let Some(rows) = top_level_rows.remove(title) {
             sections.push(ConfigSectionView {
                 title: "Core Options".to_string(),
-                anchor: format!("cfg-{}-core", slugify(title)),
+                anchor: format!("cfg-{slug}-core"),
                 path: String::new(),
                 rows,
             });
         }
         sections.extend(grouped.remove(title).unwrap_or_default());
         if !sections.is_empty() {
-            groups.push(ConfigGroupView { title, sections });
+            groups.push(ConfigGroupView { title, slug, sections });
         }
     }
 
@@ -300,7 +302,7 @@ fn build_row(
     let value = lookup(effective, path);
     let (value_html, multiline) = match value {
         Some(value) => format_value(value),
-        None => ("<span class=\"config-unset\">not set</span>".to_string(), false),
+        None => (UNSET_HTML.to_string(), false),
     };
     let unset = value.is_none_or(serde_json::Value::is_null);
     let source = explicit_source(path, explicit_paths);
@@ -313,7 +315,10 @@ fn build_row(
         overridden: source.is_some(),
         source: source.unwrap_or_default(),
         default_html: format_default(&field.default),
-        description_html: markdown_lite(&field.description),
+        description_html: match field.description.trim() {
+            "" => "<span class=\"config-unset\">No description yet.</span>".to_string(),
+            description => markdown_lite(description),
+        },
         unset,
         undocumented,
     }
@@ -351,16 +356,12 @@ fn lookup<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json
 fn format_value(value: &serde_json::Value) -> (String, bool) {
     use serde_json::Value;
     match value {
-        Value::Null => ("<span class=\"config-unset\">not set</span>".to_string(), false),
+        Value::Null => (UNSET_HTML.to_string(), false),
         Value::Bool(b) => (format!("<code>{b}</code>"), false),
         Value::Number(n) => (format!("<code>{n}</code>"), false),
-        Value::String(s) if s.is_empty() => {
-            ("<span class=\"config-unset\">\"\" (empty)</span>".to_string(), false)
-        }
+        Value::String(s) if s.is_empty() => (EMPTY_HTML.to_string(), false),
         Value::String(s) => (format!("<code>{}</code>", escape_html(s)), false),
-        Value::Array(items) if items.is_empty() => {
-            ("<span class=\"config-unset\">[] (empty)</span>".to_string(), false)
-        }
+        Value::Array(items) if items.is_empty() => (EMPTY_HTML.to_string(), false),
         Value::Array(items) if items.iter().all(is_scalar) => {
             let joined = items.iter().map(scalar_text).collect::<Vec<_>>().join(", ");
             if joined.len() <= 120 {
@@ -369,9 +370,7 @@ fn format_value(value: &serde_json::Value) -> (String, bool) {
                 pretty(value)
             }
         }
-        Value::Object(map) if map.is_empty() => {
-            ("<span class=\"config-unset\">{} (empty)</span>".to_string(), false)
-        }
+        Value::Object(map) if map.is_empty() => (EMPTY_HTML.to_string(), false),
         // std::time::Duration serializes as {secs, nanos}; show it humanely.
         Value::Object(map)
             if map.len() == 2 && map.contains_key("secs") && map.contains_key("nanos") =>
@@ -417,12 +416,14 @@ fn humanize_seconds(secs: u64) -> String {
 }
 
 fn format_default(default: &str) -> String {
-    let trimmed = default.trim();
-    match trimmed {
-        "" | "—" | "-" => "<span class=\"config-unset\">—</span>".to_string(),
+    match default.trim() {
+        "" | "—" | "-" | "*(see below)*" | "*(default)*" => NONE_HTML.to_string(),
         "**required**" => "<em>required</em>".to_string(),
-        "*(see below)*" | "*(default)*" => "<span class=\"config-unset\">—</span>".to_string(),
-        other => markdown_lite(other),
+        // An annotated absent default, e.g. "— (forever)".
+        other => match other.strip_prefix("—") {
+            Some(annotation) => format!("{NONE_HTML} {}", markdown_lite(annotation.trim())),
+            None => markdown_lite(other),
+        },
     }
 }
 

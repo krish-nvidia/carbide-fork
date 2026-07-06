@@ -2005,11 +2005,17 @@ span.page-link.disabled {
   white-space: nowrap;
 }
 
-/* Tighten the tab nav toward the toolbar so the header reads as one unit. */
+/* Tighten the tab nav toward the toolbar so the header reads as one unit,
+   and slim the buttons so the descriptive tab names fit on one row. */
 .config-page .tab-nav {
   margin-top: 1rem;
   margin-bottom: 1.5rem;
   border-bottom: 1px solid var(--border-color);
+}
+
+.config-page .tab-button {
+  padding: 0.75rem 1.1rem;
+  font-size: 0.9rem;
 }
 
 .config-note {

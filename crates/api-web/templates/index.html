@@ -22,7 +22,7 @@
 	<div class="tab-nav">
 		<button class="tab-button active" data-tab="runtime">Runtime</button>
 		{% for group in config.groups %}
-		<button class="tab-button" data-tab="{{ group.title|lower }}">{{ group.title }}</button>
+		<button class="tab-button" data-tab="{{ group.slug }}">{{ group.title }}</button>
 		{% endfor %}
 		<div class="tab-indicator"></div>
 	</div>
@@ -75,7 +75,7 @@
 	</div>
 
 	{% for group in config.groups %}
-	<div class="tab-content" id="tab-{{ group.title|lower }}">
+	<div class="tab-content" id="tab-{{ group.slug }}">
 		<h2 class="config-group-label">{{ group.title }}</h2>
 		{% for section in group.sections %}
 		<section class="config-section" id="{{ section.anchor }}">
