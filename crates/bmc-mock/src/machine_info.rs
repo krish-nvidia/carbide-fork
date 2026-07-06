@@ -118,6 +118,7 @@ impl DpuMachineInfo {
             HostHardwareType::DellPowerEdgeR750
             | HostHardwareType::NvidiaDgxH100
             | HostHardwareType::GenericAmi
+            | HostHardwareType::HpeProliantDl380aGen11
             | HostHardwareType::GenericSupermicro => hw::bluefield3::Mode::SuperNIC {
                 nic_mode: self.settings.nic_mode,
             },
@@ -155,6 +156,7 @@ impl DpuMachineInfo {
             HostHardwareType::DellPowerEdgeR750
             | HostHardwareType::NvidiaDgxH100
             | HostHardwareType::GenericAmi
+            | HostHardwareType::HpeProliantDl380aGen11
             | HostHardwareType::GenericSupermicro
             | HostHardwareType::WiwynnGB200Nvl
             | HostHardwareType::LenovoGB300Nvl
@@ -180,6 +182,7 @@ impl DpuMachineInfo {
             HostHardwareType::DellPowerEdgeR750
             | HostHardwareType::NvidiaDgxH100
             | HostHardwareType::GenericAmi
+            | HostHardwareType::HpeProliantDl380aGen11
             | HostHardwareType::GenericSupermicro
             | HostHardwareType::WiwynnGB200Nvl
             | HostHardwareType::LenovoGB300Nvl
@@ -314,6 +317,7 @@ impl HostMachineInfo {
             | HostHardwareType::NvidiaDgxH100
             | HostHardwareType::NvidiaSwitchNd5200Ld
             | HostHardwareType::GenericAmi
+            | HostHardwareType::HpeProliantDl380aGen11
             | HostHardwareType::GenericSupermicro => redfish::oem::State::Other,
         }
     }
@@ -338,6 +342,7 @@ impl HostMachineInfo {
             }
             HostHardwareType::NvidiaDgxH100 => redfish::oem::BmcVendor::Ami,
             HostHardwareType::GenericAmi => redfish::oem::BmcVendor::Ami,
+            HostHardwareType::HpeProliantDl380aGen11 => redfish::oem::BmcVendor::Hpe,
             HostHardwareType::GenericSupermicro => redfish::oem::BmcVendor::Supermicro,
         }
     }
@@ -357,6 +362,7 @@ impl HostMachineInfo {
             HostHardwareType::NvidiaSwitchNd5200Ld => Some("P3809"),
             HostHardwareType::NvidiaDgxH100 => Some("AMI Redfish Server"),
             HostHardwareType::GenericAmi => Some("AMI Redfish Server"),
+            HostHardwareType::HpeProliantDl380aGen11 => Some("ProLiant DL380a Gen11"),
             HostHardwareType::GenericSupermicro => Some("Super Server"),
         }
     }
@@ -375,6 +381,7 @@ impl HostMachineInfo {
             HostHardwareType::NvidiaSwitchNd5200Ld => "1.17.0",
             HostHardwareType::NvidiaDgxH100 => "1.11.0",
             HostHardwareType::GenericAmi => "1.17.0",
+            HostHardwareType::HpeProliantDl380aGen11 => "1.13.0",
             HostHardwareType::GenericSupermicro => "1.17.0",
         }
     }
@@ -395,6 +402,9 @@ impl HostMachineInfo {
                 self.nvidia_switch_nd5200_ld().manager_config()
             }
             HostHardwareType::NvidiaDgxH100 => self.nvidia_dgx_h100().manager_config(),
+            HostHardwareType::HpeProliantDl380aGen11 => {
+                self.hpe_proliant_dl380a_gen11().manager_config()
+            }
             HostHardwareType::GenericAmi | HostHardwareType::GenericSupermicro => {
                 self.generic_server().manager_config()
             }
@@ -424,6 +434,9 @@ impl HostMachineInfo {
                 self.nvidia_switch_nd5200_ld().system_config()
             }
             HostHardwareType::NvidiaDgxH100 => self.nvidia_dgx_h100().system_config(callbacks),
+            HostHardwareType::HpeProliantDl380aGen11 => {
+                self.hpe_proliant_dl380a_gen11().system_config(callbacks)
+            }
             HostHardwareType::GenericAmi | HostHardwareType::GenericSupermicro => {
                 self.generic_server().system_config(callbacks)
             }
@@ -446,6 +459,9 @@ impl HostMachineInfo {
                 self.nvidia_switch_nd5200_ld().chassis_config()
             }
             HostHardwareType::NvidiaDgxH100 => self.nvidia_dgx_h100().chassis_config(),
+            HostHardwareType::HpeProliantDl380aGen11 => {
+                self.hpe_proliant_dl380a_gen11().chassis_config()
+            }
             HostHardwareType::GenericAmi | HostHardwareType::GenericSupermicro => {
                 self.generic_server().chassis_config()
             }
@@ -472,6 +488,9 @@ impl HostMachineInfo {
                 self.nvidia_switch_nd5200_ld().update_service_config()
             }
             HostHardwareType::NvidiaDgxH100 => self.nvidia_dgx_h100().update_service_config(),
+            HostHardwareType::HpeProliantDl380aGen11 => {
+                self.hpe_proliant_dl380a_gen11().update_service_config()
+            }
             HostHardwareType::GenericAmi | HostHardwareType::GenericSupermicro => {
                 self.generic_server().update_service_config()
             }
@@ -490,6 +509,9 @@ impl HostMachineInfo {
             HostHardwareType::SupermicroGb300Nvl => self.supermicro_gb300_nvl().discovery_info(),
             HostHardwareType::NvidiaDgxVr => self.dgx_vr_nvl().discovery_info(),
             HostHardwareType::NvidiaDgxH100 => self.nvidia_dgx_h100().discovery_info(),
+            HostHardwareType::HpeProliantDl380aGen11 => {
+                self.hpe_proliant_dl380a_gen11().discovery_info()
+            }
             HostHardwareType::GenericAmi | HostHardwareType::GenericSupermicro => {
                 self.generic_server().discovery_info()
             }
@@ -830,6 +852,29 @@ impl HostMachineInfo {
             bmc_mac_address_eth0: next_mac(),
             bmc_mac_address_usb0: next_mac(),
             hgx_bmc_mac_address_usb0: next_mac(),
+        }
+    }
+
+    fn hpe_proliant_dl380a_gen11(
+        &self,
+    ) -> hw::hpe_proliant_dl380a_gen11::HpeProliantDl380aGen11<'_> {
+        let nics = if self.dpus.is_empty() {
+            self.non_dpu_mac_address
+                .iter()
+                .enumerate()
+                .map(|(index, mac_address)| (index + 1, hw::nic::Nic::rooftop(*mac_address)))
+                .collect()
+        } else {
+            self.dpus
+                .iter()
+                .enumerate()
+                .map(|(index, dpu)| (index + 1, dpu.bluefield3().host_nic()))
+                .collect()
+        };
+        hw::hpe_proliant_dl380a_gen11::HpeProliantDl380aGen11 {
+            bmc_mac_address: self.bmc_mac_address,
+            product_serial_number: Cow::Borrowed(&self.serial),
+            nics,
         }
     }
 

@@ -132,6 +132,17 @@ impl ManagerBuilder {
                     }
                 }
             })),
+            // bmc-explorer's HPE lockdown check reads
+            // Oem.Hpe.VirtualNICEnabled; false is the locked-down state.
+            Oem::Hpe => self.apply_patch(json!({
+                "Oem": {
+                    "Hpe": {
+                        "@odata.context": "/redfish/v1/$metadata#HpeiLO.HpeiLO",
+                        "@odata.type": "#HpeiLO.v2_11_0.HpeiLO",
+                        "VirtualNICEnabled": false,
+                    }
+                }
+            })),
         }
     }
 
@@ -192,6 +203,7 @@ pub fn add_routes(r: Router<BmcState>) -> Router<BmcState> {
 #[derive(Clone, Copy)]
 pub enum Oem {
     Dell,
+    Hpe,
 }
 
 impl AsRef<Oem> for Oem {
