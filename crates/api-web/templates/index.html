@@ -9,6 +9,10 @@
 
 <div class="config-page">
 	<div class="config-toolbar">
+		<div class="config-version">
+			<span class="config-version-label">nico version</span>
+			<code>{{ version }}</code>
+		</div>
 		<input type="search" id="config-search" placeholder="Filter options by name, value, or description&hellip;" autocomplete="off">
 		<label class="config-toggle">
 			<input type="checkbox" id="config-overridden-only"> Overridden only
@@ -35,11 +39,6 @@
 			<table class="config-options">
 				<thead><tr><th>Setting</th><th>Current value</th><th>Description</th></tr></thead>
 				<tbody>
-					<tr class="config-row">
-						<td class="config-name"><code>version</code></td>
-						<td class="config-value"><code>{{ version }}</code></td>
-						<td class="config-desc">Build version of this server (read-only).</td>
-					</tr>
 					<tr class="config-row">
 						<td class="config-name"><code>log_filter</code></td>
 						<td class="config-value"><code>{{ log_filter }}</code></td>

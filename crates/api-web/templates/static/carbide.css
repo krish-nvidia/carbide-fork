@@ -1957,14 +1957,32 @@ span.page-link.disabled {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 1rem;
-  margin: 1rem 0;
+  gap: 1.25rem;
+  margin: 1.25rem 0 0;
+}
+
+.config-version {
+  display: flex;
+  flex-direction: column;
+  padding-right: 1.25rem;
+  border-right: 1px solid var(--border-color);
+}
+
+.config-version-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.config-version code {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .config-toolbar input[type="search"] {
   flex: 1;
   min-width: 240px;
-  max-width: 480px;
+  max-width: 32rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -1984,6 +2002,14 @@ span.page-link.disabled {
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+}
+
+/* Tighten the tab nav toward the toolbar so the header reads as one unit. */
+.config-page .tab-nav {
+  margin-top: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .config-note {
