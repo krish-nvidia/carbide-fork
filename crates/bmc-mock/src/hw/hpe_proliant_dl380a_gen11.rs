@@ -126,6 +126,7 @@ impl HpeProliantDl380aGen11<'_> {
                 // libredfish's HPE driver reads and writes).
                 base_bios: Some(
                     redfish::bios::builder(&redfish::bios::resource(system_id))
+                        .odata_context("/redfish/v1/$metadata#Bios.Bios")
                         .attributes(json!({
                             "UsbBoot": "Disabled",
                             "IntelProcVtd": "Enabled",

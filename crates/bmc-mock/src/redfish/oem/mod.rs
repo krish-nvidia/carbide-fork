@@ -67,7 +67,6 @@ impl BmcVendor {
             BmcVendor::Ami => {
                 format!("{}/SD", resource.odata_id)
             }
-            // iLO uses a lowercase `settings` resource (per the DL380a Gen11 scrape).
             BmcVendor::Hpe => {
                 format!("{}/settings", resource.odata_id)
             }
