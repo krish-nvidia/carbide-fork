@@ -37,6 +37,9 @@
 //! which strips everything but alphanumerics per path segment.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 /// Everything the Configuration page template needs.
 pub(crate) struct ConfigPageView {
@@ -412,7 +415,7 @@ impl<'a> CatalogBuilder<'a> {
                 None => CellValue::Unset,
             },
             overridden: source.is_some(),
-            source: source.unwrap_or_default().to_string(),
+            source: source.unwrap_or_default(),
             default: format_default(&field.default),
             description_html: match field.description.trim() {
                 "" => r#"<span class="config-unset">No description yet.</span>"#.to_string(),
@@ -438,19 +441,23 @@ impl<'a> CatalogBuilder<'a> {
     }
 
     /// A key counts as explicitly set when the merged config sources provided
-    /// it or anything beneath it (e.g. `tls` is overridden when
-    /// `tls.root_cafile_path` was set in a file).
-    fn explicit_source(&self, path: &str) -> Option<&'a str> {
+    /// it or anything beneath it (e.g. `pools` is overridden when
+    /// `pools.lo-ip.pool_type` was set in a file). Nested keys can come from
+    /// different files (base defines an entry, the site overlay tweaks one
+    /// field of it), so the label names every distinct source.
+    fn explicit_source(&self, path: &str) -> Option<String> {
         let key = canonical(path);
         if let Some(source) = self.explicit.get(&key) {
-            return Some(source);
+            return Some((*source).to_string());
         }
         let prefix = format!("{key}.");
-        self.explicit
+        let sources: std::collections::BTreeSet<&str> = self
+            .explicit
             .range(prefix.clone()..)
             .take_while(|(k, _)| k.starts_with(&prefix))
             .map(|(_, source)| *source)
-            .next()
+            .collect();
+        (!sources.is_empty()).then(|| sources.into_iter().collect::<Vec<_>>().join(", "))
     }
 }
 
@@ -693,70 +700,27 @@ fn escape_html(text: &str) -> String {
 
 /// Minimal markdown renderer for the reference's table cells: HTML-escapes,
 /// then supports `` `code` ``, `**bold**`, and `[text](target)` links (only
-/// http(s) targets become anchors). This is the single escaping site for all
-/// rich text on the page — [`CellValue::Rich`] and `description_html` must
-/// only ever carry its output.
+/// http(s) targets become anchors; the reference's intra-doc anchors have no
+/// counterpart on the rendered page, so they unwrap to their label). This is
+/// the single escaping site for all rich text on the page — [`CellValue::Rich`]
+/// and `description_html` must only ever carry its output.
 fn markdown_lite(text: &str) -> String {
+    static LINK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(([^)]*)\)").unwrap());
+    static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
+    static BOLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*\*([^*]+)\*\*").unwrap());
+
     let escaped = escape_html(&text.replace("\\|", "|"));
-    let linked = render_links(&escaped);
-    let coded = render_delimited(&linked, "`", "<code>", "</code>");
-    render_delimited(&coded, "**", "<strong>", "</strong>")
-}
-
-fn render_delimited(text: &str, delim: &str, open: &str, close: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    loop {
-        let Some(start) = rest.find(delim) else {
-            out.push_str(rest);
-            return out;
-        };
-        let after = &rest[start + delim.len()..];
-        let Some(end) = after.find(delim) else {
-            out.push_str(rest);
-            return out;
-        };
-        out.push_str(&rest[..start]);
-        out.push_str(open);
-        out.push_str(&after[..end]);
-        out.push_str(close);
-        rest = &after[end + delim.len()..];
-    }
-}
-
-fn render_links(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    loop {
-        let Some(open_bracket) = rest.find('[') else {
-            out.push_str(rest);
-            return out;
-        };
-        let Some(rel_close) = rest[open_bracket..].find("](") else {
-            out.push_str(&rest[..open_bracket + 1]);
-            rest = &rest[open_bracket + 1..];
-            continue;
-        };
-        let close_bracket = open_bracket + rel_close;
-        let target_start = close_bracket + 2;
-        let Some(rel_end) = rest[target_start..].find(')') else {
-            out.push_str(&rest[..open_bracket + 1]);
-            rest = &rest[open_bracket + 1..];
-            continue;
-        };
-        let target_end = target_start + rel_end;
-        let label = &rest[open_bracket + 1..close_bracket];
-        let target = &rest[target_start..target_end];
-        out.push_str(&rest[..open_bracket]);
+    let linked = LINK.replace_all(&escaped, |caps: &regex::Captures| {
+        let (label, target) = (&caps[1], &caps[2]);
         if target.starts_with("http://") || target.starts_with("https://") {
-            out.push_str(&format!("<a href=\"{target}\">{label}</a>"));
+            format!("<a href=\"{target}\">{label}</a>")
         } else {
-            // Intra-doc anchors have no counterpart on the rendered page,
-            // so keep the label but drop the link.
-            out.push_str(label);
+            label.to_string()
         }
-        rest = &rest[target_end + 1..];
-    }
+    });
+    let coded = CODE.replace_all(&linked, "<code>$1</code>");
+    BOLD.replace_all(&coded, "<strong>$1</strong>").into_owned()
 }
 
 #[cfg(test)]
@@ -925,6 +889,11 @@ mod configuration_tests {
         assert_eq!(
             markdown_lite("see [SiteExplorerConfig](#siteexplorerconfig)."),
             "see SiteExplorerConfig."
+        );
+        // Plain bracketed text before a real link must not fuse into it.
+        assert_eq!(
+            markdown_lite("index [0] then [docs](https://example.com) end"),
+            "index [0] then <a href=\"https://example.com\">docs</a> end"
         );
     }
 

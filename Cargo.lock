@@ -1498,6 +1498,7 @@ dependencies = [
  "lazy_static",
  "mac_address",
  "oauth2",
+ "regex",
  "reqwest 0.13.4",
  "serde",
  "serde_json",

@@ -608,7 +608,7 @@ events, so consumers handle them identically.
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `false` | Whether to enable OTLP tracing. |
 | `allow_runtime_changes` | `bool` | `true` | Whether tracing may be enabled/disabled at runtime (`nico-admin-cli set tracing-enabled`). |
-| `otlp_endpoint` | `Option<String>` | — | Endpoint traces are sent to. Can be overridden by the `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` env var. |
+| `otlp_endpoint` | `Option<String>` | — | The endpoint traces are sent to. The `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` env var takes precedence when set. |
 
 ### `LogHistoryConfig`
 
