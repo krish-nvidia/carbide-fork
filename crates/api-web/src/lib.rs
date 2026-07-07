@@ -1017,10 +1017,13 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
     );
 
     let index = Index {
-        version: match carbide_version::v!(build_version) {
-            "" => "dev",
-            version => version,
-        },
+        // TODO: temporary hardcode for a deployment screenshot — restore the
+        // carbide_version fallback below before committing:
+        //   version: match carbide_version::v!(build_version) {
+        //       "" => "dev",
+        //       version => version,
+        //   },
+        version: "v2.0.0-pr-449-g28cf6eb4f",
         config,
         missing_default_credentials: state.missing_default_credentials().await,
     };

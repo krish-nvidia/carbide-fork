@@ -24,8 +24,8 @@
 //!   i.e. `cfg/README.md`) supplies the catalog of documented options with
 //!   their type, default, and description, organized into per-struct sections;
 //! - the redacted effective `CarbideConfig`, serialized to JSON, supplies each
-//!   option's current value (including values for options the reference does
-//!   not document yet, which are appended as undocumented rows);
+//!   option's current value (a unit test keeps the reference's coverage of
+//!   the config struct complete);
 //! - `CarbideConfig::explicit_value_paths` supplies provenance: which dotted
 //!   keys were explicitly set by a config file or `CARBIDE_API_*` environment
 //!   variable, and by which source.
@@ -216,7 +216,6 @@ fn group_title(slug: &str) -> &'static str {
         .unwrap_or("Other")
 }
 
-
 /// Builds the page view from the reference doc, the redacted effective config
 /// (as JSON), the explicitly-set key paths with their source labels, and the
 /// live runtime-adjustable values.
@@ -278,7 +277,12 @@ pub(crate) fn build_config_page(
             .entry(group_title(setting.group))
             .or_default()
             .push(ConfigRowView {
-                name: setting.path.rsplit('.').next().unwrap_or(setting.path).to_string(),
+                name: setting
+                    .path
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(setting.path)
+                    .to_string(),
                 path: setting.path.to_string(),
                 ty: String::new(),
                 value: runtime_cell(setting.value),
@@ -302,7 +306,11 @@ pub(crate) fn build_config_page(
         }
         sections.extend(grouped.remove(title).unwrap_or_default());
         if !sections.is_empty() {
-            groups.push(ConfigGroupView { title, slug, sections });
+            groups.push(ConfigGroupView {
+                title,
+                slug,
+                sections,
+            });
         }
     }
 
@@ -594,7 +602,10 @@ fn parse_reference(markdown: &str) -> Vec<(String, Vec<FieldDoc>)> {
         if in_code_block {
             continue;
         }
-        if let Some(heading) = trimmed.strip_prefix("### ").or_else(|| trimmed.strip_prefix("## ")) {
+        if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+        {
             current = heading_struct_name(heading);
             if let Some(name) = &current
                 && !sections.iter().any(|(existing, _)| existing == name)
@@ -655,10 +666,7 @@ fn parse_table_row(line: &str) -> Option<FieldDoc> {
 
 /// Splits a markdown table row on unescaped pipes, honoring `\|` escapes.
 fn split_table_cells(line: &str) -> Vec<&str> {
-    let inner = line
-        .trim()
-        .trim_start_matches('|')
-        .trim_end_matches('|');
+    let inner = line.trim().trim_start_matches('|').trim_end_matches('|');
     let mut cells = Vec::new();
     let mut start = 0;
     let bytes = inner.as_bytes();
@@ -743,8 +751,8 @@ fn render_links(text: &str) -> String {
         if target.starts_with("http://") || target.starts_with("https://") {
             out.push_str(&format!("<a href=\"{target}\">{label}</a>"));
         } else {
-            // Intra-doc anchors don't map onto this page's section ids, so
-            // keep the label but drop the link.
+            // Intra-doc anchors have no counterpart on the rendered page,
+            // so keep the label but drop the link.
             out.push_str(label);
         }
         rest = &rest[target_end + 1..];
@@ -770,13 +778,20 @@ mod configuration_tests {
     fn parses_real_reference() {
         let sections = parse_reference(carbide_api_core::cfg::CONFIG_REFERENCE_MD);
         let names: Vec<&str> = sections.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"NicoConfig"), "top-level section missing: {names:?}");
+        assert!(
+            names.contains(&"NicoConfig"),
+            "top-level section missing: {names:?}"
+        );
         assert!(names.contains(&"TlsConfig"));
         assert!(names.contains(&"SiteExplorerConfig"));
         assert!(names.contains(&"TracingConfig"));
 
         let (_, top) = sections.iter().find(|(n, _)| n == "NicoConfig").unwrap();
-        assert!(top.len() > 50, "expected many top-level fields, got {}", top.len());
+        assert!(
+            top.len() > 50,
+            "expected many top-level fields, got {}",
+            top.len()
+        );
         let listen = top.iter().find(|f| f.name == "listen").unwrap();
         assert!(listen.ty.contains("SocketAddr"));
         assert!(listen.default.contains("1079"));
@@ -794,7 +809,10 @@ mod configuration_tests {
             .filter(|f| f.group.is_none())
             .map(|f| f.name.as_str())
             .collect();
-        assert!(ungrouped.is_empty(), "fields without a valid Group cell: {ungrouped:?}");
+        assert!(
+            ungrouped.is_empty(),
+            "fields without a valid Group cell: {ungrouped:?}"
+        );
     }
 
     /// Guards README coverage: every top-level key of the serialized config
@@ -832,7 +850,10 @@ mod configuration_tests {
         });
         let mut explicit = BTreeMap::new();
         explicit.insert("asn".to_string(), "site.toml".to_string());
-        explicit.insert("mlx-config-profiles.profileA".to_string(), "base.toml".to_string());
+        explicit.insert(
+            "mlx-config-profiles.profileA".to_string(),
+            "base.toml".to_string(),
+        );
         explicit.insert("tls.root_cafile_path".to_string(), "base.toml".to_string());
 
         let page = build_config_page(
@@ -848,7 +869,11 @@ mod configuration_tests {
             .flat_map(|g| g.sections.iter())
             .flat_map(|s| s.rows.iter())
             .collect();
-        assert!(rows.len() > 150, "expected full catalog, got {}", rows.len());
+        assert!(
+            rows.len() > 150,
+            "expected full catalog, got {}",
+            rows.len()
+        );
 
         let asn = rows.iter().find(|r| r.path == "asn").unwrap();
         assert!(asn.overridden);
@@ -860,17 +885,26 @@ mod configuration_tests {
 
         // Serde-renamed keys join spelling-insensitively: the reference's
         // `mlxconfig_profiles` matches the serialized `mlx-config-profiles`.
-        let mlx = rows.iter().find(|r| r.path == "mlxconfig_profiles").unwrap();
+        let mlx = rows
+            .iter()
+            .find(|r| r.path == "mlxconfig_profiles")
+            .unwrap();
         assert!(!mlx.value.is_unset(), "renamed key must resolve a value");
         assert!(mlx.overridden, "renamed key must resolve provenance");
 
         // Nested section rows exist with dotted paths, and a field whose
         // sub-struct was set is marked overridden by prefix.
-        let tls_row = rows.iter().find(|r| r.path == "tls.root_cafile_path").unwrap();
+        let tls_row = rows
+            .iter()
+            .find(|r| r.path == "tls.root_cafile_path")
+            .unwrap();
         assert!(tls_row.overridden);
 
         // Runtime settings are folded in: documented options get tagged...
-        let se = rows.iter().find(|r| r.path == "site_explorer.enabled").unwrap();
+        let se = rows
+            .iter()
+            .find(|r| r.path == "site_explorer.enabled")
+            .unwrap();
         assert!(se.runtime);
         // ...and undocumented ones become synthetic runtime rows.
         let lf = rows.iter().find(|r| r.path == "log_filter").unwrap();
@@ -884,7 +918,10 @@ mod configuration_tests {
             markdown_lite("Use `ip_address` for <new> hosts"),
             "Use <code>ip_address</code> for &#60;new&#62; hosts"
         );
-        assert_eq!(markdown_lite("**Deprecated.**"), "<strong>Deprecated.</strong>");
+        assert_eq!(
+            markdown_lite("**Deprecated.**"),
+            "<strong>Deprecated.</strong>"
+        );
         assert_eq!(
             markdown_lite("see [SiteExplorerConfig](#siteexplorerconfig)."),
             "see SiteExplorerConfig."
@@ -893,8 +930,15 @@ mod configuration_tests {
 
     #[test]
     fn cell_values_render_and_escape() {
-        assert_eq!(CellValue::Code("<x>".to_string()).to_html(), "<code>&#60;x&#62;</code>");
-        assert!(CellValue::Pre("{\"a\": 1}".to_string()).to_html().contains("show value"));
+        assert_eq!(
+            CellValue::Code("<x>".to_string()).to_html(),
+            "<code>&#60;x&#62;</code>"
+        );
+        assert!(
+            CellValue::Pre("{\"a\": 1}".to_string())
+                .to_html()
+                .contains("show value")
+        );
         assert!(CellValue::Unset.is_unset());
         assert_eq!(
             format_value(&serde_json::json!({"secs": 3600, "nanos": 0})).to_html(),
@@ -902,7 +946,13 @@ mod configuration_tests {
         );
         let list = format_value(&serde_json::json!(["10.0.0.1", "10.0.0.2"]));
         assert!(list.to_html().contains("10.0.0.1, 10.0.0.2"));
-        assert!(matches!(format_value(&serde_json::json!({"a": {"b": 1}})), CellValue::Pre(_)));
-        assert!(matches!(format_default("**required**"), CellValue::Required));
+        assert!(matches!(
+            format_value(&serde_json::json!({"a": {"b": 1}})),
+            CellValue::Pre(_)
+        ));
+        assert!(matches!(
+            format_default("**required**"),
+            CellValue::Required
+        ));
     }
 }

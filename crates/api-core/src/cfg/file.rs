@@ -718,7 +718,6 @@ pub struct CarbideConfig {
     #[serde(default = "default_to_true")]
     pub enable_admin_ui: bool,
 
-
     /// External tool links surfaced in the admin web UI's "Tools"
     /// sidebar. Each entry's `name` must be unique. The section is
     /// hidden when the list is empty.

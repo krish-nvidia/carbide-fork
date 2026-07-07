@@ -123,7 +123,7 @@ pub fn configured_tools() -> &'static [ToolLink] {
 }
 
 /// Process-global site name shown in the admin web UI's sidebar header
-/// ("nico.<site>"). Same write-once rationale as [`TOOLS`].
+/// ("NICo • <site>"). Same write-once rationale as [`TOOLS`].
 static SITE_NAME: OnceLock<Option<String>> = OnceLock::new();
 
 /// Initialize the global site name from the config's `sitename` field. Call
