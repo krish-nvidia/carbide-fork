@@ -91,6 +91,7 @@
 	function applyFilter() {
 		const query = search.value.trim().toLowerCase();
 		const filtering = query !== '' || overriddenOnly.checked;
+		resetPanel();
 		page.classList.toggle('config-filtering', filtering);
 		let anyVisible = false;
 		for (const content of contents) {
@@ -118,6 +119,16 @@
 	// Row click fills the sticky detail panel.
 	const panelTitle = document.getElementById('config-panel-title');
 	const panelBody = document.getElementById('config-panel-body');
+	const panelDefaultTitle = panelTitle.textContent;
+	const panelDefaultBody = panelBody.innerHTML;
+
+	function resetPanel() {
+		for (const selected of page.querySelectorAll('.config-row.selected')) {
+			selected.classList.remove('selected');
+		}
+		panelTitle.textContent = panelDefaultTitle;
+		panelBody.innerHTML = panelDefaultBody;
+	}
 	page.querySelector('.config-tables').addEventListener('click', (e) => {
 		const row = e.target.closest('.config-row');
 		// Don't hijack clicks on the "show value" expander or links.

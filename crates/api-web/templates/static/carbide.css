@@ -2063,27 +2063,36 @@ span.page-link.disabled {
   flex-shrink: 0;
   position: sticky;
   top: 1rem;
+  /* Line up with the top of the first table, not its section heading
+     (h3: 1.25rem x 1.6 line-height + 0.5rem margin). */
+  margin-top: 2.5rem;
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
   background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 1rem 1.25rem;
+  padding: 1.5rem 1.75rem;
 }
 
 .config-panel h4 {
-  margin: 0 0 0.5rem;
+  margin: 0 0 1rem;
   font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 1rem;
+  font-size: 1.05rem;
   word-break: break-word;
+}
+
+.config-panel #config-panel-body {
+  line-height: 1.7;
 }
 
 .config-panel dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.3rem 1rem;
-  margin: 1rem 0 0;
-  font-size: 0.85rem;
+  gap: 0.75rem 1.5rem;
+  margin: 1.5rem 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.9rem;
 }
 
 .config-panel dt {
@@ -2104,6 +2113,7 @@ span.page-link.disabled {
     order: -1;
     width: 100%;
     max-height: 40vh;
+    margin-top: 0;
   }
 }
 
@@ -2138,7 +2148,11 @@ tr.config-row {
 }
 
 tr.config-row.selected td {
-  background-color: var(--accent-green-light);
+  background-color: rgba(118, 185, 0, 0.08);
+}
+
+tr.config-row.selected code {
+  background-color: var(--bg-primary);
 }
 
 tr.config-row.overridden td:first-child {
