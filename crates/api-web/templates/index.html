@@ -32,27 +32,25 @@
 	<div class="tab-content{% if loop.first %} active{% endif %}" id="tab-{{ group.slug }}">
 		<h2 class="config-group-label">{{ group.title }}</h2>
 		{% for section in group.sections %}
-		<section class="config-section" id="{{ section.anchor }}">
+		<section class="config-section">
 			<h3>{{ section.title }}{% if section.path.len() > 0 %} <code class="config-section-path">[{{ section.path }}]</code>{% endif %}</h3>
 			<table class="config-options">
 				<thead><tr><th>Option</th><th>Value</th></tr></thead>
 				<tbody>
 					{% for row in section.rows %}
-					<tr class="config-row{% if row.overridden %} overridden{% endif %}{% if row.unset %} unset{% endif %}" data-path="{{ row.path }}">
+					<tr class="config-row{% if row.overridden %} overridden{% endif %}{% if row.value.is_unset() %} unset{% endif %}" data-path="{{ row.path }}">
 						<td class="config-name">
 							<code>{{ row.name }}</code>
-							{% if row.undocumented %}<span class="config-type">undocumented</span>{% endif %}
 						</td>
 						<td class="config-value">
-							{% if row.multiline %}<details><summary>show value</summary><pre>{{ row.value_html|safe }}</pre></details>
-							{% else %}{{ row.value_html|safe }}{% endif %}
+							{{ row.value.to_html()|safe }}
 							{% if row.runtime %}<span class="config-runtime" title="Live value — adjustable on a running server with 'nico-admin-cli set'; overrides expire (default 1h) and reset on restart">runtime</span>{% endif %}
 							{% if row.overridden %}<span class="config-source" title="Explicitly set — not the compiled-in default">{{ row.source }}</span>{% endif %}
 							<div class="config-row-detail" hidden>
 								<div>{{ row.description_html|safe }}</div>
 								<dl>
 									{% if !row.ty.is_empty() %}<dt>Type</dt><dd>{{ row.ty }}</dd>{% endif %}
-									<dt>Default</dt><dd>{{ row.default_html|safe }}</dd>
+									<dt>Default</dt><dd>{{ row.default.to_html()|safe }}</dd>
 									<dt>Path</dt><dd><code>{{ row.path }}</code></dd>
 									{% if row.overridden %}<dt>Source</dt><dd>{{ row.source }} (explicitly set)</dd>{% endif %}
 									{% if row.runtime %}<dt>Runtime</dt><dd>Adjustable live via <code>nico-admin-cli set</code>; overrides expire (default 1h) and reset on restart.</dd>{% endif %}

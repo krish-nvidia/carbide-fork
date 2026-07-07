@@ -993,41 +993,14 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
         .load(Ordering::Relaxed)
         .to_string();
 
-    // Live values of the runtime-adjustable settings, folded into the catalog
-    // next to their config options and tagged "runtime".
-    use configuration::RuntimeSetting;
-    let runtime_settings = vec![
-        RuntimeSetting {
-            path: "log_filter",
-            value: Some(state.log_filter_string()),
-            description: "Active `RUST_LOG` log filter.",
-        },
-        RuntimeSetting {
-            path: "site_explorer.enabled",
-            value: Some(site_explorer_enabled),
-            description: "Whether site explorer runs periodic hardware explorations.",
-        },
-        RuntimeSetting {
-            path: "site_explorer.create_machines",
-            value: Some(create_machines),
-            description: "Whether site explorer creates machines from discovered endpoints.",
-        },
-        RuntimeSetting {
-            path: "site_explorer.bmc_proxy",
-            value: bmc_proxy,
-            description: "Proxy used for talking to BMCs.",
-        },
-        RuntimeSetting {
-            path: "tracing.enabled",
-            value: Some(tracing_enabled),
-            description: "Whether log tracing is enabled.",
-        },
-        RuntimeSetting {
-            path: "initial_dpu_agent_upgrade_policy",
-            value: Some(agent_upgrade_policy.to_string()),
-            description: "Active DPU agent upgrade policy.",
-        },
-    ];
+    let live_settings = configuration::LiveSettings {
+        log_filter: state.log_filter_string(),
+        site_explorer_enabled,
+        create_machines,
+        bmc_proxy,
+        tracing_enabled,
+        dpu_agent_upgrade_policy: agent_upgrade_policy.to_string(),
+    };
 
     let effective = match serde_json::to_value(state.runtime_config.redacted()) {
         Ok(value) => value,
@@ -1040,14 +1013,14 @@ pub async fn root(state: AxumState<Arc<Api>>) -> impl IntoResponse {
         carbide_api_core::cfg::CONFIG_REFERENCE_MD,
         &effective,
         &state.runtime_config.explicit_value_paths(),
-        runtime_settings,
+        live_settings,
     );
 
     let index = Index {
-        // TODO: temporarily hardcoded so deployments show a recognizable
-        // version while carbide_version reports a dev build; restore
-        // carbide_version::v!(build_version) before merging.
-        version: "v2.0.0-pr-449-g28cf6eb4f",
+        version: match carbide_version::v!(build_version) {
+            "" => "dev",
+            version => version,
+        },
         config,
         missing_default_credentials: state.missing_default_credentials().await,
     };
@@ -1107,23 +1080,19 @@ mod index_template_tests {
         });
         let mut explicit = std::collections::BTreeMap::new();
         explicit.insert("asn".to_string(), "site-config.toml".to_string());
-        let runtime_settings = vec![
-            configuration::RuntimeSetting {
-                path: "log_filter",
-                value: Some("info".to_string()),
-                description: "Active `RUST_LOG` log filter.",
-            },
-            configuration::RuntimeSetting {
-                path: "site_explorer.enabled",
-                value: Some("true".to_string()),
-                description: "Whether site explorer runs periodic hardware explorations.",
-            },
-        ];
+        let live_settings = configuration::LiveSettings {
+            log_filter: "info".to_string(),
+            site_explorer_enabled: "true".to_string(),
+            create_machines: "false".to_string(),
+            bmc_proxy: None,
+            tracing_enabled: "false".to_string(),
+            dpu_agent_upgrade_policy: "Off".to_string(),
+        };
         let config = configuration::build_config_page(
             carbide_api_core::cfg::CONFIG_REFERENCE_MD,
             &effective,
             &explicit,
-            runtime_settings,
+            live_settings,
         );
 
         let index = Index {

@@ -2024,12 +2024,6 @@ span.page-link.disabled {
   font-size: 0.9rem;
 }
 
-.config-note {
-  margin: 0 0 1rem;
-  max-width: 70rem;
-  color: var(--text-muted);
-}
-
 .config-section {
   margin-bottom: 2.5rem;
 }
@@ -2167,14 +2161,6 @@ tr.config-row.unset .config-value,
 
 td.config-name code {
   word-break: break-word;
-}
-
-.config-type {
-  display: block;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-top: 0.15rem;
 }
 
 td.config-value {

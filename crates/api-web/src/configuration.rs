@@ -29,6 +29,12 @@
 //! - `CarbideConfig::explicit_value_paths` supplies provenance: which dotted
 //!   keys were explicitly set by a config file or `CARBIDE_API_*` environment
 //!   variable, and by which source.
+//!
+//! The three inputs use different key spellings for the same option (Rust
+//! field names in the reference, serde-serialized names in the JSON, TOML
+//! keys in the provenance map — e.g. `mlxconfig_profiles` serializes as
+//! `mlx-config-profiles`). All joins therefore go through [`canonical`],
+//! which strips everything but alphanumerics per path segment.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -46,7 +52,6 @@ pub(crate) struct ConfigGroupView {
 
 pub(crate) struct ConfigSectionView {
     pub title: String,
-    pub anchor: String,
     /// Dotted TOML path prefix of this section ("" for top-level options).
     pub path: String,
     pub rows: Vec<ConfigRowView>,
@@ -57,48 +62,142 @@ pub(crate) struct ConfigRowView {
     /// Full dotted path, also used by the client-side filter.
     pub path: String,
     pub ty: String,
-    pub value_html: String,
-    /// Render the value as a preformatted block instead of inline.
-    pub multiline: bool,
+    pub value: CellValue,
     pub overridden: bool,
     /// Source label ("nico-api-config.toml", env, ...) when overridden.
     pub source: String,
-    pub default_html: String,
+    pub default: CellValue,
+    /// Rendered by [`markdown_lite`]; the template inserts it with `|safe`.
     pub description_html: String,
-    /// The option resolves to null/absent (unset optional value).
-    pub unset: bool,
-    pub undocumented: bool,
     /// The value shown is the live, runtime-adjustable value.
     pub runtime: bool,
 }
 
-/// Placeholder cells for absent content, kept to plain words -- no dashes
-/// or empty strings, and one consistent word per situation.
-const UNSET_HTML: &str = "<span class=\"config-unset\">unset</span>";
-const EMPTY_HTML: &str = "<span class=\"config-unset\">empty</span>";
-const NONE_HTML: &str = "<span class=\"config-unset\">none</span>";
-
-/// A dynamic setting whose live value is folded into the catalog: attached to
-/// the config option at `path` when one is documented, otherwise rendered as
-/// its own row (with `description`) in that path's group.
-pub(crate) struct RuntimeSetting {
-    pub path: &'static str,
-    /// Live value; `None` renders as "unset".
-    pub value: Option<String>,
-    /// Used only when no documented option matches `path`.
-    pub description: &'static str,
+/// A value or default cell. Rendering (and HTML escaping) is centralized in
+/// [`CellValue::to_html`] — the template inserts its output with `|safe`.
+pub(crate) enum CellValue {
+    /// The option resolves to null/absent.
+    Unset,
+    /// The option is set to an empty string, list, or map.
+    Empty,
+    /// No default exists (used only in the Default column).
+    NoDefault,
+    /// The option is mandatory (used only in the Default column).
+    Required,
+    /// Plain text rendered as inline code; escaped at render time.
+    Code(String),
+    /// Pretty-printed block rendered behind a "show value" expander;
+    /// escaped at render time.
+    Pre(String),
+    /// Pre-rendered HTML. Must only ever wrap [`markdown_lite`] output,
+    /// which is the single escaping site for rich text.
+    Rich(String),
 }
 
-/// One `| field | type | default | description |` row of the reference doc.
+impl CellValue {
+    /// The single place cell HTML is produced.
+    pub fn to_html(&self) -> String {
+        match self {
+            CellValue::Unset => r#"<span class="config-unset">unset</span>"#.to_string(),
+            CellValue::Empty => r#"<span class="config-unset">empty</span>"#.to_string(),
+            CellValue::NoDefault => r#"<span class="config-unset">none</span>"#.to_string(),
+            CellValue::Required => "<em>required</em>".to_string(),
+            CellValue::Code(text) => format!("<code>{}</code>", escape_html(text)),
+            CellValue::Pre(text) => format!(
+                "<details><summary>show value</summary><pre>{}</pre></details>",
+                escape_html(text)
+            ),
+            CellValue::Rich(html) => html.clone(),
+        }
+    }
+
+    /// Used by the template to dim rows whose option isn't set.
+    pub fn is_unset(&self) -> bool {
+        matches!(self, CellValue::Unset)
+    }
+}
+
+/// Live values of the runtime-adjustable settings, folded into the catalog
+/// next to their config options and tagged "runtime". `None` values render
+/// as "unset".
+pub(crate) struct LiveSettings {
+    pub log_filter: String,
+    pub site_explorer_enabled: String,
+    pub create_machines: String,
+    pub bmc_proxy: Option<String>,
+    pub tracing_enabled: String,
+    pub dpu_agent_upgrade_policy: String,
+}
+
+/// A dynamic setting joined into the catalog: attached to the config option
+/// at `path` when one is documented, otherwise rendered as its own row (with
+/// `description`) in that path's group.
+struct RuntimeSetting {
+    path: &'static str,
+    value: Option<String>,
+    /// Group slug and description, used only when no documented option
+    /// matches `path` and the setting becomes its own row.
+    group: &'static str,
+    description: &'static str,
+}
+
+impl LiveSettings {
+    fn into_runtime_settings(self) -> Vec<RuntimeSetting> {
+        vec![
+            RuntimeSetting {
+                path: "log_filter",
+                value: Some(self.log_filter),
+                group: "integrations",
+                description: "Active `RUST_LOG` log filter.",
+            },
+            RuntimeSetting {
+                path: "site_explorer.enabled",
+                group: "hardware",
+                value: Some(self.site_explorer_enabled),
+                description: "Whether site explorer runs periodic hardware explorations.",
+            },
+            RuntimeSetting {
+                path: "site_explorer.create_machines",
+                group: "hardware",
+                value: Some(self.create_machines),
+                description: "Whether site explorer creates machines from discovered endpoints.",
+            },
+            RuntimeSetting {
+                path: "site_explorer.bmc_proxy",
+                group: "hardware",
+                value: self.bmc_proxy,
+                description: "Proxy used for talking to BMCs.",
+            },
+            RuntimeSetting {
+                path: "tracing.enabled",
+                value: Some(self.tracing_enabled),
+                group: "integrations",
+                description: "Whether log tracing is enabled.",
+            },
+            RuntimeSetting {
+                path: "initial_dpu_agent_upgrade_policy",
+                value: Some(self.dpu_agent_upgrade_policy),
+                group: "machines",
+                description: "Active DPU agent upgrade policy.",
+            },
+        ]
+    }
+}
+
+/// One `| field | type | default | (group) | description |` row of the
+/// reference doc. `group` is present only in the top-level table, where each
+/// option declares which admin-UI tab it belongs to.
 struct FieldDoc {
     name: String,
     ty: String,
     default: String,
+    group: Option<String>,
     description: String,
 }
 
-/// Display groups, in page order. Sections land in a group via
-/// `group_for_top_level_field`; unknown fields fall through to "Other".
+/// Display groups, in page order. Each top-level option declares its group
+/// slug in the reference doc's `Group` column; unknown slugs fall through to
+/// "Other" (a unit test keeps the column complete and valid).
 const GROUP_ORDER: &[(&str, &str)] = &[
     ("Server & API", "server"),
     ("Networking", "networking"),
@@ -109,61 +208,31 @@ const GROUP_ORDER: &[(&str, &str)] = &[
     ("Other", "other"),
 ];
 
-fn group_for_top_level_field(name: &str) -> &'static str {
-    match name {
-        "listen" | "listen_only" | "listen_mode" | "tls" | "database_url"
-        | "max_database_connections" | "max_find_by_ids" | "auth" | "bypass_rbac"
-        | "enable_admin_ui" | "web_ui_sidebar_tools" | "sitename" | "initial_objects_file" => {
-            "Server & API"
-        }
-        "asn" | "dhcp_servers" | "ntp_servers" | "route_servers" | "enable_route_servers"
-        | "deny_prefixes" | "site_fabric_prefixes" | "anycast_site_prefixes"
-        | "common_tenant_host_asn" | "vpc_isolation_behavior" | "networks" | "pools"
-        | "fnn" | "internet_l3_vni" | "datacenter_asn" | "site_global_vpc_vni"
-        | "bgp_leaf_session_password" | "vpc_peering_policy" | "vpc_peering_policy_on_existing"
-        | "network_security_group" | "dpa_config" | "network_segment_state_controller"
-        | "vpc_prefix_state_controller" | "dpa_interface_state_controller"
-        | "dpu_network_monitor_pinger_type" => "Networking",
-        "host_naming_strategy" | "machine_state_controller" | "machine_validation_config"
-        | "auto_machine_repair_plugin" | "host_health" | "initial_domain_name"
-        | "min_dpu_functioning_links" | "bom_validation" | "compute_allocation_enforcement"
-        | "dpu_config" | "dpu_ipmi_tool_impl" | "dpu_ipmi_reboot_attempts" | "nvue_enabled"
-        | "dpf" | "initial_dpu_agent_upgrade_policy" | "x86_pxe_boot_url_override"
-        | "arm_pxe_boot_url_override" | "pxe_public_base_url" | "set_http_boot_uri_for_vendors"
-        | "retained_boot_interface_window" | "host_models" | "firmware_global"
-        | "machine_updater" | "max_concurrent_machine_updates" | "machine_update_run_interval"
-        | "mlxconfig_profiles" | "supernic_firmware_profiles" | "bios_profiles"
-        | "selected_profile" => "Machines & Firmware",
-        "attestation_enabled" | "tpm_required" | "machine_identity" | "spdm"
-        | "spdm_state_controller" | "measured_boot_collector" | "bmc_session_lockout_threshold"
-        | "secrets" | "kms" => "Security",
-        "site_explorer" | "ib_config" | "ib_fabrics" | "nvlink_config"
-        | "rack_management_enabled" | "rms" | "rack_profiles" | "rack_state_controller"
-        | "power_shelf_state_controller" | "switch_state_controller" | "power_manager_options"
-        | "ib_partition_state_controller" | "component_manager" => "Hardware & Racks",
-        "metrics_endpoint" | "alt_metric_prefix" | "tracing" | "observability" | "log_history"
-        | "log_filter" | "vmaas_config" | "dsx_exchange_event_bus" | "mqtt" => {
-            "Integrations & Observability"
-        }
-        _ => "Other",
-    }
+fn group_title(slug: &str) -> &'static str {
+    GROUP_ORDER
+        .iter()
+        .find(|(_, s)| *s == slug)
+        .map(|(title, _)| *title)
+        .unwrap_or("Other")
 }
 
+
 /// Builds the page view from the reference doc, the redacted effective config
-/// (as JSON), and the explicitly-set key paths with their source labels.
+/// (as JSON), the explicitly-set key paths with their source labels, and the
+/// live runtime-adjustable values.
 pub(crate) fn build_config_page(
     reference_md: &str,
     effective: &serde_json::Value,
     explicit_paths: &BTreeMap<String, String>,
-    runtime_settings: Vec<RuntimeSetting>,
+    live: LiveSettings,
 ) -> ConfigPageView {
     let sections = parse_reference(reference_md);
+    let builder = CatalogBuilder::new(&sections, effective, explicit_paths);
 
     // Grouped sections, keyed by group title. Each group lazily gets a
     // leading section for the top-level scalar options assigned to it.
     let mut grouped: HashMap<&'static str, Vec<ConfigSectionView>> = HashMap::new();
     let mut top_level_rows: HashMap<&'static str, Vec<ConfigRowView>> = HashMap::new();
-    let mut documented_top_level: HashSet<String> = HashSet::new();
 
     let top_level = sections
         .iter()
@@ -171,92 +240,52 @@ pub(crate) fn build_config_page(
         .map(|(_, fields)| fields.as_slice())
         .unwrap_or(&[]);
 
-    let section_by_anchor: HashMap<String, &Vec<FieldDoc>> = sections
-        .iter()
-        .map(|(name, fields)| (name.to_lowercase(), fields))
-        .collect();
-
     for field in top_level {
-        documented_top_level.insert(field.name.clone());
-        let group = group_for_top_level_field(&field.name);
-        match nested_section_for(field, &section_by_anchor) {
+        let group = group_title(field.group.as_deref().unwrap_or(""));
+        match builder.nested_section_for(field) {
             Some(section_fields) => {
                 let mut nested = Vec::new();
-                build_section(
+                builder.build_section(
                     humanize(&field.name),
                     field.name.clone(),
                     section_fields,
-                    &section_by_anchor,
-                    effective,
-                    explicit_paths,
                     &mut nested,
                     &mut HashSet::new(),
                 );
                 grouped.entry(group).or_default().extend(nested);
             }
-            None => top_level_rows.entry(group).or_default().push(build_row(
-                field,
-                &field.name,
-                effective,
-                explicit_paths,
-                false,
-            )),
-        }
-    }
-
-    // Options present in the effective config but missing from the reference
-    // doc: surface them rather than silently dropping them.
-    if let Some(object) = effective.as_object() {
-        for (name, value) in object {
-            if documented_top_level.contains(name) || documented_top_level.contains(&name.replace('-', "_")) {
-                continue;
-            }
-            let field = FieldDoc {
-                name: name.clone(),
-                ty: String::new(),
-                default: "—".to_string(),
-                description: "Not yet documented in the configuration reference.".to_string(),
-            };
-            let mut row = build_row(&field, name, effective, explicit_paths, true);
-            row.unset = value.is_null();
-            top_level_rows
-                .entry(group_for_top_level_field(name))
+            None => top_level_rows
+                .entry(group)
                 .or_default()
-                .push(row);
+                .push(builder.build_row(field, &field.name)),
         }
     }
 
     // Fold live runtime values into their documented rows; settings without a
     // documented option become their own rows in the matching group.
-    'settings: for setting in runtime_settings {
+    'settings: for setting in live.into_runtime_settings() {
         let all_rows = top_level_rows
             .values_mut()
             .chain(grouped.values_mut().flatten().map(|s| &mut s.rows));
         for rows in all_rows {
             if let Some(row) = rows.iter_mut().find(|row| row.path == setting.path) {
-                row.value_html = runtime_value_html(&setting);
-                row.multiline = false;
-                row.unset = setting.value.is_none();
+                row.value = runtime_cell(setting.value);
                 row.runtime = true;
                 continue 'settings;
             }
         }
-        let top = setting.path.split('.').next().unwrap_or(setting.path);
         top_level_rows
-            .entry(group_for_top_level_field(top))
+            .entry(group_title(setting.group))
             .or_default()
             .push(ConfigRowView {
                 name: setting.path.rsplit('.').next().unwrap_or(setting.path).to_string(),
                 path: setting.path.to_string(),
                 ty: String::new(),
-                value_html: runtime_value_html(&setting),
-                multiline: false,
+                value: runtime_cell(setting.value),
                 overridden: false,
                 source: String::new(),
-                default_html: NONE_HTML.to_string(),
+                default: CellValue::NoDefault,
                 description_html: markdown_lite(setting.description),
-                unset: setting.value.is_none(),
-                undocumented: false,
                 runtime: true,
             });
     }
@@ -267,7 +296,6 @@ pub(crate) fn build_config_page(
         if let Some(rows) = top_level_rows.remove(title) {
             sections.push(ConfigSectionView {
                 title: "Core Options".to_string(),
-                anchor: format!("cfg-{slug}-core"),
                 path: String::new(),
                 rows,
             });
@@ -281,155 +309,179 @@ pub(crate) fn build_config_page(
     ConfigPageView { groups }
 }
 
-/// If the field's type refers to a documented sub-struct section (and isn't a
-/// collection of them), return that section's fields for recursion.
-fn nested_section_for<'a>(
-    field: &FieldDoc,
-    sections: &'a HashMap<String, &Vec<FieldDoc>>,
-) -> Option<&'a Vec<FieldDoc>> {
-    let ty = clean_type(&field.ty);
-    // Collections of structs stay leaf rows: their keys are operator-chosen,
-    // so there is no fixed set of options to enumerate.
-    if ty.contains("HashMap") || ty.contains("Vec<") || ty.contains("nested") {
-        return None;
+fn runtime_cell(value: Option<String>) -> CellValue {
+    match value {
+        Some(value) => CellValue::Code(value),
+        None => CellValue::Unset,
     }
-    let inner = ty
-        .trim_start_matches("Option<")
-        .trim_end_matches('>')
-        .trim();
-    sections.get(&inner.to_lowercase()).copied()
 }
 
-/// Recursively emit a section for `fields` under `path`, appending nested
-/// sub-struct sections after it. `visited` guards against reference cycles.
-#[allow(clippy::too_many_arguments)]
-fn build_section(
-    title: String,
-    path: String,
-    fields: &[FieldDoc],
-    sections: &HashMap<String, &Vec<FieldDoc>>,
-    effective: &serde_json::Value,
-    explicit_paths: &BTreeMap<String, String>,
-    out: &mut Vec<ConfigSectionView>,
-    visited: &mut HashSet<String>,
-) {
-    if !visited.insert(path.clone()) {
-        return;
-    }
-    let mut rows = Vec::new();
-    let mut nested = Vec::new();
-    for field in fields {
-        let field_path = format!("{path}.{}", field.name);
-        match nested_section_for(field, sections) {
-            Some(section_fields) => build_section(
-                format!("{title} · {}", humanize(&field.name)),
-                field_path,
-                section_fields,
-                sections,
-                effective,
-                explicit_paths,
-                &mut nested,
-                visited,
-            ),
-            None => rows.push(build_row(field, &field_path, effective, explicit_paths, false)),
+/// Shared context for assembling catalog sections: the reference sections to
+/// recurse into, the effective config values, and the override provenance.
+struct CatalogBuilder<'a> {
+    sections_by_name: HashMap<String, &'a [FieldDoc]>,
+    effective: &'a serde_json::Value,
+    /// Explicitly-set paths with canonicalized keys, for spelling-insensitive
+    /// exact and prefix matching.
+    explicit: BTreeMap<String, &'a str>,
+}
+
+impl<'a> CatalogBuilder<'a> {
+    fn new(
+        sections: &'a [(String, Vec<FieldDoc>)],
+        effective: &'a serde_json::Value,
+        explicit_paths: &'a BTreeMap<String, String>,
+    ) -> Self {
+        CatalogBuilder {
+            sections_by_name: sections
+                .iter()
+                .map(|(name, fields)| (name.to_lowercase(), fields.as_slice()))
+                .collect(),
+            effective,
+            explicit: explicit_paths
+                .iter()
+                .map(|(path, source)| (canonical(path), source.as_str()))
+                .collect(),
         }
     }
-    out.push(ConfigSectionView {
-        anchor: format!("cfg-{}", slugify(&path)),
-        title,
-        path,
-        rows,
-    });
-    out.extend(nested);
-}
 
-fn build_row(
-    field: &FieldDoc,
-    path: &str,
-    effective: &serde_json::Value,
-    explicit_paths: &BTreeMap<String, String>,
-    undocumented: bool,
-) -> ConfigRowView {
-    let value = lookup(effective, path);
-    let (value_html, multiline) = match value {
-        Some(value) => format_value(value),
-        None => (UNSET_HTML.to_string(), false),
-    };
-    let unset = value.is_none_or(serde_json::Value::is_null);
-    let source = explicit_source(path, explicit_paths);
-    ConfigRowView {
-        name: field.name.clone(),
-        path: path.to_string(),
-        ty: clean_type(&field.ty),
-        value_html,
-        multiline,
-        overridden: source.is_some(),
-        source: source.unwrap_or_default(),
-        default_html: format_default(&field.default),
-        description_html: match field.description.trim() {
-            "" => "<span class=\"config-unset\">No description yet.</span>".to_string(),
-            description => markdown_lite(description),
-        },
-        unset,
-        undocumented,
-        runtime: false,
+    /// If the field's type refers to a documented sub-struct section (and
+    /// isn't a collection of them), return that section's fields.
+    fn nested_section_for(&self, field: &FieldDoc) -> Option<&'a [FieldDoc]> {
+        let ty = clean_type(&field.ty);
+        // Collections of structs stay leaf rows: their keys are
+        // operator-chosen, so there is no fixed set of options to enumerate.
+        if ty.contains("HashMap") || ty.contains("Vec<") || ty.contains("nested") {
+            return None;
+        }
+        let inner = ty
+            .trim_start_matches("Option<")
+            .trim_end_matches('>')
+            .trim();
+        self.sections_by_name.get(&inner.to_lowercase()).copied()
+    }
+
+    /// Recursively emit a section for `fields` under `path`, appending nested
+    /// sub-struct sections after it. `visited` guards against cycles.
+    fn build_section(
+        &self,
+        title: String,
+        path: String,
+        fields: &'a [FieldDoc],
+        out: &mut Vec<ConfigSectionView>,
+        visited: &mut HashSet<String>,
+    ) {
+        if !visited.insert(path.clone()) {
+            return;
+        }
+        let mut rows = Vec::new();
+        let mut nested = Vec::new();
+        for field in fields {
+            let field_path = format!("{path}.{}", field.name);
+            match self.nested_section_for(field) {
+                Some(section_fields) => self.build_section(
+                    format!("{title} · {}", humanize(&field.name)),
+                    field_path,
+                    section_fields,
+                    &mut nested,
+                    visited,
+                ),
+                None => rows.push(self.build_row(field, &field_path)),
+            }
+        }
+        out.push(ConfigSectionView { title, path, rows });
+        out.extend(nested);
+    }
+
+    fn build_row(&self, field: &FieldDoc, path: &str) -> ConfigRowView {
+        let source = self.explicit_source(path);
+        ConfigRowView {
+            name: field.name.clone(),
+            path: path.to_string(),
+            ty: clean_type(&field.ty),
+            value: match self.lookup(path) {
+                Some(value) => format_value(value),
+                None => CellValue::Unset,
+            },
+            overridden: source.is_some(),
+            source: source.unwrap_or_default().to_string(),
+            default: format_default(&field.default),
+            description_html: match field.description.trim() {
+                "" => r#"<span class="config-unset">No description yet.</span>"#.to_string(),
+                description => markdown_lite(description),
+            },
+            runtime: false,
+        }
+    }
+
+    /// Effective value at `path`, matching each segment spelling-insensitively
+    /// (reference field names vs. serde-renamed JSON keys).
+    fn lookup(&self, path: &str) -> Option<&'a serde_json::Value> {
+        let mut current = self.effective;
+        for segment in path.split('.') {
+            let object = current.as_object()?;
+            let want = canonical(segment);
+            current = object
+                .iter()
+                .find(|(key, _)| canonical(key) == want)
+                .map(|(_, value)| value)?;
+        }
+        Some(current)
+    }
+
+    /// A key counts as explicitly set when the merged config sources provided
+    /// it or anything beneath it (e.g. `tls` is overridden when
+    /// `tls.root_cafile_path` was set in a file).
+    fn explicit_source(&self, path: &str) -> Option<&'a str> {
+        let key = canonical(path);
+        if let Some(source) = self.explicit.get(&key) {
+            return Some(source);
+        }
+        let prefix = format!("{key}.");
+        self.explicit
+            .range(prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, source)| *source)
+            .next()
     }
 }
 
-fn runtime_value_html(setting: &RuntimeSetting) -> String {
-    match &setting.value {
-        Some(value) => format!("<code>{}</code>", escape_html(value)),
-        None => UNSET_HTML.to_string(),
-    }
-}
-
-/// A key counts as explicitly set when the merged config sources provided it
-/// or anything beneath it (e.g. `tls` is overridden when `tls.root_cafile_path`
-/// was set in a file).
-fn explicit_source(path: &str, explicit_paths: &BTreeMap<String, String>) -> Option<String> {
-    // Figment normalizes TOML dashes; match both spellings.
-    let underscored = path.replace('-', "_");
-    let prefix = format!("{underscored}.");
-    explicit_paths
-        .iter()
-        .find(|(key, _)| {
-            let key = key.replace('-', "_");
-            key == underscored || key.starts_with(&prefix)
+/// Canonical form of a dotted config path: each segment lowercased with
+/// everything but alphanumerics stripped, so `mlxconfig_profiles`,
+/// `mlx-config-profiles`, and `MlxConfigProfiles` all compare equal while
+/// path structure is preserved.
+fn canonical(path: &str) -> String {
+    path.split('.')
+        .map(|segment| {
+            segment
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .map(|c| c.to_ascii_lowercase())
+                .collect::<String>()
         })
-        .map(|(_, source)| source.clone())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
-fn lookup<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-    let mut current = value;
-    for segment in path.split('.') {
-        let object = current.as_object()?;
-        current = object
-            .get(segment)
-            .or_else(|| object.get(&segment.replace('_', "-")))?;
-    }
-    Some(current)
-}
-
-/// Renders a JSON value as HTML. Returns `(html, multiline)`; multiline values
-/// are pretty-printed JSON meant for a `<pre>` block.
-fn format_value(value: &serde_json::Value) -> (String, bool) {
+/// Renders a JSON value as a display cell.
+fn format_value(value: &serde_json::Value) -> CellValue {
     use serde_json::Value;
     match value {
-        Value::Null => (UNSET_HTML.to_string(), false),
-        Value::Bool(b) => (format!("<code>{b}</code>"), false),
-        Value::Number(n) => (format!("<code>{n}</code>"), false),
-        Value::String(s) if s.is_empty() => (EMPTY_HTML.to_string(), false),
-        Value::String(s) => (format!("<code>{}</code>", escape_html(s)), false),
-        Value::Array(items) if items.is_empty() => (EMPTY_HTML.to_string(), false),
+        Value::Null => CellValue::Unset,
+        Value::Bool(b) => CellValue::Code(b.to_string()),
+        Value::Number(n) => CellValue::Code(n.to_string()),
+        Value::String(s) if s.is_empty() => CellValue::Empty,
+        Value::String(s) => CellValue::Code(s.clone()),
+        Value::Array(items) if items.is_empty() => CellValue::Empty,
         Value::Array(items) if items.iter().all(is_scalar) => {
             let joined = items.iter().map(scalar_text).collect::<Vec<_>>().join(", ");
             if joined.len() <= 120 {
-                (format!("<code>{}</code>", escape_html(&joined)), false)
+                CellValue::Code(joined)
             } else {
                 pretty(value)
             }
         }
-        Value::Object(map) if map.is_empty() => (EMPTY_HTML.to_string(), false),
+        Value::Object(map) if map.is_empty() => CellValue::Empty,
         // std::time::Duration serializes as {secs, nanos}; show it humanely.
         Value::Object(map)
             if map.len() == 2 && map.contains_key("secs") && map.contains_key("nanos") =>
@@ -437,18 +489,17 @@ fn format_value(value: &serde_json::Value) -> (String, bool) {
             let secs = map["secs"].as_u64().unwrap_or(0);
             let nanos = map["nanos"].as_u64().unwrap_or(0);
             if nanos == 0 {
-                (format!("<code>{}</code>", escape_html(&humanize_seconds(secs))), false)
+                CellValue::Code(humanize_seconds(secs))
             } else {
-                (format!("<code>{secs}.{nanos:09}s</code>"), false)
+                CellValue::Code(format!("{secs}.{nanos:09}s"))
             }
         }
         _ => pretty(value),
     }
 }
 
-fn pretty(value: &serde_json::Value) -> (String, bool) {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-    (escape_html(&text), true)
+fn pretty(value: &serde_json::Value) -> CellValue {
+    CellValue::Pre(serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
 }
 
 fn is_scalar(value: &serde_json::Value) -> bool {
@@ -474,15 +525,11 @@ fn humanize_seconds(secs: u64) -> String {
     }
 }
 
-fn format_default(default: &str) -> String {
+fn format_default(default: &str) -> CellValue {
     match default.trim() {
-        "" | "—" | "-" | "*(see below)*" | "*(default)*" => NONE_HTML.to_string(),
-        "**required**" => "<em>required</em>".to_string(),
-        // An annotated absent default, e.g. "— (forever)".
-        other => match other.strip_prefix("—") {
-            Some(annotation) => format!("{NONE_HTML} {}", markdown_lite(annotation.trim())),
-            None => markdown_lite(other),
-        },
+        "" | "—" | "-" | "*(see below)*" | "*(default)*" => CellValue::NoDefault,
+        "**required**" => CellValue::Required,
+        other => CellValue::Rich(markdown_lite(other)),
     }
 }
 
@@ -516,6 +563,7 @@ fn humanize(field: &str) -> String {
             "vmaas" => "VMaaS".to_string(),
             "bom" => "BOM".to_string(),
             "nsg" => "NSG".to_string(),
+            "oem" => "OEM".to_string(),
             other => {
                 let mut chars = other.chars();
                 match chars.next() {
@@ -526,18 +574,6 @@ fn humanize(field: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn slugify(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 /// Parses the reference markdown into `(section_name, fields)` pairs in
@@ -587,6 +623,8 @@ fn heading_struct_name(heading: &str) -> Option<String> {
 
 /// Parses a markdown table row into a FieldDoc; header and separator rows
 /// (and rows whose first cell isn't a backticked field name) return None.
+/// A fourth `Group` cell (top-level table only) is recognized by matching a
+/// known group slug.
 fn parse_table_row(line: &str) -> Option<FieldDoc> {
     if !line.starts_with('|') {
         return None;
@@ -600,11 +638,18 @@ fn parse_table_row(line: &str) -> Option<FieldDoc> {
     if name.is_empty() {
         return None;
     }
+    let maybe_slug = cells[3].trim().trim_matches('`');
+    let (group, description_cells) = if GROUP_ORDER.iter().any(|(_, slug)| *slug == maybe_slug) {
+        (Some(maybe_slug.to_string()), &cells[4..])
+    } else {
+        (None, &cells[3..])
+    };
     Some(FieldDoc {
         name: name.to_string(),
         ty: cells[1].trim().to_string(),
         default: cells[2].trim().to_string(),
-        description: cells[3..].join("|").trim().to_string(),
+        group,
+        description: description_cells.join("|").trim().to_string(),
     })
 }
 
@@ -630,15 +675,19 @@ fn split_table_cells(line: &str) -> Vec<&str> {
 }
 
 fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    use askama_escape::Escaper;
+    let mut out = String::with_capacity(text.len());
+    askama_escape::Html
+        .write_escaped(&mut out, text)
+        .expect("writing to a String cannot fail");
+    out
 }
 
 /// Minimal markdown renderer for the reference's table cells: HTML-escapes,
-/// then supports `` `code` ``, `**bold**`, and `[text](target)` links (anchors
-/// are rewritten to this page's section ids). Anything else stays plain text.
+/// then supports `` `code` ``, `**bold**`, and `[text](target)` links (only
+/// http(s) targets become anchors). This is the single escaping site for all
+/// rich text on the page — [`CellValue::Rich`] and `description_html` must
+/// only ever carry its output.
 fn markdown_lite(text: &str) -> String {
     let escaped = escape_html(&text.replace("\\|", "|"));
     let linked = render_links(&escaped);
@@ -691,14 +740,11 @@ fn render_links(text: &str) -> String {
         let label = &rest[open_bracket + 1..close_bracket];
         let target = &rest[target_start..target_end];
         out.push_str(&rest[..open_bracket]);
-        if let Some(anchor) = target.strip_prefix('#') {
-            // The reference's intra-doc anchors don't map 1:1 onto this
-            // page's section ids, so keep the label but drop the link.
-            let _ = anchor;
-            out.push_str(label);
-        } else if target.starts_with("http://") || target.starts_with("https://") {
+        if target.starts_with("http://") || target.starts_with("https://") {
             out.push_str(&format!("<a href=\"{target}\">{label}</a>"));
         } else {
+            // Intra-doc anchors don't map onto this page's section ids, so
+            // keep the label but drop the link.
             out.push_str(label);
         }
         rest = &rest[target_end + 1..];
@@ -709,6 +755,17 @@ fn render_links(text: &str) -> String {
 mod configuration_tests {
     use super::*;
 
+    fn no_live_settings() -> LiveSettings {
+        LiveSettings {
+            log_filter: "info".to_string(),
+            site_explorer_enabled: "true".to_string(),
+            create_machines: "true".to_string(),
+            bmc_proxy: None,
+            tracing_enabled: "false".to_string(),
+            dpu_agent_upgrade_policy: "Off".to_string(),
+        }
+    }
+
     #[test]
     fn parses_real_reference() {
         let sections = parse_reference(carbide_api_core::cfg::CONFIG_REFERENCE_MD);
@@ -716,6 +773,7 @@ mod configuration_tests {
         assert!(names.contains(&"NicoConfig"), "top-level section missing: {names:?}");
         assert!(names.contains(&"TlsConfig"));
         assert!(names.contains(&"SiteExplorerConfig"));
+        assert!(names.contains(&"TracingConfig"));
 
         let (_, top) = sections.iter().find(|(n, _)| n == "NicoConfig").unwrap();
         assert!(top.len() > 50, "expected many top-level fields, got {}", top.len());
@@ -724,23 +782,66 @@ mod configuration_tests {
         assert!(listen.default.contains("1079"));
     }
 
+    /// Guards the drift the generated page exists to eliminate: every
+    /// documented top-level option must declare a valid group slug in the
+    /// reference doc's `Group` column.
+    #[test]
+    fn every_documented_field_has_a_group() {
+        let sections = parse_reference(carbide_api_core::cfg::CONFIG_REFERENCE_MD);
+        let (_, top) = sections.iter().find(|(n, _)| n == "NicoConfig").unwrap();
+        let ungrouped: Vec<&str> = top
+            .iter()
+            .filter(|f| f.group.is_none())
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(ungrouped.is_empty(), "fields without a valid Group cell: {ungrouped:?}");
+    }
+
+    /// Guards README coverage: every top-level key of the serialized config
+    /// must be documented in the reference. A failure means a field was added
+    /// to `CarbideConfig` without a README row.
+    #[test]
+    fn every_config_field_is_documented() {
+        // A minimal valid config; serialization emits every non-skipped key.
+        let config: carbide_api_core::cfg::file::CarbideConfig =
+            toml::from_str("database_url = \"postgres://x\"\nasn = 65001\n")
+                .expect("minimal config parses");
+        let effective = serde_json::to_value(config.redacted()).expect("config serializes");
+        let sections = parse_reference(carbide_api_core::cfg::CONFIG_REFERENCE_MD);
+        let (_, top) = sections.iter().find(|(n, _)| n == "NicoConfig").unwrap();
+        let documented: HashSet<String> = top.iter().map(|f| canonical(&f.name)).collect();
+        let undocumented: Vec<&String> = effective
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| !documented.contains(&canonical(key)))
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "config fields missing from cfg/README.md: {undocumented:?}"
+        );
+    }
+
     #[test]
     fn builds_page_with_overrides() {
         let effective = serde_json::json!({
             "listen": "[::]:1079",
             "asn": 65001,
+            "mlx-config-profiles": { "profileA": {} },
             "tls": { "root_cafile_path": "/etc/ca.crt" },
         });
         let mut explicit = BTreeMap::new();
         explicit.insert("asn".to_string(), "site.toml".to_string());
+        explicit.insert("mlx-config-profiles.profileA".to_string(), "base.toml".to_string());
         explicit.insert("tls.root_cafile_path".to_string(), "base.toml".to_string());
 
         let page = build_config_page(
             carbide_api_core::cfg::CONFIG_REFERENCE_MD,
             &effective,
             &explicit,
-            Vec::new(),
+            no_live_settings(),
         );
+
         let rows: Vec<&ConfigRowView> = page
             .groups
             .iter()
@@ -748,24 +849,40 @@ mod configuration_tests {
             .flat_map(|s| s.rows.iter())
             .collect();
         assert!(rows.len() > 150, "expected full catalog, got {}", rows.len());
+
         let asn = rows.iter().find(|r| r.path == "asn").unwrap();
         assert!(asn.overridden);
         assert_eq!(asn.source, "site.toml");
-        assert!(asn.value_html.contains("65001"));
+        assert!(asn.value.to_html().contains("65001"));
+
         let listen = rows.iter().find(|r| r.path == "listen").unwrap();
         assert!(!listen.overridden);
-        // Nested section rows exist with dotted paths.
-        assert!(rows.iter().any(|r| r.path == "tls.root_cafile_path"));
-        // A field whose sub-struct was set is marked overridden by prefix.
+
+        // Serde-renamed keys join spelling-insensitively: the reference's
+        // `mlxconfig_profiles` matches the serialized `mlx-config-profiles`.
+        let mlx = rows.iter().find(|r| r.path == "mlxconfig_profiles").unwrap();
+        assert!(!mlx.value.is_unset(), "renamed key must resolve a value");
+        assert!(mlx.overridden, "renamed key must resolve provenance");
+
+        // Nested section rows exist with dotted paths, and a field whose
+        // sub-struct was set is marked overridden by prefix.
         let tls_row = rows.iter().find(|r| r.path == "tls.root_cafile_path").unwrap();
         assert!(tls_row.overridden);
+
+        // Runtime settings are folded in: documented options get tagged...
+        let se = rows.iter().find(|r| r.path == "site_explorer.enabled").unwrap();
+        assert!(se.runtime);
+        // ...and undocumented ones become synthetic runtime rows.
+        let lf = rows.iter().find(|r| r.path == "log_filter").unwrap();
+        assert!(lf.runtime);
+        assert!(lf.value.to_html().contains("info"));
     }
 
     #[test]
     fn markdown_lite_renders_and_escapes() {
         assert_eq!(
             markdown_lite("Use `ip_address` for <new> hosts"),
-            "Use <code>ip_address</code> for &lt;new&gt; hosts"
+            "Use <code>ip_address</code> for &#60;new&#62; hosts"
         );
         assert_eq!(markdown_lite("**Deprecated.**"), "<strong>Deprecated.</strong>");
         assert_eq!(
@@ -775,13 +892,17 @@ mod configuration_tests {
     }
 
     #[test]
-    fn duration_and_collections_format() {
-        let (html, multiline) = format_value(&serde_json::json!({"secs": 3600, "nanos": 0}));
-        assert_eq!(html, "<code>1h</code>");
-        assert!(!multiline);
-        let (html, _) = format_value(&serde_json::json!(["10.0.0.1", "10.0.0.2"]));
-        assert!(html.contains("10.0.0.1, 10.0.0.2"));
-        let (_, multiline) = format_value(&serde_json::json!({"a": {"b": 1}}));
-        assert!(multiline);
+    fn cell_values_render_and_escape() {
+        assert_eq!(CellValue::Code("<x>".to_string()).to_html(), "<code>&#60;x&#62;</code>");
+        assert!(CellValue::Pre("{\"a\": 1}".to_string()).to_html().contains("show value"));
+        assert!(CellValue::Unset.is_unset());
+        assert_eq!(
+            format_value(&serde_json::json!({"secs": 3600, "nanos": 0})).to_html(),
+            "<code>1h</code>"
+        );
+        let list = format_value(&serde_json::json!(["10.0.0.1", "10.0.0.2"]));
+        assert!(list.to_html().contains("10.0.0.1, 10.0.0.2"));
+        assert!(matches!(format_value(&serde_json::json!({"a": {"b": 1}})), CellValue::Pre(_)));
+        assert!(matches!(format_default("**required**"), CellValue::Required));
     }
 }
