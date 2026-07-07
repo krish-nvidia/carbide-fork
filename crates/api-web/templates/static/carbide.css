@@ -2045,8 +2045,68 @@ span.page-link.disabled {
   margin-left: 0.5rem;
 }
 
-/* Fixed layout so column widths hold regardless of content: equal columns,
-   with a slightly bigger allowance for Description. */
+/* Tables and the sticky detail panel sit side by side; the panel scales
+   with the viewport so wide screens get a roomier reading pane. */
+.config-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+.config-tables {
+  flex: 1;
+  min-width: 0;
+}
+
+.config-panel {
+  width: clamp(20rem, 28vw, 38rem);
+  flex-shrink: 0;
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+
+.config-panel h4 {
+  margin: 0 0 0.5rem;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 1rem;
+  word-break: break-word;
+}
+
+.config-panel dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 1rem;
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+}
+
+.config-panel dt {
+  color: var(--text-muted);
+}
+
+.config-panel dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .config-body {
+    flex-direction: column;
+  }
+
+  .config-panel {
+    order: -1;
+    width: 100%;
+    max-height: 40vh;
+  }
+}
+
 table.config-options {
   width: 100%;
   margin: 0;
@@ -2054,10 +2114,8 @@ table.config-options {
   table-layout: fixed;
 }
 
-table.config-options th:nth-child(1),
-table.config-options th:nth-child(2),
-table.config-options th:nth-child(3) {
-  width: 22%;
+table.config-options th:nth-child(1) {
+  width: 45%;
 }
 
 table.config-options th {
@@ -2073,6 +2131,14 @@ table.config-options td {
   padding: 0.6rem 0.75rem;
   border-bottom: 1px solid var(--border-color);
   vertical-align: top;
+}
+
+tr.config-row {
+  cursor: pointer;
+}
+
+tr.config-row.selected td {
+  background-color: var(--accent-green-light);
 }
 
 tr.config-row.overridden td:first-child {
@@ -2138,12 +2204,7 @@ td.config-value pre {
   background-color: var(--accent-green-light);
 }
 
-td.config-default {
-  color: var(--text-muted);
-  word-break: break-word;
-}
-
-td.config-desc {
+.config-desc {
   color: var(--text-secondary);
 }
 
