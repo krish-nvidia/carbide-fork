@@ -1065,8 +1065,6 @@ pub(crate) fn invalid_machine_id() -> String {
 
 #[cfg(test)]
 mod index_template_tests {
-    use askama::Template as _;
-
     use super::*;
 
     /// Renders the Configuration page template against the real reference doc
