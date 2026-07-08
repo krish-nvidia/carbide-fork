@@ -21,22 +21,18 @@ The contributor is the hardware owner for the change and is responsible for vali
 
 NICo discovers and manages bare-metal hosts through their BMC (Baseboard Management Controller) via the DMTF Redfish standard. Two Rust Redfish client libraries handle this:
 
-
-| Library                                                | Role                                                                                                       | Where Used                                                                                  |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **[nv-redfish](https://github.com/NVIDIA/nv-redfish)** | Schema-driven, fast: site exploration reports, firmware inventory, sensor collection, health monitoring.   | Site Explorer exploration (`crates/site-explorer/`), Hardware Health (`crates/health/src/`) |
-| **[libredfish](https://github.com/NVIDIA/libredfish)** | Stateful BMC interactions: boot config, BIOS setup, power control, account/credential management, lockdown | Site Explorer state controller operations (`crates/site-explorer/`)                         |
-
+| Library | Role | Where Used |
+|---|---|---|
+| **[nv-redfish](https://github.com/NVIDIA/nv-redfish)** | Schema-driven, fast: site exploration reports, firmware inventory, sensor collection, health monitoring. | Site Explorer exploration (`crates/site-explorer/`), Hardware Health (`crates/health/src/`) |
+| **[libredfish](https://github.com/NVIDIA/libredfish)** | Stateful BMC interactions: boot config, BIOS setup, power control, account/credential management, lockdown | Site Explorer state controller operations (`crates/site-explorer/`) |
 
 Site Explorer uses `nv-redfish` by default to generate `EndpointExplorationReport`s. Exploration through `libredfish` is deprecated; it remains temporarily available for comparison and transition testing through the `explore_mode` configuration setting (`SiteExplorerExploreMode`):
 
-
-| Mode             | Behavior                                                            |
-| ---------------- | ------------------------------------------------------------------- |
-| `nv-redfish`     | Generate the report with nv-redfish (default)                       |
-| `libredfish`     | Generate the report with the deprecated libredfish exploration path |
-| `compare-result` | Run both paths and report differences for transition testing        |
-
+| Mode | Behavior |
+|---|---|
+| `nv-redfish` | Generate the report with nv-redfish (default) |
+| `libredfish` | Generate the report with the deprecated libredfish exploration path |
+| `compare-result` | Run both paths and report differences for transition testing |
 
 Implement new exploration support in the `nv-redfish` path. Do not add new hardware support only to the deprecated libredfish exploration path. Stateful operations such as boot order, BIOS setup, lockdown, and credential rotation still use libredfish, so both libraries may need changes for a complete platform integration.
 
@@ -50,45 +46,47 @@ Local path overrides are only for development before the releases exist. Restore
 
 ## The Three Scenarios
 
-
-
 ### Scenario 1: Completely New BMC Vendor
 
 The hardware uses a BMC firmware stack that does not map to any existing `RedfishVendor` variant.
 
 **What to do:**
 
-1. **Add a** `RedfishVendor` **variant** in `libredfish/src/model/service_root.rs`.
+1. **Add a `RedfishVendor` variant** in `libredfish/src/model/service_root.rs`.
 2. **Extend vendor detection** in `ServiceRoot::vendor()` (same file). The vendor string comes from `GET /redfish/v1` - the `Vendor` field, or failing that, the first key in the `Oem` object. If the vendor string alone is not enough to distinguish the BMC (e.g., the vendor is "Lenovo" but some models use an AMI-based BMC), use secondary signals like `self.has_ami_bmc()` or `self.product`.
 3. **Create a vendor module** (or reuse an existing one). Each vendor has a file `libredfish/src/<vendor>.rs` containing a `Bmc` struct that implements the `Redfish` trait. If the new vendor's BMC is very close to an existing one (e.g., LenovoAMI reuses `ami::Bmc`), you can route to the existing implementation.
 4. **Wire up** `set_vendor` in `libredfish/src/standard.rs` to dispatch the new variant to the appropriate `Bmc` implementation.
-5. **Implement the** `Redfish` **trait** for the new `Bmc`. Start by delegating to `RedfishStandard` and override methods as needed. The methods below are grouped by how they are used in the state machine; almost all need vendor-specific overrides.
-  **BIOS / machine setup** - called during initial ingestion and instance creation to configure UEFI settings:
-  - `machine_setup()` - applies BIOS attributes (names differ per vendor and model)
-  - `machine_setup_status()` - polls whether all `machine_setup` changes have taken effect
-  - `is_bios_setup()` - lightweight check used during instance creation (`PollingBiosSetup`) to confirm BIOS is ready before proceeding to boot order configuration
+5. **Implement the `Redfish` trait** for the new `Bmc`. Start by delegating to `RedfishStandard` and override methods as needed. The methods below are grouped by how they are used in the state machine; almost all need vendor-specific overrides.
+
+   **BIOS / machine setup** - called during initial ingestion and instance creation to configure UEFI settings:
+   - `machine_setup()` - applies BIOS attributes (names differ per vendor and model)
+   - `machine_setup_status()` - polls whether all `machine_setup` changes have taken effect
+   - `is_bios_setup()` - lightweight check used during instance creation (`PollingBiosSetup`) to confirm BIOS is ready before proceeding to boot order configuration
+
    **Lockdown** - called to secure the BMC before tenant use and unlocked during instance termination or reconfiguration:
-  - `lockdown()` - enable/disable BMC security lockdown
-  - `lockdown_status()` - polled by the state controller to confirm lockdown state; wrong results cause machines to get stuck
-  - `lockdown_bmc()` - lower-level BMC-specific lockdown (e.g., iDRAC lockdown on Dell, distinct from BIOS lockdown)
+   - `lockdown()` - enable/disable BMC security lockdown
+   - `lockdown_status()` - polled by the state controller to confirm lockdown state; wrong results cause machines to get stuck
+   - `lockdown_bmc()` - lower-level BMC-specific lockdown (e.g., iDRAC lockdown on Dell, distinct from BIOS lockdown)
+
    **Boot order** - called during ingestion to set DPU-first boot and during DPU reprovisioning:
-  - `set_boot_order_dpu_first()` - reorder boot options so the DPU boots first (platform-specific boot option discovery)
-  - `boot_once()` - one-time boot from a specific target (e.g., `UefiHttp` for DPU HTTP boot path)
-  - `boot_first()` - persistently change boot order to a given target
+   - `set_boot_order_dpu_first()` - reorder boot options so the DPU boots first (platform-specific boot option discovery)
+   - `boot_once()` - one-time boot from a specific target (e.g., `UefiHttp` for DPU HTTP boot path)
+   - `boot_first()` - persistently change boot order to a given target
+
    **Serial console** - SSH console access setup:
-  - `setup_serial_console()` - configure BMC serial-over-LAN
-  - `serial_console_status()` - polled to confirm setup; incorrect results stall provisioning
+   - `setup_serial_console()` - configure BMC serial-over-LAN
+   - `serial_console_status()` - polled to confirm setup; incorrect results stall provisioning
+
    **Credential management** - called during initial ingestion to rotate factory defaults:
-  - `change_password()` - rotate BMC user password
-  - `change_uefi_password()` / `clear_uefi_password()` - UEFI password management (only tested on Dell, Lenovo, NVIDIA)
-  - `set_machine_password_policy()` - apply password-never-expires policy (vendor-specific)
+   - `change_password()` - rotate BMC user password
+   - `change_uefi_password()` / `clear_uefi_password()` - UEFI password management (only tested on Dell, Lenovo, NVIDIA)
+   - `set_machine_password_policy()` - apply password-never-expires policy (vendor-specific)
+
    **Important:** Pay careful attention to all **status/polling methods** (`is_bios_setup()`, `lockdown_status()`, `machine_setup_status()`, `serial_console_status()`, etc.). The state controller polls these during provisioning, instance creation, instance termination, and reprovisioning to decide when to advance state. If they return incorrect results, machines will get stuck in polling states, fail to terminate properly, or skip required configuration steps.
 6. **Add OEM model types** if needed in `libredfish/src/model/oem/<vendor>.rs`.
 7. **Add unit tests** for vendor detection and other deterministic behavior. Consider adding a BMC mock for lasting regression coverage (see [Optional BMC mock coverage](#optional-bmc-mock-coverage)).
 8. **Update nv-redfish** - it is the default and supported path for Site Explorer discovery. See [nv-redfish quirks](#adding-nv-redfish-quirks-for-exploration-and-health-monitoring).
 9. **Update NICo** - add the vendor to `BMCVendor`, `HwType`, and handle any state controller quirks. See [Changes in NICo](#changes-in-nico).
-
-
 
 ### Scenario 2: New Server Model with Quirks
 
@@ -100,8 +98,6 @@ The hardware uses an already-supported BMC vendor but the specific model has qui
 2. **Use BIOS / OEM manager profiles** for config-driven differences. NICo supports per-vendor, per-model BIOS settings via the `BiosProfileVendor` type in `lib.rs`, letting you define model-specific attributes in config (TOML) without code changes.
 3. **Add model-specific branches** in the vendor module when profiles are not enough. Use the model/product string from `ComputerSystem` to gate behavior.
 4. **Handle missing or renamed attributes.** Check the actual BIOS attributes via `GET /redfish/v1/Systems/{id}/Bios` on the target hardware. If an attribute is missing, add a guard that logs and skips rather than failing.
-
-
 
 ### Scenario 3: New Firmware for an Existing Model
 
@@ -115,8 +111,6 @@ A firmware update for an already-supported model introduces regressions: removed
 4. **Adjust OEM-specific paths** if the firmware reorganizes its Redfish tree.
 5. **Guard behavioral changes behind firmware version checks** if needed, using `ServiceRoot.redfish_version` or firmware inventory versions.
 
-
-
 ## Changes in NICo
 
 Beyond the Redfish libraries, NICo itself has vendor-aware logic that needs updating for new hardware.
@@ -126,10 +120,8 @@ Beyond the Redfish libraries, NICo itself has vendor-aware logic that needs upda
 NICo has its own `BMCVendor` enum, distinct from libredfish's `RedfishVendor`. It is used throughout NICo for vendor-specific branching in the state controller, credential management, and exploration. When adding a new vendor:
 
 1. **Add the variant** to `BMCVendor`.
-2. **Add the** `From<RedfishVendor>` **mapping** so libredfish's vendor detection flows into NICo's enum.
+2. **Add the `From<RedfishVendor>` mapping** so libredfish's vendor detection flows into NICo's enum.
 3. **Add parsing** in `From<&str>`, `from_udev_dmi()`, and `from_tls_issuer()` as applicable.
-
-
 
 ### `HwType` enum (`crates/bmc-explorer/src/hw/mod.rs`)
 
@@ -215,8 +207,6 @@ Then build the CLI from the workspace root:
 cargo build -p nico-admin-cli
 ```
 
-
-
 ### Running commands against a real BMC
 
 The `redfish` subcommand talks directly to a BMC - no NICo deployment needed:
@@ -274,22 +264,18 @@ nico/
 └── crates/admin-cli/src/redfish/       # nico-admin-cli redfish subcommand
 ```
 
-
-
 ## Adding nv-redfish Quirks for Exploration and Health Monitoring
 
 nv-redfish provides site exploration reports and is also used for health monitoring (`nico-hw-health`). If the new hardware causes failures in either path, the fix goes into nv-redfish.
 
-1. **Add a** `Platform` **variant** in `nv-redfish/redfish/src/bmc_quirks.rs` if the quirk is platform-specific.
+1. **Add a `Platform` variant** in `nv-redfish/redfish/src/bmc_quirks.rs` if the quirk is platform-specific.
 2. **Map the variant** in `BmcQuirks::new()` using the vendor string, redfish version, and product from the service root.
 3. **Add quirk methods** for each workaround. Common quirks:
-  - `bug_missing_root_nav_properties()` - BMC omits `Systems`/`Chassis`/`Managers` from service root
-  - `expand_is_not_working_properly()` - `$expand` query parameter broken
-  - `wrong_resource_status_state()` - non-standard `Status.State` enum values
-  - `fw_inventory_wrong_release_date()` - invalid date formats
+   - `bug_missing_root_nav_properties()` - BMC omits `Systems`/`Chassis`/`Managers` from service root
+   - `expand_is_not_working_properly()` - `$expand` query parameter broken
+   - `wrong_resource_status_state()` - non-standard `Status.State` enum values
+   - `fw_inventory_wrong_release_date()` - invalid date formats
 4. **Add OEM feature support** if needed. OEM extensions are gated behind Cargo features (`oem-ami`, `oem-dell`, `oem-hpe`, etc.) in `nv-redfish/redfish/Cargo.toml`.
-
-
 
 ## Optional BMC Mock Coverage
 
@@ -302,13 +288,11 @@ To add one:
 3. Wire the variant through `crates/bmc-mock/src/machine_info.rs`: DPU count and type, vendor and product identity, Redfish version, manager, system, chassis, discovery, firmware inventory, and OEM behavior should match the live BMC responses relevant to the test.
 4. Add focused tests for the behavior the hardware contribution changes, such as vendor detection, inventory, NIC-mode detection, or provisioning.
 
-
-
 ## Contribution Workflow and Pull Request Evidence
 
 1. Complete the issue scoping and evidence collection in [Before You Start](#before-you-start).
 2. Follow [Coordinating Redfish Library Changes](#coordinating-redfish-library-changes) for any upstream libredfish or nv-redfish changes and releases.
-3. Complete the live-BMC validation described in [Testing Site Explorer with the BMC Explorer Tool](#testing-site-explorer-with-the-bmc-explorer-tool) and [Testing with](#testing-with-nico-admin-cli-redfish) `nico-admin-cli redfish`.
+3. Complete the live-BMC validation described in [Testing Site Explorer with the BMC Explorer Tool](#testing-site-explorer-with-the-bmc-explorer-tool) and [Testing with `nico-admin-cli redfish`](#testing-with-nico-admin-cli-redfish).
 4. Validate every affected lifecycle transition through a running NICo deployment (if possible). A complete new host integration normally covers discovery and ingestion, inventory and health monitoring, BIOS and Secure Boot setup, boot order, power control, serial-over-LAN, lockdown, credential rotation, instance creation and termination, reprovisioning, and affected firmware update paths. See the [Quick Start Guide](../getting-started/quick-start.md), [Ingesting Hosts](../provisioning/ingesting-hosts.md), [Managed Host State Diagrams](../architecture/state_machines/managedhost.md), [DPU Lifecycle Management](../dpu-management/dpu-lifecycle-management.md), and [Firmware Updates](../operations/firmware-updates.md).
 5. Include the Hardware Compatibility List update in the same NICo change as the Site Explorer and BMC Explorer integration.
 6. Open the NICo pull request using the repository [contribution process](https://github.com/NVIDIA/infra-controller/blob/main/CONTRIBUTING.md) and [pull request template](https://github.com/NVIDIA/infra-controller/blob/main/.github/PULL_REQUEST_TEMPLATE.md). Link the agreed issue and upstream libredfish or nv-redfish pull requests and releases, and ensure every commit is both DCO-signed-off and cryptographically signed.
@@ -320,4 +304,3 @@ Include the following evidence in the NICo pull request:
 - The commands and lifecycle paths tested, with results
 - Any operation that could not be tested and why
 - Any difference between the live Redfish surface and optional mock coverage
-
