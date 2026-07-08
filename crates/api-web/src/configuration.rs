@@ -74,6 +74,10 @@ pub(crate) struct ConfigRowView {
     pub description_html: String,
     /// The value shown is the live, runtime-adjustable value.
     pub runtime: bool,
+    /// Lowercased haystack for the client-side filter: name, path, value,
+    /// source, and description — deliberately not the type or the panel's
+    /// "Type/Default/Path" labels, which would match on every row.
+    pub search: String,
 }
 
 /// A value or default cell. Rendering (and HTML escaping) is centralized in
@@ -117,6 +121,16 @@ impl CellValue {
     /// Used by the template to dim rows whose option isn't set.
     pub fn is_unset(&self) -> bool {
         matches!(self, CellValue::Unset)
+    }
+
+    /// Plain text of the cell for the client-side filter.
+    fn search_text(&self) -> &str {
+        match self {
+            CellValue::Unset => "unset",
+            CellValue::Empty => "empty",
+            CellValue::NoDefault | CellValue::Required | CellValue::Rich(_) => "",
+            CellValue::Code(text) | CellValue::Pre(text) => text,
+        }
     }
 }
 
@@ -273,9 +287,19 @@ pub(crate) fn build_config_page(
             if let Some(row) = rows.iter_mut().find(|row| row.path == setting.path) {
                 row.value = runtime_cell(setting.value);
                 row.runtime = true;
+                row.search =
+                    format!("{} runtime {}", row.search, row.value.search_text()).to_lowercase();
                 continue 'settings;
             }
         }
+        let value = runtime_cell(setting.value);
+        let search = format!(
+            "{} runtime {} {}",
+            setting.path,
+            value.search_text(),
+            setting.description
+        )
+        .to_lowercase();
         top_level_rows
             .entry(group_title(setting.group))
             .or_default()
@@ -288,12 +312,13 @@ pub(crate) fn build_config_page(
                     .to_string(),
                 path: setting.path.to_string(),
                 ty: String::new(),
-                value: runtime_cell(setting.value),
+                value,
                 overridden: false,
                 source: String::new(),
                 default: CellValue::NoDefault,
                 description_html: markdown_lite(setting.description),
                 runtime: true,
+                search,
             });
     }
 
@@ -369,7 +394,13 @@ impl<'a> CatalogBuilder<'a> {
             .trim_start_matches("Option<")
             .trim_end_matches('>')
             .trim();
-        self.sections_by_name.get(&inner.to_lowercase()).copied()
+        self.sections_by_name
+            .get(&inner.to_lowercase())
+            .copied()
+            // Sections without field rows (e.g. enum value tables like
+            // `RepublishScope`) stay leaf rows rather than dissolving into
+            // an empty section.
+            .filter(|fields| !fields.is_empty())
     }
 
     /// Recursively emit a section for `fields` under `path`, appending nested
@@ -406,14 +437,24 @@ impl<'a> CatalogBuilder<'a> {
 
     fn build_row(&self, field: &FieldDoc, path: &str) -> ConfigRowView {
         let source = self.explicit_source(path);
+        let value = match self.lookup(path) {
+            Some(value) => format_value(value),
+            None => CellValue::Unset,
+        };
+        let search = format!(
+            "{} {} {} {} {}",
+            field.name,
+            path,
+            value.search_text(),
+            source.as_deref().unwrap_or(""),
+            field.description
+        )
+        .to_lowercase();
         ConfigRowView {
             name: field.name.clone(),
             path: path.to_string(),
             ty: clean_type(&field.ty),
-            value: match self.lookup(path) {
-                Some(value) => format_value(value),
-                None => CellValue::Unset,
-            },
+            value,
             overridden: source.is_some(),
             source: source.unwrap_or_default(),
             default: format_default(&field.default),
@@ -422,6 +463,7 @@ impl<'a> CatalogBuilder<'a> {
                 description => markdown_lite(description),
             },
             runtime: false,
+            search,
         }
     }
 
@@ -727,6 +769,15 @@ fn markdown_lite(text: &str) -> String {
 mod configuration_tests {
     use super::*;
 
+    /// The shared compile-checked fixture with every `Option` section
+    /// populated, so the coverage and stale-row guards can see inside all
+    /// sections. Maintained by rustc: new config fields fail to compile in
+    /// `test_support::default_config` until added there.
+    fn fixture_json() -> serde_json::Value {
+        let config = carbide_api_core::test_support::default_config::fully_populated();
+        serde_json::to_value(config.redacted()).expect("config serializes")
+    }
+
     fn no_live_settings() -> LiveSettings {
         LiveSettings {
             log_filter: "info".to_string(),
@@ -784,11 +835,7 @@ mod configuration_tests {
     /// to `CarbideConfig` without a README row.
     #[test]
     fn every_config_field_is_documented() {
-        // A minimal valid config; serialization emits every non-skipped key.
-        let config: carbide_api_core::cfg::file::CarbideConfig =
-            toml::from_str("database_url = \"postgres://x\"\nasn = 65001\n")
-                .expect("minimal config parses");
-        let effective = serde_json::to_value(config.redacted()).expect("config serializes");
+        let effective = fixture_json();
         let sections = parse_reference(carbide_api_core::cfg::CONFIG_REFERENCE_MD);
         let (_, top) = sections.iter().find(|(n, _)| n == "NicoConfig").unwrap();
         let documented: HashSet<String> = top.iter().map(|f| canonical(&f.name)).collect();
@@ -801,6 +848,115 @@ mod configuration_tests {
         assert!(
             undocumented.is_empty(),
             "config fields missing from cfg/README.md: {undocumented:?}"
+        );
+    }
+
+    /// Extends the coverage guard below the top level: every key the config
+    /// actually serializes under a documented section must be a documented
+    /// row (or a documented sub-section) of that section. Catches a field
+    /// added to e.g. `SiteExplorerConfig` without a README row.
+    #[test]
+    fn every_serialized_section_key_is_documented() {
+        let effective = fixture_json();
+        let page = build_config_page(
+            carbide_api_core::cfg::CONFIG_REFERENCE_MD,
+            &effective,
+            &BTreeMap::new(),
+            no_live_settings(),
+        );
+
+        let sections: Vec<&ConfigSectionView> = page
+            .groups
+            .iter()
+            .flat_map(|g| g.sections.iter())
+            .filter(|s| !s.path.is_empty())
+            .collect();
+        let section_paths: HashSet<String> = sections.iter().map(|s| canonical(&s.path)).collect();
+
+        let mut problems = Vec::new();
+        for section in &sections {
+            // Walk the serialized config to this section's object, matching
+            // segments the same way the builder does.
+            let mut value = &effective;
+            let mut found = true;
+            for segment in section.path.split('.') {
+                let want = canonical(segment);
+                match value
+                    .as_object()
+                    .and_then(|o| o.iter().find(|(k, _)| canonical(k) == want).map(|(_, v)| v))
+                {
+                    Some(v) => value = v,
+                    None => {
+                        found = false;
+                        break;
+                    }
+                }
+            }
+            let Some(object) = (found.then_some(value)).and_then(|v| v.as_object()) else {
+                continue; // unset Option section or non-object value
+            };
+            let documented: HashSet<String> = section
+                .rows
+                .iter()
+                .filter_map(|r| r.path.rsplit('.').next())
+                .map(canonical)
+                .collect();
+            for key in object.keys() {
+                let child_path = canonical(&format!("{}.{}", section.path, key));
+                if !documented.contains(&canonical(key)) && !section_paths.contains(&child_path) {
+                    problems.push(format!("{}.{}", section.path, key));
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "serialized config keys missing from their cfg/README.md section: {problems:?}"
+        );
+    }
+
+    /// The inverse of the coverage guards: a documented row whose parent
+    /// object serializes but whose key doesn't exist documents a field that
+    /// was removed or renamed — delete or fix the README row. Rows under
+    /// unset `Option` sections (e.g. `tls` in the minimal config) can't be
+    /// verified and are skipped, as are synthetic runtime rows and the one
+    /// `skip_serializing_if` field.
+    #[test]
+    fn every_documented_row_matches_a_config_field() {
+        let effective = fixture_json();
+        let page = build_config_page(
+            carbide_api_core::cfg::CONFIG_REFERENCE_MD,
+            &effective,
+            &BTreeMap::new(),
+            no_live_settings(),
+        );
+
+        const SKIP_SERIALIZING: &[&str] = &["mlxconfig_profiles"];
+        let mut stale = Vec::new();
+        for row in page
+            .groups
+            .iter()
+            .flat_map(|g| g.sections.iter())
+            .flat_map(|s| s.rows.iter())
+            .filter(|r| !r.runtime && !SKIP_SERIALIZING.contains(&r.path.as_str()))
+        {
+            let mut value = &effective;
+            for segment in row.path.split('.') {
+                let Some(object) = value.as_object() else {
+                    break; // parent is unset (Option section) — unverifiable
+                };
+                let want = canonical(segment);
+                match object.iter().find(|(k, _)| canonical(k) == want) {
+                    Some((_, child)) => value = child,
+                    None => {
+                        stale.push(row.path.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "cfg/README.md rows documenting nonexistent config fields: {stale:?}"
         );
     }
 

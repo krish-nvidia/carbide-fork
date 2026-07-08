@@ -38,7 +38,7 @@
 				<thead><tr><th>Option</th><th>Value</th></tr></thead>
 				<tbody>
 					{% for row in section.rows %}
-					<tr class="config-row{% if row.overridden %} overridden{% endif %}{% if row.value.is_unset() %} unset{% endif %}" data-path="{{ row.path }}">
+					<tr class="config-row{% if row.overridden %} overridden{% endif %}{% if row.value.is_unset() %} unset{% endif %}" data-path="{{ row.path }}" data-search="{{ row.search }}">
 						<td class="config-name">
 							<code>{{ row.name }}</code>
 						</td>
@@ -97,7 +97,10 @@
 			for (const section of content.querySelectorAll('.config-section')) {
 				let visibleRows = 0;
 				for (const row of section.querySelectorAll('.config-row')) {
-					const matches = (!query || row.textContent.toLowerCase().includes(query))
+					// data-search holds name/path/value/source/description —
+					// not the type or the panel's Type/Default/Path labels,
+					// which would match on every row.
+					const matches = (!query || row.dataset.search.includes(query))
 						&& (!overriddenOnly.checked || row.classList.contains('overridden'));
 					row.hidden = !matches;
 					if (matches) visibleRows++;

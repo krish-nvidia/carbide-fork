@@ -45,7 +45,6 @@ applicable.
 | `machine_update_run_interval` | `Option<u64>` | — | `machines` | Interval (seconds) at which the machine update manager checks for updates. |
 | `retained_boot_interface_window` | `Option<Duration>` | — | `machines` | How long a retained boot interface pair (`retained_boot_interfaces` table) stays applicable after its `machine_interfaces` row was deleted. Unset retains forever; set a window (e.g. `30d`) so a MAC reappearing on different hardware doesn't inherit an obsolete Redfish interface id. |
 | `site_explorer` | `SiteExplorerConfig` | *(see below)* | `hardware` | SiteExplorer hardware discovery settings (see [SiteExplorerConfig](#siteexplorerconfig)). |
-| `nvue_enabled` | `bool` | `true` | `machines` | DPU agent uses NVUE for config instead of writing files directly. |
 | `vpc_peering_policy` | `Option<VpcPeeringPolicy>` | — | `networking` | Policy for VPC peering based on network virtualization type at creation time. |
 | `vpc_peering_policy_on_existing` | `Option<VpcPeeringPolicy>` | — | `networking` | Policy for whether existing VPC peerings should be active. |
 | `attestation_enabled` | `bool` | `false` | `security` | Enables TPM-based machine attestation (adds `Measuring` state before `Ready`). |
@@ -282,6 +281,8 @@ flows.
 | `nmx_c_tls_client_key_path` | `Option<String>` | — | Client private key for mTLS to NMX-C. |
 | `nmx_c_tls_authority` | `Option<String>` | — | TLS server name used for SNI and certificate verification. |
 | `allow_insecure` | `bool` | `false` | Skip TLS verification for NMX-C. |
+| `nmx_c_endpoint_port` | `Option<u16>` | — | TCP port for NMX-C endpoints derived from switch NVOS IP. Unset uses the production NMX-C port. |
+| `nmx_c_certificate_rotation` | `NmxCCertificateRotationConfig` | *(default)* | Optional monitoring for NMX-C server certificate propagation. |
 
 ### `SiteExplorerConfig`
 
@@ -306,8 +307,8 @@ flows.
 | `power_shelves_created_per_run` | `u64` | `1` | Max power shelves created per run. |
 | `create_switches` | `bool` | `false` | Auto-create Switch state machines. |
 | `switches_created_per_run` | `u64` | `9` | Max switches created per run. |
-| `use_onboard_nic` | `bool` | `false` | Use onboard NIC instead of DPU NICs. |
 | `explore_mode` | `SiteExplorerExploreMode` | `LibRedfish` | Redfish backend: `libredfish`, `nv-redfish`, or `compare-result`. |
+| `dpu_mode` | `Option<DpuMode>` | — | Site-wide DPU operating mode. When set, applies to every host that doesn't declare a per-host `ExpectedMachine.dpu_mode` override. |
 
 ### `StateControllerConfig`
 
@@ -346,6 +347,7 @@ Extends `StateControllerConfig` with:
 | `uefi_boot_wait` | `Duration` | `5m`    | Wait time for UEFI boot completion after host reboot. |
 | `max_bios_config_retries` | `u32` | `3` | Max HandleBiosJobFailure recovery cycles during BIOS configuration. |
 | `polling_bios_setup_stuck_threshold` | `Duration` | `15m` | Time in PollingBiosSetup with `is_bios_setup == false` before recovery escalation. |
+| `controller` | `StateControllerConfig` | *(default)* | Common state controller timing (see [StateControllerConfig](#statecontrollerconfig)). |
 
 ### `NetworkSegmentStateControllerConfig`
 
@@ -354,6 +356,7 @@ Extends `StateControllerConfig` with:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `network_segment_drain_time` | `Duration` | `5m` | Time a network segment must have 0 allocated IPs before release. |
+| `controller` | `StateControllerConfig` | *(default)* | Common state controller timing (see [StateControllerConfig](#statecontrollerconfig)). |
 
 ### `VpcPrefixStateControllerConfig`
 
@@ -362,6 +365,7 @@ Extends `StateControllerConfig` with:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `vpc_prefix_drain_time` | `Duration` | `5m` | Time a VPC prefix must have 0 referencing network prefixes before release. |
+| `controller` | `StateControllerConfig` | *(default)* | Common state controller timing (see [StateControllerConfig](#statecontrollerconfig)). |
 
 ### `FirmwareGlobal`
 
@@ -379,6 +383,8 @@ Extends `StateControllerConfig` with:
 | `no_reset_retries` | `bool` | `false` | Disable retry logic after BMC resets. |
 | `hgx_bmc_gpu_reboot_delay` | `Duration` | `30s` | Delay after GPU reboot before HGX BMC access. |
 | `requires_manual_upgrade` | `bool` | `false` | Force all firmware upgrades to require admin approval. |
+| `firmware_download_cache_directory` | `PathBuf` | `/mnt/persistence/fw/download-cache` | Writable directory used to cache downloaded firmware artifacts. |
+| `max_concurrent_bfb_copies` | `usize` | `10` | Maximum number of concurrent BFB copy operations. |
 
 ### `MachineUpdater`
 
@@ -455,6 +461,7 @@ Extends `StateControllerConfig` with:
 | `common_internal_route_target` | `Option<RouteTargetConfig>` | — | Double-tag for internal tenant routes (consumed by the network infrastructure). |
 | `additional_route_target_imports` | `Vec<RouteTargetConfig>` | `[]` | Extra route targets imported on DPU VRFs. |
 | `routing_profiles` | `HashMap<String, FnnRoutingProfileConfig>` | `{}` | Named per-VPC routing profiles (see [FnnRoutingProfileConfig](#fnnroutingprofileconfig)). |
+| `use_vpc_vrf_loopback` | `bool` | `false` | Whether IPs are allocated for VPC loopbacks. When false, the VPC loopback pool is unused and no VPC/VRF loopback IP is sent to the DPU. |
 
 ### `FnnRoutingProfileConfig`
 
@@ -487,6 +494,7 @@ Extends `StateControllerConfig` with:
 | `subnet_mask` | `i32` | `0` | CIDR prefix length for the DPA subnet. |
 | `hb_interval` | `Duration` | `2m` | Heartbeat interval for DPA health checks. |
 | `auth` | `MqttAuthConfig` | *(none)* | MQTT authentication settings. |
+| `monitor_run_interval` | `Duration` | `60s` | The interval at which the DPA monitor runs. |
 
 ### `DsxExchangeEventBusConfig`
 
@@ -498,6 +506,7 @@ Extends `StateControllerConfig` with:
 | `publish_timeout` | `Duration` | `1s` | Timeout for MQTT publish operations. |
 | `queue_capacity` | `usize` | `1024` | Event buffer size for DSX publish work (events dropped when full). |
 | `auth` | `MqttAuthConfig` | *(none)* | MQTT authentication settings. |
+| `topic_prefix` | `String` | `NICO/v1/machine` | Topic prefix used when publishing `ManagedHostState` transitions; the full topic is `{topic_prefix}/{machineId}/state`. NATS subjects are case-sensitive, so this must match the producer pub allow configured on the broker. |
 | `periodic_state_republish` | `PeriodicStateRepublishConfig` | *(enabled)* | Periodically re-publish current managed-host state so consumers that miss change events can reconcile (see [PeriodicStateRepublishConfig](#periodicstaterepublishconfig)). |
 
 ### `PeriodicStateRepublishConfig`
@@ -527,9 +536,10 @@ events, so consumers handle them identically.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `false` | Enable DPF Kubernetes deployment. |
-| `bfb_url` | `String` | `""` | BlueField firmware bundle URL. |
-| `deployment_name` | `Option<String>` | — | Kubernetes deployment name. |
 | `services` | `Option<Vec<DpfServiceConfig>>` | — | Additional Helm services. |
+| `docker_image_pull_secret` | `Option<String>` | — | Override for the Kubernetes `imagePullSecrets` entry used to pull mandatory-service images (applied to every mandatory service except `dts` and `doca_hbn`). |
+| `proxy` | `Option<DpfProxyDetails>` | — | Proxy configuration for the DPU. When set, containerd on the DPU routes outbound HTTPS traffic through it. |
+| `deployments` | `DpfDeploymentsConfig` | *(default)* | Per-generation DPUDeployment configurations. BF3 is always present with defaults; BF4Generic is opt-in via `[dpf.deployments.bf4_generic]`. |
 
 ### `RmsConfig`
 
@@ -557,6 +567,10 @@ events, so consumers handle them identically.
 | `token_ttl_min_sec` | `u32` | `60` | Minimum token TTL in seconds. |
 | `token_ttl_max_sec` | `u32` | `86400` | Maximum token TTL in seconds. |
 | `token_endpoint_http_proxy` | `Option<String>` | — | HTTP proxy for token endpoint calls (SSRF mitigation). |
+| `current_encryption_key_id` | `Option<String>` | — | Key-id for encrypting new tenant identity ciphertext (selects from the `machine_identity.encryption_keys` secrets). |
+| `trust_domain_allowlist` | `Vec<String>` | `[]` | Trust domains allowed for tenant JWT `iss` (normalized host). Empty allows any. Patterns: exact hostname, `*.suffix` (one label under suffix), `**.suffix` (suffix or any subdomain). |
+| `token_endpoint_domain_allowlist` | `Vec<String>` | `[]` | Allowed DNS names for the `token_endpoint` URL host (`http://` / `https://` only). Empty allows any; same pattern syntax as `trust_domain_allowlist`. |
+| `signing_key_overlap_max_sec` | `u32` | `604800` | Upper bound for `signing_key_overlap_sec` on `SetTenantIdentityConfiguration` when `rotate_key` is true (seconds). |
 
 ### `MeasuredBootMetricsCollectorConfig`
 
