@@ -32,7 +32,7 @@ use model::site_explorer::{
 ///
 /// Exploration is served from injected reports. A real explorer can be attached with
 /// [`Self::with_redfish_backend`] so machine setup and boot-order calls still use `RedfishSim`.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MockEndpointExplorer {
     pub reports:
         Arc<Mutex<HashMap<IpAddr, Result<EndpointExplorationReport, EndpointExplorationError>>>>,
@@ -45,19 +45,6 @@ pub struct MockEndpointExplorer {
     /// Records IPs that `explore_endpoint` was called for.
     pub explore_endpoint_calls: Arc<Mutex<Vec<IpAddr>>>,
     redfish_backend: Option<Arc<dyn EndpointExplorer>>,
-}
-
-impl Default for MockEndpointExplorer {
-    fn default() -> Self {
-        Self {
-            reports: Arc::default(),
-            power_states: Arc::default(),
-            redfish_power_control_calls: Arc::default(),
-            set_nic_mode_calls: Arc::default(),
-            explore_endpoint_calls: Arc::default(),
-            redfish_backend: None,
-        }
-    }
 }
 
 impl MockEndpointExplorer {
