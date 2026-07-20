@@ -22,6 +22,27 @@ use clap::ValueEnum;
 use mac_address::MacAddress;
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ExpectedMachineIdJson {
+    String(String),
+    RpcUuid { value: String },
+}
+
+fn deserialize_optional_expected_machine_id<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        Option::<ExpectedMachineIdJson>::deserialize(deserializer)?.map(|id| match id {
+            ExpectedMachineIdJson::String(value) => value,
+            ExpectedMachineIdJson::RpcUuid { value } => value,
+        }),
+    )
+}
+
 /// Admin-CLI policy vocabulary translated to the stable Forge `DpuMode`
 /// compatibility surface when a request is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -105,7 +126,7 @@ where
 /// Admin-CLI JSON shape for `replace-all` and file-based `update`.
 #[derive(Debug, Deserialize)]
 pub struct ExpectedMachineJson {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_expected_machine_id")]
     pub id: Option<String>,
     pub bmc_mac_address: MacAddress,
     pub bmc_username: String,
