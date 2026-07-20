@@ -240,7 +240,14 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
         .await?;
 
     let lockdown_status = hw_type
-        .map(|hw_type| lockdown_status(&hw_type, &explored_system, &explored_manager, is_mgx_c2))
+        .map(|hw_type| {
+            lockdown_status(
+                &hw_type,
+                &explored_system,
+                &explored_manager,
+                &explored_chassis,
+            )
+        })
         .transpose()?
         .and_then(identity);
 
@@ -427,7 +434,7 @@ fn lockdown_status<B: Bmc>(
     hw_type: &hw::HwType,
     explored_system: &ExploredComputerSystem<B>,
     explored_manager: &ExploredManager<B>,
-    is_mgx_c2: bool,
+    explored_chassis: &ExploredChassisCollection<B>,
 ) -> Result<Option<LockdownStatus>, Error<B>> {
     let bios = &explored_system.bios;
     let system = &explored_system.system;
@@ -678,7 +685,7 @@ fn lockdown_status<B: Bmc>(
 
             let model = system.hardware_id().model.map(|v| v.into_inner());
             let is_ars_121l_dnr = model == Some("ARS-121L-DNR");
-            let (inband_locked, inband_unlocked) = if is_mgx_c2 {
+            let (inband_locked, inband_unlocked) = if explored_chassis.is_mgx_c2() {
                 (
                     ipmi_host_interface_enabled.is_none_or(|enabled| !enabled),
                     ipmi_host_interface_enabled.is_none_or(identity),
