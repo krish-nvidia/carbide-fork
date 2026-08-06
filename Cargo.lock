@@ -919,10 +919,10 @@ dependencies = [
  "carbide-test-support",
  "http",
  "mac_address",
+ "nv-redfish",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "url",
 ]
 
 [[package]]
@@ -7826,9 +7826,9 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2592edb56672a2c7edf127a376cc1ee487ba0e3c6f1de089e0a8074e731fae2c"
+checksum = "038dbfb6b44e79e1246ef66683cad4c265069f4b0b92567553b380d8b8ee763c"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -7843,9 +7843,9 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-bmc-http"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36d20f59e47169c5adc5ee4d16ee58c4be04bdb7b13adf20c95b574b068f2d65"
+checksum = "a090b1696241f914afc3f0f1f1b761148bd0bd505b0b988cf8c1d34a43ab874d"
 dependencies = [
  "bytes",
  "futures-core",
@@ -7868,9 +7868,9 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-core"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d604b8acdfb20dae81b2a0849258126723f649d772e5097c75a54bd75aad53e6"
+checksum = "952f4dfdfc67e9f345940a2870f593f45b93149b79769c36c4796cdacb2cab76"
 dependencies = [
  "futures-core",
  "futures-io",
@@ -7883,9 +7883,9 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-csdl-compiler"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1b4cbe1798dd45c668d35da308da62fc55e1c321e337685bd2126fc50ba07f1"
+checksum = "8998ea05e6e637e75b55c8ef1972c07ed8eb15e98dfc9316bf27d67cc173a197"
 dependencies = [
  "clap",
  "clap_derive",
@@ -7911,9 +7911,9 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-schema"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6005f1c3630b8ef4df0a2564fb935a659ae6384a09bd2c7e2081ce20e5033e15"
+checksum = "651dd54b8ec6d1cbbb8d62802e131392d4768b5cf9e17284004b5fb6f759dd85"
 dependencies = [
  "glob",
 ]
