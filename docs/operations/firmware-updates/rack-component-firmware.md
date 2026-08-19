@@ -184,6 +184,11 @@ Supported `targets` are:
 `bmc`, `bios`, `cec`, `nic`, `cpld_mb`, `cpld_pdb`, `hgx_bmc`,
 `combined_bmc_uefi`, `gpu`, and `cx7`.
 
+The rack/tray `cx7` target follows the selected rack controller or component
+backend. For a managed host using the host firmware catalog, use the
+[ConnectX-7 host firmware procedure](connectx-7.md), which runs through host
+reprovisioning and Scout.
+
 Omitting `targets` asks Core to update all components represented by the
 selected firmware bundle. It does not include DPU reprovisioning.
 

@@ -23,6 +23,9 @@ uses that pair to select the corresponding definition from the catalog. A
 definition can contain several components, such as BMC, UEFI, CPLD, HGX BMC,
 GPU, NIC, or CX7 firmware.
 
+For the CX7 catalog, publication, and rollout procedure, refer to
+[ConnectX-7 Host InfiniBand Firmware Update](connectx-7.md).
+
 A definition contains model-level settings and one or more component entries:
 
 | Setting | Scope | Meaning |
@@ -55,6 +58,9 @@ Legacy metadata also accepts the older artifact fields `filename`, `filenames`,
 still parses `mandatory_upgrade_from_priority` and `scout`, but the current
 upgrade workflow does not use them as firmware-policy controls, so they are not
 listed as active settings here.
+
+The legacy catalog-provided Scout route reads its script, digests, and
+timeouts from the firmware entry's `scout` block.
 
 ### Minimum and default versions
 
@@ -149,6 +155,10 @@ Before the Host Firmware Config API was introduced, host firmware definitions
 were deployed as `metadata.toml` files. This is the legacy configuration path.
 It remains supported for existing deployments, but new host firmware
 definitions should use the API.
+
+For CX7, the legacy bundle must publish the same catalog, script, and image to
+each environment. Refer to
+[Publish the legacy catalog and files](connectx-7.md#publish-the-legacy-catalog-and-files).
 
 `firmware_global.firmware_directory` points to a directory containing one
 subdirectory per metadata entry. NICo looks for a file named `metadata.toml` in

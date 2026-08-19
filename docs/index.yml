@@ -175,6 +175,8 @@ navigation:
               path: operations/firmware-updates/pre-ingestion.md
             - page: Managed Host Firmware Updates
               path: operations/firmware-updates/host-firmware.md
+            - page: ConnectX-7 Host InfiniBand Firmware Update
+              path: operations/firmware-updates/connectx-7.md
             - page: DPU Firmware Updates
               path: operations/firmware-updates/dpu-firmware.md
             - page: Rack and Tray Firmware Updates

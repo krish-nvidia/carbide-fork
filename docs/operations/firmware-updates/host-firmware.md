@@ -247,6 +247,11 @@ The route precedence is:
    shared `firmware_global.max_uploads` slot, uploads asynchronously, and polls
    the returned Redfish task.
 
+In legacy deployments, a firmware entry with `scout` selects the Scout route
+and supplies the script path, script digest, and timeouts from
+`metadata.toml`. Refer to the
+[ConnectX-7 legacy publication procedure](connectx-7.md#publish-the-legacy-catalog-and-files).
+
 All successful routes eventually return to component selection. Scout and
 Redfish updates first pass through NICo's activation and inventory-verification
 states; the legacy script path returns directly to inventory checking.
