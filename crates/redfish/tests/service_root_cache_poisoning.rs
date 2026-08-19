@@ -22,6 +22,8 @@ use axum::routing::get;
 use axum_server::tls_rustls::RustlsConfig;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
 use carbide_secrets::credentials::Credentials;
+use carbide_utils::HostPortPair;
+use nv_redfish::bmc_http::BmcCredentials;
 
 // A full, healthy AMI service root including the `Chassis` navigation property.
 const FULL_ROOT: &str = r##"{
@@ -120,6 +122,10 @@ fn spawn_mock_bmc(root_hits: Arc<AtomicUsize>) -> SocketAddr {
     addr
 }
 
+fn token(value: &str) -> BmcCredentials {
+    BmcCredentials::token(value.to_string())
+}
+
 #[tokio::test]
 async fn poisoned_service_root_cache_recovers_after_bmc_heals() {
     rustls::crypto::aws_lc_rs::default_provider()
@@ -212,4 +218,87 @@ async fn expired_service_root_is_refetched_without_invalidating_existing_holders
         first.chassis_links().await.unwrap().is_some(),
         "eviction must not invalidate callers that still hold the old root",
     );
+}
+
+#[tokio::test]
+async fn token_credentials_have_distinct_cache_entries() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok();
+
+    // Start at one so the mock serves a complete root on every request.
+    let root_hits = Arc::new(AtomicUsize::new(1));
+    let addr = spawn_mock_bmc(root_hits.clone());
+    let pool = NvRedfishClientPool::new(Arc::new(ArcSwap::new(Arc::new(None))));
+
+    let first = pool
+        .service_root_with_bmc_credentials_and_cache_predicate(addr, token("token-a"), |_| true)
+        .await
+        .unwrap();
+    let second = pool
+        .service_root_with_bmc_credentials(addr, token("token-b"))
+        .await
+        .unwrap();
+    let first_again = pool
+        .service_root_with_bmc_credentials(addr, token("token-a"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        root_hits.load(Ordering::SeqCst),
+        3,
+        "each distinct token should fetch and cache its own service root",
+    );
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert!(Arc::ptr_eq(&first, &first_again));
+}
+
+#[tokio::test]
+async fn bmc_invalidation_evicts_all_credentials_and_proxy_snapshots() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok();
+
+    // Start at one so the mock serves a complete root on every request.
+    let root_hits = Arc::new(AtomicUsize::new(1));
+    let addr = spawn_mock_bmc(root_hits.clone());
+    let proxy_address = Arc::new(ArcSwap::new(Arc::new(None)));
+    let pool = NvRedfishClientPool::new(proxy_address.clone());
+
+    let direct_root = pool
+        .service_root_with_bmc_credentials(addr, token("token-a"))
+        .await
+        .unwrap();
+
+    proxy_address.store(Arc::new(Some(HostPortPair::HostAndPort(
+        "127.0.0.1".to_string(),
+        addr.port(),
+    ))));
+    let proxied_root = pool
+        .service_root_with_bmc_credentials(addr, token("token-b"))
+        .await
+        .unwrap();
+
+    pool.invalidate_service_roots_for_bmc(addr);
+
+    let proxied_root_after_invalidation = pool
+        .service_root_with_bmc_credentials(addr, token("token-b"))
+        .await
+        .unwrap();
+    proxy_address.store(Arc::new(None));
+    let direct_root_after_invalidation = pool
+        .service_root_with_bmc_credentials(addr, token("token-a"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        root_hits.load(Ordering::SeqCst),
+        5,
+        "invalidation should force a refetch for every credential and proxy variant",
+    );
+    assert!(!Arc::ptr_eq(
+        &proxied_root,
+        &proxied_root_after_invalidation,
+    ));
+    assert!(!Arc::ptr_eq(&direct_root, &direct_root_after_invalidation,));
 }
