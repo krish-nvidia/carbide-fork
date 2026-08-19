@@ -924,6 +924,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmc-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "bmc-platform",
+ "carbide-ipmi",
+ "carbide-redfish",
+ "carbide-secrets",
+ "carbide-test-support",
+ "carbide-utils",
+ "carbide-uuid",
+ "mac_address",
+ "nv-redfish",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "version-compare 0.2.1",
+]
+
+[[package]]
 name = "bmc-vendor"
 version = "0.1.0"
 dependencies = [
@@ -1191,6 +1213,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "bmc-runtime",
  "bmc-vendor",
  "byteorder",
  "carbide-api-db",

@@ -32,6 +32,7 @@ path = "tests/integration/main.rs"
 
 [dependencies]
 # External dependencies. PLEASE KEEP ALPHABETIZED ORDER.
+bmc-runtime = { path = "../bmc-runtime" }
 bmc-vendor = { path = "../bmc-vendor" }
 carbide-api-model = { path = "../api-model", default-features = false }
 carbide-test-support = { path = "../test-support", optional = true }
