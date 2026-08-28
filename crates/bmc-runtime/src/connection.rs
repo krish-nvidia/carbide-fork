@@ -18,37 +18,33 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use bmc_platform::{AuthError, IpmiOps, PlatformError};
 use carbide_redfish::nv_redfish::{
     BmcError, Error as RedfishError, NvRedfishClientPool, RedfishBmc,
 };
-use nv_redfish::Error as NvRedfishError;
 use thiserror::Error;
 
 use crate::{
-    BmcEndpoint, ConnectError, ConnectedBmc, CredentialLease, CredentialRequest, DriverRegistry,
-    RuleSet, RuntimeCredentialProvider, map_redfish_error,
+    BmcRef, ConnectError, ConnectedBmc, CredentialLease, CredentialRequest, RuntimeAuthMode,
+    RuntimeCredentialProvider, map_redfish_error,
 };
 
-/// Boxed operation future accepted by [`ConnectionManager::with_auth_retry`].
-pub type RedfishOperationFuture<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, RedfishError>> + Send + 'a>>;
+/// Boxed capability-operation future accepted by [`ConnectionManager::with_auth_retry`].
+pub type PlatformOperationFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, PlatformError>> + Send + 'a>>;
 
 /// A pooled, authenticated BMC connection retaining its transient lease.
 ///
 /// This type intentionally implements neither serde nor `Debug`.
 pub struct AuthenticatedBmc {
-    endpoint: BmcEndpoint,
     request: CredentialRequest,
     lease: CredentialLease,
     connected: ConnectedBmc<RedfishBmc>,
-    ipmi: Option<Arc<dyn IpmiOps>>,
 }
 
 impl AuthenticatedBmc {
-    /// Returns the live selected BMC handle.
+    /// Returns the live BMC handle and its persisted driver map.
     pub const fn connected(&self) -> &ConnectedBmc<RedfishBmc> {
         &self.connected
     }
@@ -57,19 +53,13 @@ impl AuthenticatedBmc {
     pub const fn credential_request(&self) -> &CredentialRequest {
         &self.request
     }
-
-    /// Returns the lease expiration without exposing credential material.
-    pub const fn credential_expires_at(&self) -> Option<SystemTime> {
-        self.lease.expires_at()
-    }
 }
 
 /// Constructs and refreshes concrete pooled Redfish connections.
 pub struct ConnectionManager {
     pool: Arc<NvRedfishClientPool>,
     credentials: Arc<dyn RuntimeCredentialProvider>,
-    rules: Arc<RuleSet>,
-    registry: Arc<DriverRegistry<RedfishBmc>>,
+    auth_mode: RuntimeAuthMode,
 }
 
 impl ConnectionManager {
@@ -77,29 +67,32 @@ impl ConnectionManager {
     pub const fn new(
         pool: Arc<NvRedfishClientPool>,
         credentials: Arc<dyn RuntimeCredentialProvider>,
-        rules: Arc<RuleSet>,
-        registry: Arc<DriverRegistry<RedfishBmc>>,
     ) -> Self {
         Self {
             pool,
             credentials,
-            rules,
-            registry,
+            auth_mode: RuntimeAuthMode::Basic,
         }
     }
 
-    /// Acquires credentials and builds a selected pooled connection.
+    /// Selects the runtime authentication mechanism. Basic auth is the default.
+    pub const fn with_auth_mode(mut self, auth_mode: RuntimeAuthMode) -> Self {
+        self.auth_mode = auth_mode;
+        self
+    }
+
+    /// Acquires credentials and builds a pooled connection.
     pub async fn connect(
         &self,
-        endpoint: BmcEndpoint,
+        endpoint: BmcRef,
         caller_identity: String,
         ipmi: Option<Arc<dyn IpmiOps>>,
     ) -> Result<AuthenticatedBmc, ConnectError> {
-        let reference = endpoint.reference();
         let request = CredentialRequest::new(
             caller_identity,
-            reference.mac_address(),
-            reference.address(),
+            endpoint.credential_key().clone(),
+            endpoint.address(),
+            self.auth_mode,
         )?;
         let lease = self
             .credentials
@@ -110,30 +103,26 @@ impl ConnectionManager {
             .build_connected(&endpoint, &lease, ipmi.clone())
             .await?;
         Ok(AuthenticatedBmc {
-            endpoint,
             request,
             lease,
             connected,
-            ipmi,
         })
     }
 
     /// Evicts every pooled root for the BMC, refreshes credentials, and rebuilds.
-    ///
-    /// The prior handle remains intact if refresh or reconstruction fails.
     pub async fn refresh(&self, authenticated: &mut AuthenticatedBmc) -> Result<(), ConnectError> {
         self.pool
             .invalidate_service_roots_for_bmc(authenticated.request.bmc_address());
         let lease = self
             .credentials
-            .refresh(&authenticated.request, &authenticated.lease)
+            .refresh(&authenticated.request)
             .await
             .map_err(ConnectError::Credentials)?;
-        let connected = self
-            .build_connected(&authenticated.endpoint, &lease, authenticated.ipmi.clone())
+        let service_root = self
+            .service_root(authenticated.request.bmc_address(), &lease)
             .await?;
         authenticated.lease = lease;
-        authenticated.connected = connected;
+        authenticated.connected.replace_service_root(service_root);
         Ok(())
     }
 
@@ -147,7 +136,7 @@ impl ConnectionManager {
         operation: F,
     ) -> Result<T, AuthRetryError>
     where
-        F: for<'a> Fn(&'a ConnectedBmc<RedfishBmc>) -> RedfishOperationFuture<'a, T>,
+        F: for<'a> Fn(&'a ConnectedBmc<RedfishBmc>) -> PlatformOperationFuture<'a, T>,
     {
         match operation(&authenticated.connected).await {
             Ok(value) => Ok(value),
@@ -165,26 +154,23 @@ impl ConnectionManager {
 
     async fn build_connected(
         &self,
-        endpoint: &BmcEndpoint,
+        endpoint: &BmcRef,
         lease: &CredentialLease,
         ipmi: Option<Arc<dyn IpmiOps>>,
     ) -> Result<ConnectedBmc<RedfishBmc>, ConnectError> {
-        let root = self
-            .pool
-            .service_root_with_bmc_credentials(
-                endpoint.reference().address(),
-                lease.credentials().clone(),
-            )
+        let root = self.service_root(endpoint.address(), lease).await?;
+        Ok(ConnectedBmc::new(endpoint.clone(), root, ipmi))
+    }
+
+    async fn service_root(
+        &self,
+        address: std::net::SocketAddr,
+        lease: &CredentialLease,
+    ) -> Result<Arc<nv_redfish::ServiceRoot<RedfishBmc>>, ConnectError> {
+        self.pool
+            .service_root_with_bmc_credentials(address, lease.credentials().clone())
             .await
-            .map_err(|error| ConnectError::Transport(map_concrete_error(error)))?;
-        ConnectedBmc::connect(
-            endpoint.clone(),
-            root,
-            &self.rules,
-            self.registry.clone(),
-            ipmi,
-        )
-        .await
+            .map_err(|error| ConnectError::Transport(map_concrete_error(error)))
     }
 }
 
@@ -196,19 +182,14 @@ pub enum AuthRetryError {
     Refresh(ConnectError),
     /// The operation failed without a retry or after its only retry.
     #[error("BMC operation failed: {0}")]
-    Operation(RedfishError),
+    Operation(PlatformError),
 }
 
-fn is_auth_error(error: &RedfishError) -> bool {
+const fn is_auth_error(error: &PlatformError) -> bool {
     matches!(
         error,
-        NvRedfishError::Bmc(BmcError::InvalidResponse { status, .. })
-            if is_auth_status(status.as_u16())
+        PlatformError::Auth(AuthError::InvalidCredentials | AuthError::InsufficientPrivilege)
     )
-}
-
-const fn is_auth_status(status: u16) -> bool {
-    matches!(status, 401 | 403)
 }
 
 fn map_concrete_error(error: RedfishError) -> PlatformError {
@@ -233,19 +214,20 @@ fn map_concrete_error(error: RedfishError) -> PlatformError {
 mod tests {
     use carbide_test_support::value_scenarios;
 
-    use super::is_auth_status;
+    use super::is_auth_error;
+    use bmc_platform::{AuthError, PlatformError};
 
     #[test]
     fn only_unauthorized_and_forbidden_trigger_one_shot_refresh() {
-        value_scenarios!(run = is_auth_status;
+        value_scenarios!(run = |error: PlatformError| is_auth_error(&error);
             "refresh once" {
-                401 => true,
-                403 => true,
+                PlatformError::Auth(AuthError::InvalidCredentials) => true,
+                PlatformError::Auth(AuthError::InsufficientPrivilege) => true,
             }
             "return directly" {
-                400 => false,
-                404 => false,
-                500 => false,
+                PlatformError::Unsupported => false,
+                PlatformError::Unreachable => false,
+                PlatformError::LockedDown => false,
             }
         );
     }

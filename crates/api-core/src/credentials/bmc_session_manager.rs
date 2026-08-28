@@ -854,7 +854,7 @@ impl BmcSessionManager {
             .clone()
     }
 
-    async fn bmc_root_credentials(
+    pub(super) async fn bmc_root_credentials(
         &self,
         bmc_mac: MacAddress,
     ) -> Result<Credentials, BmcSessionError> {

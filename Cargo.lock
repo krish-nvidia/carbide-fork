@@ -1172,6 +1172,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "bmc-platform",
  "bmc-runtime",
  "bmc-vendor",
  "byteorder",

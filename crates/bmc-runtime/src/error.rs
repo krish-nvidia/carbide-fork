@@ -19,36 +19,9 @@ use bmc_platform::PlatformError;
 use nv_redfish::{Bmc, Error as RedfishError};
 use thiserror::Error;
 
-use crate::{CredentialRequestError, SelectionError};
+use crate::CredentialRequestError;
 
-/// Failure while reading identity evidence from a live Redfish service.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("failed to project {resource} identity: {message}")]
-pub struct IdentityProjectionError {
-    resource: &'static str,
-    message: String,
-}
-
-impl IdentityProjectionError {
-    pub(crate) fn new<B: Bmc>(resource: &'static str, error: RedfishError<B>) -> Self {
-        Self {
-            resource,
-            message: error.to_string(),
-        }
-    }
-
-    /// Returns the identity resource whose read failed.
-    pub const fn resource(&self) -> &'static str {
-        self.resource
-    }
-
-    /// Returns the transport-neutral error text.
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-}
-
-/// Failure while projecting and selecting drivers for a connected BMC.
+/// Failure while authenticating and connecting to a BMC.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectError {
     /// Credential request metadata is invalid.
@@ -60,12 +33,6 @@ pub enum ConnectError {
     /// Concrete Redfish transport or authentication failed.
     #[error("BMC connection failed: {0}")]
     Transport(PlatformError),
-    /// Live Redfish identity projection failed.
-    #[error(transparent)]
-    Identity(#[from] IdentityProjectionError),
-    /// No unique selection rule could be chosen.
-    #[error(transparent)]
-    Selection(#[from] SelectionError),
 }
 
 /// Maps errors shared by `nv-redfish` wrappers into platform errors.

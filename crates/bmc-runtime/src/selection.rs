@@ -18,7 +18,7 @@
 use std::fmt;
 
 use blake3::{Hash, Hasher};
-use bmc_platform::{CapabilitySelection, DriverMap, PlatformIdentity};
+use bmc_platform::{Capability, CapabilitySelection, DriverMap, PlatformIdentity};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 use version_compare::{Cmp, Version};
@@ -246,10 +246,12 @@ pub struct SelectionRule {
     pub id: String,
     /// Explicit semantic precedence.
     pub precedence: Precedence,
+    /// Capability selected by this rule.
+    pub capability: Capability,
     /// Predicates that must all match. An empty list is a catch-all rule.
     pub matchers: Vec<IdentityMatcher>,
-    /// Complete capability map selected by this rule.
-    pub drivers: DriverMap,
+    /// Driver selected for the capability.
+    pub selection: CapabilitySelection,
 }
 
 /// Deterministic BLAKE3 digest of a validated, canonical rule set.
@@ -363,41 +365,49 @@ impl RuleSet {
         self.hash
     }
 
-    /// Selects the unique highest-precedence rule matching `identity`.
+    /// Resolves every capability independently, using standard when no rule matches.
     pub fn resolve(
         &self,
         identity: &PlatformIdentity,
     ) -> Result<ResolvedSelection, SelectionError> {
-        let matching = self
-            .rules
-            .iter()
-            .filter(|rule| {
-                rule.matchers
-                    .iter()
-                    .all(|matcher| matcher.matches(identity))
-            })
-            .collect::<Vec<_>>();
-        let Some(precedence) = matching.iter().map(|rule| rule.precedence).max() else {
-            return Ok(ResolvedSelection {
-                rule_id: "standard-default".to_string(),
-                drivers: standard_driver_map(),
-                rule_set_hash: self.hash,
-            });
-        };
-        let winners = matching
-            .into_iter()
-            .filter(|rule| rule.precedence == precedence)
-            .collect::<Vec<_>>();
-        if winners.len() != 1 {
-            return Err(SelectionError::Ambiguous {
-                precedence,
-                rule_ids: winners.iter().map(|rule| rule.id.clone()).collect(),
+        let mut drivers = standard_driver_map();
+        let mut matched_rules = Vec::new();
+        for capability in Capability::ALL {
+            let matching = self
+                .rules
+                .iter()
+                .filter(|rule| {
+                    rule.capability == capability
+                        && rule
+                            .matchers
+                            .iter()
+                            .all(|matcher| matcher.matches(identity))
+                })
+                .collect::<Vec<_>>();
+            let Some(precedence) = matching.iter().map(|rule| rule.precedence).max() else {
+                continue;
+            };
+            let winners = matching
+                .into_iter()
+                .filter(|rule| rule.precedence == precedence)
+                .collect::<Vec<_>>();
+            if winners.len() != 1 {
+                return Err(SelectionError::Ambiguous {
+                    capability,
+                    precedence,
+                    rule_ids: winners.iter().map(|rule| rule.id.clone()).collect(),
+                });
+            }
+            let winner = winners[0];
+            drivers.set(capability, winner.selection.clone());
+            matched_rules.push(MatchedRule {
+                capability,
+                rule_id: winner.id.clone(),
             });
         }
-        let winner = winners[0];
         Ok(ResolvedSelection {
-            rule_id: winner.id.clone(),
-            drivers: winner.drivers.clone(),
+            drivers,
+            matched_rules,
             rule_set_hash: self.hash,
         })
     }
@@ -456,8 +466,10 @@ pub enum RuleSetError {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SelectionError {
     /// Multiple matching rules shared the highest precedence.
-    #[error("ambiguous BMC driver selection at precedence {precedence:?}: {rule_ids:?}")]
+    #[error("ambiguous {capability} driver selection at precedence {precedence:?}: {rule_ids:?}")]
     Ambiguous {
+        /// Capability with multiple matching rules.
+        capability: Capability,
         /// Shared precedence of the ambiguous rules.
         precedence: Precedence,
         /// Canonically ordered identifiers of the ambiguous rules.
@@ -465,18 +477,40 @@ pub enum SelectionError {
     },
 }
 
-/// The selected rule, complete driver map, and source rule-set hash.
+/// The rule selected for one capability.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MatchedRule {
+    capability: Capability,
+    rule_id: String,
+}
+
+impl MatchedRule {
+    /// Capability selected by this rule.
+    pub const fn capability(&self) -> Capability {
+        self.capability
+    }
+
+    /// Stable identifier of the selected rule.
+    pub fn rule_id(&self) -> &str {
+        &self.rule_id
+    }
+}
+
+/// The complete driver map, per-capability rule provenance, and source hash.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedSelection {
-    rule_id: String,
     drivers: DriverMap,
+    matched_rules: Vec<MatchedRule>,
     rule_set_hash: RuleSetHash,
 }
 
 impl ResolvedSelection {
-    /// Returns the selected rule identifier.
-    pub fn rule_id(&self) -> &str {
-        &self.rule_id
+    /// Returns the selected rule for `capability`, or `None` for standard fallback.
+    pub fn rule_for(&self, capability: Capability) -> Option<&str> {
+        self.matched_rules
+            .iter()
+            .find(|rule| rule.capability == capability)
+            .map(|rule| rule.rule_id.as_str())
     }
 
     /// Returns the selected complete driver map.
@@ -487,6 +521,11 @@ impl ResolvedSelection {
     /// Returns the hash of the rule set used for this decision.
     pub const fn rule_set_hash(&self) -> RuleSetHash {
         self.rule_set_hash
+    }
+
+    /// Returns selected-rule provenance in stable capability order.
+    pub fn matched_rules(&self) -> &[MatchedRule] {
+        &self.matched_rules
     }
 }
 
@@ -593,28 +632,27 @@ fn standard_driver_map() -> DriverMap {
 
 fn hash_rules(rules: &[SelectionRule]) -> RuleSetHash {
     let mut hasher = Hasher::new();
-    hasher.update(b"bmc-runtime-selection-rules-v2");
+    hasher.update(b"bmc-runtime-selection-rules-v3");
     hash_length(&mut hasher, rules.len());
     for rule in rules {
         hash_string(&mut hasher, &rule.id);
         hasher.update(&[rule.precedence as u8]);
+        hasher.update(&[rule.capability as u8]);
         hash_length(&mut hasher, rule.matchers.len());
         for matcher in &rule.matchers {
             hasher.update(&(matcher.field as u8).to_le_bytes());
             matcher.pattern.hash_into(&mut hasher);
         }
-        for (_, selection) in rule.drivers.iter() {
-            match selection {
-                CapabilitySelection::Standard => {
-                    hasher.update(&[0]);
-                }
-                CapabilitySelection::Unsupported => {
-                    hasher.update(&[1]);
-                }
-                CapabilitySelection::Driver(driver) => {
-                    hasher.update(&[2]);
-                    hash_string(&mut hasher, driver.as_str());
-                }
+        match &rule.selection {
+            CapabilitySelection::Standard => {
+                hasher.update(&[0]);
+            }
+            CapabilitySelection::Unsupported => {
+                hasher.update(&[1]);
+            }
+            CapabilitySelection::Driver(driver) => {
+                hasher.update(&[2]);
+                hash_string(&mut hasher, driver.as_str());
             }
         }
     }
@@ -631,398 +669,4 @@ fn hash_length(hasher: &mut Hasher, length: usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use bmc_platform::{
-        Capability, ChassisIdentity, ManagerIdentity, ServiceRootIdentity, SystemIdentity,
-    };
-    use carbide_test_support::value_scenarios;
-
-    use super::*;
-
-    fn identity() -> PlatformIdentity {
-        PlatformIdentity {
-            service_root: ServiceRootIdentity {
-                vendor: Some("NVIDIA".to_string()),
-                product: Some("GB BMC".to_string()),
-                oem_keys: vec!["Nvidia".to_string()],
-            },
-            manager: Some(ManagerIdentity {
-                model: Some("OpenBMC".to_string()),
-                firmware: Some("1.2.3".to_string()),
-            }),
-            system: Some(SystemIdentity {
-                id: "System_0".to_string(),
-                manufacturer: Some("NVIDIA".to_string()),
-                model: Some("GB300".to_string()),
-                sku: Some("DGX".to_string()),
-                part_number: Some("900-2G535".to_string()),
-                bios_version: Some("2.0".to_string()),
-            }),
-            chassis: vec![ChassisIdentity {
-                id: "GPU_Chassis".to_string(),
-                manufacturer: Some("NVIDIA".to_string()),
-                model: Some("NVIDIA GB300".to_string()),
-                part_number: None,
-            }],
-        }
-    }
-
-    fn drivers(selection: CapabilitySelection) -> DriverMap {
-        DriverMap {
-            power: selection,
-            bmc_control: CapabilitySelection::Standard,
-            bios: CapabilitySelection::Standard,
-            boot_order: CapabilitySelection::Standard,
-            secure_boot: CapabilitySelection::Standard,
-            lockdown: CapabilitySelection::Standard,
-            accounts: CapabilitySelection::Standard,
-            firmware: CapabilitySelection::Standard,
-            storage: CapabilitySelection::Unsupported,
-            dpu: CapabilitySelection::Unsupported,
-            attestation: CapabilitySelection::Standard,
-            console: CapabilitySelection::Standard,
-        }
-    }
-
-    fn rule(id: &str, precedence: Precedence, matcher: IdentityMatcher) -> SelectionRule {
-        SelectionRule {
-            id: id.to_string(),
-            precedence,
-            matchers: vec![matcher],
-            drivers: drivers(CapabilitySelection::Standard),
-        }
-    }
-
-    #[test]
-    fn match_patterns_cover_every_comparison_mode() {
-        value_scenarios!(run = |pattern: MatchPattern| pattern.matches("NVIDIA GB300");
-            "matching patterns" {
-                MatchPattern::Exact("NVIDIA GB300".to_string()) => true,
-                MatchPattern::ExactAsciiCaseInsensitive("nvidia gb300".to_string()) => true,
-                MatchPattern::Prefix("NVIDIA".to_string()) => true,
-                MatchPattern::Contains("GB300".to_string()) => true,
-            }
-            "non-matching patterns" {
-                MatchPattern::Exact("NVIDIA".to_string()) => false,
-                MatchPattern::ExactAsciiCaseInsensitive("nvidia gb200".to_string()) => false,
-                MatchPattern::Prefix("GB300".to_string()) => false,
-                MatchPattern::Contains("GB200".to_string()) => false,
-            }
-        );
-    }
-
-    #[test]
-    fn matchers_read_scalar_and_repeated_identity_fields() {
-        let cases = [
-            (
-                IdentityField::ServiceRootVendor,
-                MatchPattern::Exact("NVIDIA".to_string()),
-                true,
-            ),
-            (
-                IdentityField::ManagerModel,
-                MatchPattern::Exact("OpenBMC".to_string()),
-                true,
-            ),
-            (
-                IdentityField::SystemPartNumber,
-                MatchPattern::Prefix("900-".to_string()),
-                true,
-            ),
-            (
-                IdentityField::ChassisModel,
-                MatchPattern::Contains("GB300".to_string()),
-                true,
-            ),
-            (
-                IdentityField::ChassisPartNumber,
-                MatchPattern::Exact("missing".to_string()),
-                false,
-            ),
-        ];
-        let identity = identity();
-        for (field, pattern, expected) in cases {
-            assert_eq!(
-                IdentityMatcher::new(field, pattern).matches(&identity),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn one_of_matches_any_exact_candidate_and_canonicalizes_order() {
-        let matcher = IdentityMatcher::new(
-            IdentityField::SystemModel,
-            MatchPattern::OneOf(vec!["GB200".to_string(), "GB300".to_string()]),
-        );
-        assert!(matcher.matches(&identity()));
-
-        let left = RuleSet::new(vec![rule(
-            "models",
-            Precedence::ExactSystemIdentity,
-            matcher,
-        )])
-        .expect("one-of values are valid");
-        let right = RuleSet::new(vec![rule(
-            "models",
-            Precedence::ExactSystemIdentity,
-            IdentityMatcher::new(
-                IdentityField::SystemModel,
-                MatchPattern::OneOf(vec!["GB300".to_string(), "GB200".to_string()]),
-            ),
-        )])
-        .expect("reordered one-of values are valid");
-        assert_eq!(left.hash(), right.hash());
-    }
-
-    #[test]
-    fn firmware_ranges_are_validated_and_inclusive() {
-        let range = FirmwareVersionRange::new("1.2.3".to_string(), "2.0".to_string())
-            .expect("ordered versions are valid");
-        value_scenarios!(run = |version| range.contains(version);
-            "inside inclusive range" {
-                "1.2.3" => true,
-                "1.5" => true,
-                "2.0" => true,
-            }
-            "outside or invalid" {
-                "1.2.2" => false,
-                "2.0.1" => false,
-                "" => false,
-            }
-        );
-        assert_eq!(
-            FirmwareVersionRange::new("2.0".to_string(), "1.0".to_string()),
-            Err(FirmwareVersionRangeError::Reversed)
-        );
-    }
-
-    #[test]
-    fn extended_matchers_reject_invalid_declarations() {
-        let cases = [
-            (
-                IdentityMatcher::new(IdentityField::SystemModel, MatchPattern::OneOf(Vec::new())),
-                RuleSetError::EmptyOneOf {
-                    rule_id: "invalid".to_string(),
-                    field: IdentityField::SystemModel,
-                },
-            ),
-            (
-                IdentityMatcher::new(
-                    IdentityField::SystemModel,
-                    MatchPattern::OneOf(vec!["GB300".to_string(), "GB300".to_string()]),
-                ),
-                RuleSetError::DuplicateOneOfValue {
-                    rule_id: "invalid".to_string(),
-                    field: IdentityField::SystemModel,
-                },
-            ),
-            (
-                IdentityMatcher::new(
-                    IdentityField::SystemModel,
-                    MatchPattern::FirmwareVersionRange(
-                        FirmwareVersionRange::new("1.0".to_string(), "2.0".to_string())
-                            .expect("fixture range is valid"),
-                    ),
-                ),
-                RuleSetError::VersionRangeOnNonFirmwareField {
-                    rule_id: "invalid".to_string(),
-                    field: IdentityField::SystemModel,
-                },
-            ),
-        ];
-
-        for (matcher, expected) in cases {
-            assert_eq!(
-                RuleSet::new(vec![rule(
-                    "invalid",
-                    Precedence::DeploymentOverride,
-                    matcher,
-                )]),
-                Err(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn precedence_order_matches_selection_design() {
-        assert!(
-            Precedence::StandardDefault < Precedence::VendorManufacturer
-                && Precedence::VendorManufacturer < Precedence::BmcProductManager
-                && Precedence::BmcProductManager < Precedence::ExactSystemIdentity
-                && Precedence::ExactSystemIdentity < Precedence::DeploymentOverride
-        );
-    }
-
-    #[test]
-    fn higher_precedence_rule_wins_independent_of_input_order() {
-        let vendor = IdentityMatcher::new(
-            IdentityField::ServiceRootVendor,
-            MatchPattern::Exact("NVIDIA".to_string()),
-        );
-        let rules = RuleSet::new(vec![
-            rule("specific", Precedence::VendorManufacturer, vendor.clone()),
-            rule("fallback", Precedence::StandardDefault, vendor),
-        ])
-        .expect("rules are valid");
-
-        let resolved = rules.resolve(&identity()).expect("one rule wins");
-        assert_eq!(resolved.rule_id(), "specific");
-    }
-
-    #[test]
-    fn tied_highest_precedence_is_ambiguous_in_canonical_order() {
-        let matcher = IdentityMatcher::new(
-            IdentityField::SystemModel,
-            MatchPattern::Exact("GB300".to_string()),
-        );
-        let rules = RuleSet::new(vec![
-            rule("z-rule", Precedence::ExactSystemIdentity, matcher.clone()),
-            rule("a-rule", Precedence::ExactSystemIdentity, matcher),
-        ])
-        .expect("rules are valid");
-
-        assert_eq!(
-            rules.resolve(&identity()),
-            Err(SelectionError::Ambiguous {
-                precedence: Precedence::ExactSystemIdentity,
-                rule_ids: vec!["a-rule".to_string(), "z-rule".to_string()],
-            })
-        );
-    }
-
-    #[test]
-    fn rule_hash_is_order_independent_and_semantically_sensitive() {
-        let vendor = IdentityMatcher::new(
-            IdentityField::ServiceRootVendor,
-            MatchPattern::Exact("NVIDIA".to_string()),
-        );
-        let model = IdentityMatcher::new(
-            IdentityField::SystemModel,
-            MatchPattern::Exact("GB300".to_string()),
-        );
-        let first = rule("nvidia", Precedence::VendorManufacturer, vendor);
-        let second = rule("gb300", Precedence::ExactSystemIdentity, model);
-        let forward = RuleSet::new(vec![first.clone(), second.clone()]).expect("rules are valid");
-        let reverse = RuleSet::new(vec![second.clone(), first.clone()]).expect("rules are valid");
-        assert_eq!(forward.hash(), reverse.hash());
-
-        let mut changed = second;
-        changed.precedence = Precedence::DeploymentOverride;
-        let changed =
-            RuleSet::new(vec![first, changed]).expect("changed rules remain structurally valid");
-        assert_ne!(forward.hash(), changed.hash());
-    }
-
-    #[test]
-    fn rule_validation_rejects_ambiguous_configuration_artifacts() {
-        let matcher = IdentityMatcher::new(
-            IdentityField::SystemModel,
-            MatchPattern::Exact("GB300".to_string()),
-        );
-        let cases = [
-            (
-                vec![rule("", Precedence::StandardDefault, matcher.clone())],
-                RuleSetError::EmptyRuleId,
-            ),
-            (
-                vec![
-                    rule("duplicate", Precedence::StandardDefault, matcher.clone()),
-                    rule("duplicate", Precedence::DeploymentOverride, matcher),
-                ],
-                RuleSetError::DuplicateRuleId,
-            ),
-            (
-                vec![rule(
-                    "empty",
-                    Precedence::StandardDefault,
-                    IdentityMatcher::new(
-                        IdentityField::SystemModel,
-                        MatchPattern::Exact(String::new()),
-                    ),
-                )],
-                RuleSetError::EmptyPattern {
-                    rule_id: "empty".to_string(),
-                    field: IdentityField::SystemModel,
-                },
-            ),
-        ];
-        for (rules, expected) in cases {
-            assert_eq!(RuleSet::new(rules), Err(expected));
-        }
-    }
-
-    #[test]
-    fn rule_set_hash_serializes_as_hex_and_round_trips() {
-        let rules = RuleSet::new(vec![rule(
-            "fallback",
-            Precedence::StandardDefault,
-            IdentityMatcher::new(
-                IdentityField::ServiceRootVendor,
-                MatchPattern::Exact("NVIDIA".to_string()),
-            ),
-        )])
-        .expect("rules are valid");
-
-        let encoded = serde_json::to_string(&rules.hash()).expect("hash serializes");
-        assert_eq!(encoded.len(), 66);
-        assert_eq!(
-            serde_json::from_str::<RuleSetHash>(&encoded).expect("hash deserializes"),
-            rules.hash()
-        );
-    }
-
-    #[test]
-    fn no_matching_rule_uses_complete_standard_default() {
-        let rules = RuleSet::new(vec![rule(
-            "dell",
-            Precedence::VendorManufacturer,
-            IdentityMatcher::new(
-                IdentityField::ServiceRootVendor,
-                MatchPattern::Exact("Dell".to_string()),
-            ),
-        )])
-        .expect("rules are valid");
-        let resolved = rules
-            .resolve(&identity())
-            .expect("built-in default is complete");
-        assert_eq!(resolved.rule_id(), "standard-default");
-        assert!(
-            resolved
-                .drivers()
-                .iter()
-                .all(|(_, driver)| driver == &CapabilitySelection::Standard)
-        );
-    }
-
-    #[test]
-    fn duplicate_matcher_is_rejected_after_canonicalization() {
-        let matcher = IdentityMatcher::new(
-            IdentityField::SystemModel,
-            MatchPattern::Exact("GB300".to_string()),
-        );
-        let mut duplicate = rule(
-            "duplicate-matcher",
-            Precedence::StandardDefault,
-            matcher.clone(),
-        );
-        duplicate.matchers.push(matcher);
-        assert_eq!(
-            RuleSet::new(vec![duplicate]),
-            Err(RuleSetError::DuplicateMatcher {
-                rule_id: "duplicate-matcher".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn helper_driver_map_fixture_is_complete() {
-        let ids = drivers(CapabilitySelection::Standard)
-            .iter()
-            .map(|(capability, _)| capability)
-            .collect::<HashSet<_>>();
-        assert_eq!(ids.len(), Capability::ALL.len());
-    }
-}
+mod tests;

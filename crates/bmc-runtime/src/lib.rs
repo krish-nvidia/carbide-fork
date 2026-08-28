@@ -24,24 +24,21 @@ mod connection;
 mod credentials;
 mod endpoint;
 mod error;
-mod identity;
 mod ipmi;
-mod outcome;
-mod registry;
 mod selection;
 
-pub use connection::{AuthRetryError, AuthenticatedBmc, ConnectionManager, RedfishOperationFuture};
-pub use credentials::{
-    CredentialLease, CredentialRequest, CredentialRequestError, RuntimeCredentialProvider,
+pub use connection::{
+    AuthRetryError, AuthenticatedBmc, ConnectionManager, PlatformOperationFuture,
 };
-pub use endpoint::{BmcEndpoint, BmcRef, BmcRefError, ConnectedBmc};
-pub use error::{ConnectError, IdentityProjectionError, map_redfish_error};
-pub use identity::project_platform_identity;
+pub use credentials::{
+    CredentialLease, CredentialRequest, CredentialRequestError, RuntimeAuthMode,
+    RuntimeCredentialProvider,
+};
+pub use endpoint::{BmcRef, BmcRefError, ConnectedBmc};
+pub use error::{ConnectError, map_redfish_error};
 pub use ipmi::EndpointIpmiOps;
-pub use outcome::driver_outcome;
-pub use registry::{DispatchError, DriverRegistry, DriverSet, RegistryError};
 pub use selection::{
     FirmwareVersionRange, FirmwareVersionRangeError, IdentityField, IdentityMatcher, MatchPattern,
-    Precedence, ResolvedSelection, RuleSet, RuleSetError, RuleSetHash, SelectionError,
+    MatchedRule, Precedence, ResolvedSelection, RuleSet, RuleSetError, RuleSetHash, SelectionError,
     SelectionRule,
 };

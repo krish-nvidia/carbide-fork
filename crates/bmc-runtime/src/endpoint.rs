@@ -18,35 +18,42 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use bmc_platform::{
-    Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, Console, Dpu, Firmware,
-    IpmiOps, Lockdown, OpCx, PlatformIdentity, Power, SecureBoot, Storage,
-};
+use bmc_platform::{DriverMap, IpmiOps, OpCx};
+use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use carbide_utils::redfish::BmcAccessInfo;
 use mac_address::MacAddress;
 use nv_redfish::{Bmc, ServiceRoot};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    ConnectError, DispatchError, DriverRegistry, ResolvedSelection, RuleSet,
-    project_platform_identity,
-};
-
 /// Secret-free, serializable identity of a BMC access endpoint.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BmcRef {
     address: SocketAddr,
     mac_address: MacAddress,
+    credential_key: CredentialKey,
+    driver_map: DriverMap,
 }
 
 impl BmcRef {
     /// Creates a secret-free endpoint reference.
-    pub const fn new(address: SocketAddr, mac_address: MacAddress) -> Self {
-        Self {
+    pub fn new(
+        address: SocketAddr,
+        credential_key: CredentialKey,
+        driver_map: DriverMap,
+    ) -> Result<Self, BmcRefError> {
+        let mac_address = match &credential_key {
+            CredentialKey::BmcCredentials {
+                credential_type: BmcCredentialType::BmcRoot { bmc_mac_address },
+            } => *bmc_mac_address,
+            _ => return Err(BmcRefError::UnsupportedCredentialKey),
+        };
+        Ok(Self {
             address,
             mac_address,
-        }
+            credential_key,
+            driver_map,
+        })
     }
 
     /// Returns the concrete BMC socket address required by the client pool.
@@ -58,12 +65,23 @@ impl BmcRef {
     pub const fn mac_address(&self) -> MacAddress {
         self.mac_address
     }
-}
 
-impl TryFrom<&BmcAccessInfo> for BmcRef {
-    type Error = BmcRefError;
+    /// Returns the secret-free key used by credential and IPMI providers.
+    pub const fn credential_key(&self) -> &CredentialKey {
+        &self.credential_key
+    }
 
-    fn try_from(access: &BmcAccessInfo) -> Result<Self, Self::Error> {
+    /// Returns the complete driver map persisted during exploration.
+    pub const fn driver_map(&self) -> &DriverMap {
+        &self.driver_map
+    }
+
+    /// Builds a runtime reference from canonical access metadata and persisted selection.
+    pub fn from_access_info(
+        access: &BmcAccessInfo,
+        credential_key: CredentialKey,
+        driver_map: DriverMap,
+    ) -> Result<Self, BmcRefError> {
         let host = access
             .host
             .strip_prefix('[')
@@ -72,10 +90,15 @@ impl TryFrom<&BmcAccessInfo> for BmcRef {
         let ip = host
             .parse::<IpAddr>()
             .map_err(|_| BmcRefError::InvalidIpAddress(access.host.clone()))?;
-        Ok(Self::new(
+        let reference = Self::new(
             SocketAddr::new(ip, access.port.unwrap_or(443)),
-            access.mac_address,
-        ))
+            credential_key,
+            driver_map,
+        )?;
+        if reference.mac_address != access.mac_address {
+            return Err(BmcRefError::MacAddressMismatch);
+        }
+        Ok(reference)
     }
 }
 
@@ -85,70 +108,37 @@ pub enum BmcRefError {
     /// The configured host is not an IP literal.
     #[error("BMC host must be an IP literal for pooled access: {0}")]
     InvalidIpAddress(String),
+    /// Runtime BMC references currently require per-BMC root credentials.
+    #[error("BMC reference must use a per-BMC root credential key")]
+    UnsupportedCredentialKey,
+    /// Access metadata and credential key refer to different BMCs.
+    #[error("BMC access MAC address does not match its credential key")]
+    MacAddressMismatch,
 }
 
-/// An unconnected endpoint with access coordinates but no credentials.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BmcEndpoint {
-    reference: BmcRef,
-}
-
-impl BmcEndpoint {
-    /// Creates an endpoint from a concrete, secret-free BMC reference.
-    pub const fn new(reference: BmcRef) -> Self {
-        Self { reference }
-    }
-
-    /// Returns the endpoint's secret-free reference.
-    pub const fn reference(&self) -> &BmcRef {
-        &self.reference
-    }
-}
-
-impl TryFrom<BmcAccessInfo> for BmcEndpoint {
-    type Error = BmcRefError;
-
-    fn try_from(access: BmcAccessInfo) -> Result<Self, Self::Error> {
-        BmcRef::try_from(&access).map(Self::new)
-    }
-}
-
-/// A live Redfish endpoint with projected identity and selected drivers.
+/// A live Redfish endpoint using the driver map persisted during exploration.
 pub struct ConnectedBmc<B: Bmc> {
-    endpoint: BmcEndpoint,
+    endpoint: BmcRef,
     service_root: Arc<ServiceRoot<B>>,
-    identity: PlatformIdentity,
-    selection: ResolvedSelection,
-    registry: Arc<DriverRegistry<B>>,
     ipmi: Option<Arc<dyn IpmiOps>>,
 }
 
 impl<B: Bmc> ConnectedBmc<B> {
-    /// Projects live identity and resolves a unique driver rule.
-    ///
-    /// The transport has already been constructed by the caller from a
-    /// transient credential lease. No credential is retained by this handle.
-    pub async fn connect(
-        endpoint: BmcEndpoint,
+    /// Creates a connected endpoint without repeating exploration or selection.
+    pub fn new(
+        endpoint: BmcRef,
         service_root: Arc<ServiceRoot<B>>,
-        rules: &RuleSet,
-        registry: Arc<DriverRegistry<B>>,
         ipmi: Option<Arc<dyn IpmiOps>>,
-    ) -> Result<Self, ConnectError> {
-        let identity = project_platform_identity(service_root.clone()).await?;
-        let selection = rules.resolve(&identity)?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             endpoint,
             service_root,
-            identity,
-            selection,
-            registry,
             ipmi,
-        })
+        }
     }
 
     /// Returns the unconnected endpoint metadata.
-    pub const fn endpoint(&self) -> &BmcEndpoint {
+    pub const fn endpoint(&self) -> &BmcRef {
         &self.endpoint
     }
 
@@ -157,14 +147,8 @@ impl<B: Bmc> ConnectedBmc<B> {
         &self.service_root
     }
 
-    /// Returns the live identity snapshot used for selection.
-    pub const fn identity(&self) -> &PlatformIdentity {
-        &self.identity
-    }
-
-    /// Returns the deterministic selection decision.
-    pub const fn selection(&self) -> &ResolvedSelection {
-        &self.selection
+    pub(crate) fn replace_service_root(&mut self, service_root: Arc<ServiceRoot<B>>) {
+        self.service_root = service_root;
     }
 
     /// Builds an operation context for a stateless capability driver.
@@ -175,132 +159,126 @@ impl<B: Bmc> ConnectedBmc<B> {
             None => context,
         }
     }
-
-    /// Resolves the selected host-power implementation.
-    pub fn power(&self) -> Result<Arc<dyn Power<B>>, DispatchError> {
-        self.registry
-            .power(self.selection.drivers().get(Capability::Power))
-    }
-
-    /// Resolves the selected BMC-control implementation.
-    pub fn bmc_control(&self) -> Result<Arc<dyn BmcControl<B>>, DispatchError> {
-        self.registry
-            .bmc_control(self.selection.drivers().get(Capability::BmcControl))
-    }
-
-    /// Resolves the selected BIOS implementation.
-    pub fn bios(&self) -> Result<Arc<dyn Bios<B>>, DispatchError> {
-        self.registry
-            .bios(self.selection.drivers().get(Capability::Bios))
-    }
-
-    /// Resolves the selected boot-order implementation.
-    pub fn boot_order(&self) -> Result<Arc<dyn BootOrder<B>>, DispatchError> {
-        self.registry
-            .boot_order(self.selection.drivers().get(Capability::BootOrder))
-    }
-
-    /// Resolves the selected Secure Boot implementation.
-    pub fn secure_boot(&self) -> Result<Arc<dyn SecureBoot<B>>, DispatchError> {
-        self.registry
-            .secure_boot(self.selection.drivers().get(Capability::SecureBoot))
-    }
-
-    /// Resolves the selected lockdown implementation.
-    pub fn lockdown(&self) -> Result<Arc<dyn Lockdown<B>>, DispatchError> {
-        self.registry
-            .lockdown(self.selection.drivers().get(Capability::Lockdown))
-    }
-
-    /// Resolves the selected account-management implementation.
-    pub fn accounts(&self) -> Result<Arc<dyn Accounts<B>>, DispatchError> {
-        self.registry
-            .accounts(self.selection.drivers().get(Capability::Accounts))
-    }
-
-    /// Resolves the selected firmware implementation.
-    pub fn firmware(&self) -> Result<Arc<dyn Firmware<B>>, DispatchError> {
-        self.registry
-            .firmware(self.selection.drivers().get(Capability::Firmware))
-    }
-
-    /// Resolves the selected storage implementation.
-    pub fn storage(&self) -> Result<Arc<dyn Storage<B>>, DispatchError> {
-        self.registry
-            .storage(self.selection.drivers().get(Capability::Storage))
-    }
-
-    /// Resolves the selected DPU implementation.
-    pub fn dpu(&self) -> Result<Arc<dyn Dpu<B>>, DispatchError> {
-        self.registry
-            .dpu(self.selection.drivers().get(Capability::Dpu))
-    }
-
-    /// Resolves the selected attestation implementation.
-    pub fn attestation(&self) -> Result<Arc<dyn Attestation<B>>, DispatchError> {
-        self.registry
-            .attestation(self.selection.drivers().get(Capability::Attestation))
-    }
-
-    /// Resolves the selected console implementation.
-    pub fn console(&self) -> Result<Arc<dyn Console<B>>, DispatchError> {
-        self.registry
-            .console(self.selection.drivers().get(Capability::Console))
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use bmc_platform::{CapabilitySelection, DriverMap};
+    use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
+
     use super::*;
+
+    fn unsupported_driver_map() -> DriverMap {
+        let unsupported = CapabilitySelection::Unsupported;
+        DriverMap {
+            power: unsupported.clone(),
+            bmc_control: unsupported.clone(),
+            bios: unsupported.clone(),
+            boot_order: unsupported.clone(),
+            secure_boot: unsupported.clone(),
+            lockdown: unsupported.clone(),
+            accounts: unsupported.clone(),
+            firmware: unsupported.clone(),
+            storage: unsupported.clone(),
+            dpu: unsupported.clone(),
+            attestation: unsupported.clone(),
+            console: unsupported,
+        }
+    }
+
+    fn credential_key(mac_address: MacAddress) -> CredentialKey {
+        CredentialKey::BmcCredentials {
+            credential_type: BmcCredentialType::BmcRoot {
+                bmc_mac_address: mac_address,
+            },
+        }
+    }
 
     #[test]
     fn bmc_ref_round_trip_contains_only_access_identity() {
+        let mac_address = MacAddress::new([2, 0, 0, 0, 0, 1]);
+        let driver_map = unsupported_driver_map();
         let reference = BmcRef::new(
             "192.0.2.10:8443".parse().expect("valid socket address"),
-            MacAddress::new([2, 0, 0, 0, 0, 1]),
-        );
+            credential_key(mac_address),
+            driver_map.clone(),
+        )
+        .expect("root credential key is valid");
 
         let encoded = serde_json::to_string(&reference).expect("BMC reference serializes");
-        assert_eq!(
-            serde_json::from_str::<BmcRef>(&encoded).expect("BMC reference deserializes"),
-            reference
-        );
+        let decoded = serde_json::from_str::<BmcRef>(&encoded).expect("BMC reference deserializes");
+        assert_eq!(decoded.address(), reference.address());
+        assert_eq!(decoded.mac_address(), mac_address);
+        assert_eq!(decoded.driver_map(), &driver_map);
         assert!(encoded.contains("192.0.2.10"));
         assert!(!encoded.to_ascii_lowercase().contains("password"));
         assert!(!encoded.to_ascii_lowercase().contains("token"));
-        assert!(!encoded.to_ascii_lowercase().contains("credential"));
     }
 
     #[test]
     fn endpoint_uses_canonical_access_info_without_credentials() {
-        let endpoint = BmcEndpoint::try_from(BmcAccessInfo {
+        let mac_address = MacAddress::new([2, 0, 0, 0, 0, 2]);
+        let access = BmcAccessInfo {
             host: "192.0.2.11".to_string(),
             port: None,
-            mac_address: MacAddress::new([2, 0, 0, 0, 0, 2]),
-        })
+            mac_address,
+        };
+        let endpoint = BmcRef::from_access_info(
+            &access,
+            credential_key(mac_address),
+            unsupported_driver_map(),
+        )
         .expect("IP endpoint converts");
 
         assert_eq!(
-            endpoint.reference().address(),
+            endpoint.address(),
             "192.0.2.11:443".parse().expect("valid socket address")
         );
-        assert_eq!(
-            endpoint.reference().mac_address(),
-            MacAddress::new([2, 0, 0, 0, 0, 2])
-        );
+        assert_eq!(endpoint.mac_address(), mac_address);
     }
 
     #[test]
     fn endpoint_rejects_hostname_without_dns_resolution() {
-        assert_eq!(
-            BmcEndpoint::try_from(BmcAccessInfo {
-                host: "bmc.example.test".to_string(),
-                port: None,
-                mac_address: MacAddress::new([2, 0, 0, 0, 0, 2]),
-            }),
-            Err(BmcRefError::InvalidIpAddress(
-                "bmc.example.test".to_string()
-            ))
-        );
+        assert!(matches!(
+            BmcRef::from_access_info(
+                &BmcAccessInfo {
+                    host: "bmc.example.test".to_string(),
+                    port: None,
+                    mac_address: MacAddress::new([2, 0, 0, 0, 0, 2]),
+                },
+                credential_key(MacAddress::new([2, 0, 0, 0, 0, 2])),
+                unsupported_driver_map(),
+            ),
+            Err(BmcRefError::InvalidIpAddress(host)) if host == "bmc.example.test"
+        ));
+    }
+
+    #[test]
+    fn bmc_ref_rejects_non_device_credentials_and_mismatched_metadata() {
+        let address = "192.0.2.11:443".parse().expect("valid socket address");
+        assert!(matches!(
+            BmcRef::new(
+                address,
+                CredentialKey::BmcCredentials {
+                    credential_type: BmcCredentialType::SiteWideRoot,
+                },
+                unsupported_driver_map(),
+            ),
+            Err(BmcRefError::UnsupportedCredentialKey)
+        ));
+
+        let access = BmcAccessInfo {
+            host: "192.0.2.11".to_string(),
+            port: None,
+            mac_address: MacAddress::new([2, 0, 0, 0, 0, 2]),
+        };
+        assert!(matches!(
+            BmcRef::from_access_info(
+                &access,
+                credential_key(MacAddress::new([2, 0, 0, 0, 0, 3])),
+                unsupported_driver_map(),
+            ),
+            Err(BmcRefError::MacAddressMismatch)
+        ));
     }
 }

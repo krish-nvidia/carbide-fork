@@ -17,37 +17,59 @@
 
 use std::fmt;
 use std::net::SocketAddr;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bmc_platform::PlatformError;
+use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use mac_address::MacAddress;
 use nv_redfish::bmc_http::BmcCredentials;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Authentication mechanism used for runtime Redfish connections.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAuthMode {
+    /// Read the stored BMC username/password directly.
+    #[default]
+    Basic,
+    /// Ask the existing session manager to issue an `X-Auth-Token`.
+    Session,
+}
+
 /// Secret-free metadata required for a runtime credential request.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CredentialRequest {
     caller_identity: String,
-    bmc_mac_address: MacAddress,
+    credential_key: CredentialKey,
     bmc_address: SocketAddr,
+    auth_mode: RuntimeAuthMode,
 }
 
 impl CredentialRequest {
     /// Creates request metadata for one caller and BMC endpoint.
     pub fn new(
         caller_identity: String,
-        bmc_mac_address: MacAddress,
+        credential_key: CredentialKey,
         bmc_address: SocketAddr,
+        auth_mode: RuntimeAuthMode,
     ) -> Result<Self, CredentialRequestError> {
         if caller_identity.trim().is_empty() {
-            return Err(CredentialRequestError);
+            return Err(CredentialRequestError::EmptyCallerIdentity);
+        }
+        if !matches!(
+            credential_key,
+            CredentialKey::BmcCredentials {
+                credential_type: BmcCredentialType::BmcRoot { .. },
+            }
+        ) {
+            return Err(CredentialRequestError::UnsupportedCredentialKey);
         }
         Ok(Self {
             caller_identity,
-            bmc_mac_address,
+            credential_key,
             bmc_address,
+            auth_mode,
         })
     }
 
@@ -58,19 +80,38 @@ impl CredentialRequest {
 
     /// Returns the BMC MAC address used for secret lookup.
     pub const fn bmc_mac_address(&self) -> MacAddress {
-        self.bmc_mac_address
+        match &self.credential_key {
+            CredentialKey::BmcCredentials {
+                credential_type: BmcCredentialType::BmcRoot { bmc_mac_address },
+            } => *bmc_mac_address,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Returns the canonical key identifying the credentials requested.
+    pub const fn credential_key(&self) -> &CredentialKey {
+        &self.credential_key
     }
 
     /// Returns the concrete BMC socket address used by the client pool.
     pub const fn bmc_address(&self) -> SocketAddr {
         self.bmc_address
     }
+
+    /// Returns the requested authentication mechanism.
+    pub const fn auth_mode(&self) -> RuntimeAuthMode {
+        self.auth_mode
+    }
 }
 
 /// Error returned for empty caller identity metadata.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("credential request caller identity must not be empty")]
-pub struct CredentialRequestError;
+pub enum CredentialRequestError {
+    #[error("credential request caller identity must not be empty")]
+    EmptyCallerIdentity,
+    #[error("runtime credentials require a per-BMC root credential key")]
+    UnsupportedCredentialKey,
+}
 
 /// A short-lived, non-serializable lease containing credentials for one BMC.
 ///
@@ -79,31 +120,17 @@ pub struct CredentialRequestError;
 #[derive(Clone)]
 pub struct CredentialLease {
     credentials: BmcCredentials,
-    expires_at: Option<SystemTime>,
 }
 
 impl CredentialLease {
-    /// Creates a lease with an optional provider-defined expiration time.
-    pub const fn new(credentials: BmcCredentials, expires_at: Option<SystemTime>) -> Self {
-        Self {
-            credentials,
-            expires_at,
-        }
+    /// Creates a transient credential lease.
+    pub const fn new(credentials: BmcCredentials) -> Self {
+        Self { credentials }
     }
 
     /// Borrows the credentials for constructing or refreshing a transport.
     pub const fn credentials(&self) -> &BmcCredentials {
         &self.credentials
-    }
-
-    /// Consumes the lease and returns its credentials.
-    pub fn into_credentials(self) -> BmcCredentials {
-        self.credentials
-    }
-
-    /// Returns the provider-defined expiration time, when one exists.
-    pub const fn expires_at(&self) -> Option<SystemTime> {
-        self.expires_at
     }
 }
 
@@ -112,7 +139,6 @@ impl fmt::Debug for CredentialLease {
         formatter
             .debug_struct("CredentialLease")
             .field("credentials", &"[REDACTED]")
-            .field("expires_at", &self.expires_at)
             .finish()
     }
 }
@@ -123,12 +149,8 @@ pub trait RuntimeCredentialProvider: Send + Sync {
     /// Acquires a new credential lease for `request`.
     async fn acquire(&self, request: &CredentialRequest) -> Result<CredentialLease, PlatformError>;
 
-    /// Refreshes `current` for `request`, returning a replacement lease.
-    async fn refresh(
-        &self,
-        request: &CredentialRequest,
-        current: &CredentialLease,
-    ) -> Result<CredentialLease, PlatformError>;
+    /// Refreshes credentials for `request`, returning a replacement lease.
+    async fn refresh(&self, request: &CredentialRequest) -> Result<CredentialLease, PlatformError>;
 }
 
 #[cfg(test)]
@@ -138,6 +160,14 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
+
+    fn credential_key(mac_address: MacAddress) -> CredentialKey {
+        CredentialKey::BmcCredentials {
+            credential_type: BmcCredentialType::BmcRoot {
+                bmc_mac_address: mac_address,
+            },
+        }
+    }
 
     struct RecordingProvider {
         requests: Mutex<Vec<CredentialRequest>>,
@@ -153,34 +183,31 @@ mod tests {
                 .lock()
                 .expect("request recorder mutex")
                 .push(request.clone());
-            Ok(CredentialLease::new(
-                BmcCredentials::token("first-secret".to_string()),
-                None,
-            ))
+            Ok(CredentialLease::new(BmcCredentials::token(
+                "first-secret".to_string(),
+            )))
         }
 
         async fn refresh(
             &self,
             request: &CredentialRequest,
-            _current: &CredentialLease,
         ) -> Result<CredentialLease, PlatformError> {
             self.requests
                 .lock()
                 .expect("request recorder mutex")
                 .push(request.clone());
-            Ok(CredentialLease::new(
-                BmcCredentials::token("second-secret".to_string()),
-                None,
-            ))
+            Ok(CredentialLease::new(BmcCredentials::token(
+                "second-secret".to_string(),
+            )))
         }
     }
 
     #[test]
     fn credential_lease_debug_is_fully_redacted() {
-        let lease = CredentialLease::new(
-            BmcCredentials::new("operator".to_string(), "secret-value".to_string()),
-            None,
-        );
+        let lease = CredentialLease::new(BmcCredentials::new(
+            "operator".to_string(),
+            "secret-value".to_string(),
+        ));
 
         let debug = format!("{lease:?}");
         assert!(debug.contains("[REDACTED]"));
@@ -189,11 +216,17 @@ mod tests {
     }
 
     #[test]
+    fn runtime_auth_defaults_to_basic() {
+        assert_eq!(RuntimeAuthMode::default(), RuntimeAuthMode::Basic);
+    }
+
+    #[test]
     fn credential_request_contains_explicit_secret_free_metadata() {
         let request = CredentialRequest::new(
             "machine-controller".to_string(),
-            MacAddress::new([2, 0, 0, 0, 0, 1]),
+            credential_key(MacAddress::new([2, 0, 0, 0, 0, 1])),
             "192.0.2.10:443".parse().expect("valid socket address"),
+            RuntimeAuthMode::Basic,
         )
         .expect("caller identity is valid");
 
@@ -209,27 +242,25 @@ mod tests {
     async fn provider_acquire_and_refresh_receive_identical_request_metadata() {
         let request = CredentialRequest::new(
             "rack-controller".to_string(),
-            MacAddress::new([2, 0, 0, 0, 0, 3]),
+            credential_key(MacAddress::new([2, 0, 0, 0, 0, 3])),
             "192.0.2.30:443".parse().expect("valid socket address"),
+            RuntimeAuthMode::Session,
         )
         .expect("caller identity is valid");
         let provider = RecordingProvider {
             requests: Mutex::new(Vec::new()),
         };
 
-        let lease = provider.acquire(&request).await.expect("acquire succeeds");
-        provider
-            .refresh(&request, &lease)
-            .await
-            .expect("refresh succeeds");
+        provider.acquire(&request).await.expect("acquire succeeds");
+        provider.refresh(&request).await.expect("refresh succeeds");
 
-        assert_eq!(
-            provider
-                .requests
-                .lock()
-                .expect("request recorder mutex")
-                .as_slice(),
-            &[request.clone(), request]
-        );
+        let requests = provider.requests.lock().expect("request recorder mutex");
+        assert_eq!(requests.len(), 2);
+        for recorded in requests.iter() {
+            assert_eq!(recorded.caller_identity(), request.caller_identity());
+            assert_eq!(recorded.bmc_address(), request.bmc_address());
+            assert_eq!(recorded.bmc_mac_address(), request.bmc_mac_address());
+            assert_eq!(recorded.auth_mode(), request.auth_mode());
+        }
     }
 }
