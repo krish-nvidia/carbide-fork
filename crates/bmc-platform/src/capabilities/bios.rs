@@ -22,23 +22,32 @@ use nv_redfish::core::Bmc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{BootInterfaceSelector, DriverOutcome, OpCx, PlatformError};
+use crate::{DriverOutcome, OpCx, PlatformError};
 
+/// BIOS attribute names and values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BiosSettings {
+    /// BIOS attribute values by attribute name; nulls are omitted.
     pub attributes: BTreeMap<String, Value>,
 }
 
+/// One BIOS attribute whose reported value differs from the expectation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BiosDiff {
+    /// Attribute name.
     pub key: String,
+    /// Value NICo wants.
     pub expected: Value,
+    /// Value the BMC reports; `None` when the BMC does not expose the attribute.
     pub actual: Option<Value>,
 }
 
+/// Whether expected BIOS settings are applied, with every difference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BiosStatus {
+    /// True when `differences` is empty.
     pub is_applied: bool,
+    /// Expected attributes whose pending value differs.
     pub differences: Vec<BiosDiff>,
 }
 
@@ -53,20 +62,19 @@ pub trait Bios<B: Bmc>: Send + Sync {
         &self,
         cx: &OpCx<'_, B>,
         expected: &BiosSettings,
-        boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError>;
 
     async fn apply(
         &self,
         cx: &OpCx<'_, B>,
         expected: &BiosSettings,
-        boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError>;
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
 
     async fn clear_pending(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
 
+    /// Changes the UEFI administrator password; the driver knows the BIOS's password slot.
     async fn change_uefi_password(
         &self,
         cx: &OpCx<'_, B>,
@@ -79,10 +87,4 @@ pub trait Bios<B: Bmc>: Send + Sync {
         cx: &OpCx<'_, B>,
         current_password: &str,
     ) -> Result<DriverOutcome, PlatformError>;
-
-    async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError>;
-
-    async fn enable_infinite_boot(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
-
-    async fn clear_nvram(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
 }

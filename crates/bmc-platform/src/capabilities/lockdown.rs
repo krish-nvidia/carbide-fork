@@ -50,11 +50,16 @@ pub enum LockdownDesiredState {
     Disabled,
 }
 
+/// Host and BMC lockdown state with the raw signals behind them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LockdownStatus {
+    /// `Enabled`/`Disabled` only when host and BMC agree; otherwise `Partial`.
     pub aggregate: LockdownState,
+    /// Human-readable list of the controls that were read.
     pub message: String,
+    /// Host-side controls (KCS, USB, in-band interfaces).
     pub host: LockdownState,
+    /// BMC-side controls (host interface, system lockdown switch).
     pub bmc: LockdownState,
 }
 

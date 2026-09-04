@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DriverOutcome, OpCx, PlatformError};
 
+/// Identifies the host interface whose boot option should be first.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum BootInterfaceSelector {
@@ -37,12 +38,16 @@ pub enum BootInterfaceSelector {
 /// NICo's normalized boot-order policy status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BootOrderStatus {
+    /// The selected interface's boot option is first in the boot order.
     pub boot_interface_first: bool,
+    /// At least one disk boot option remains enabled.
     pub disk_enabled: bool,
+    /// Every network boot option other than the selected one is disabled.
     pub other_network_options_disabled: bool,
 }
 
 impl BootOrderStatus {
+    /// True when all three conditions hold.
     pub const fn is_configured(self) -> bool {
         self.boot_interface_first && self.disk_enabled && self.other_network_options_disabled
     }

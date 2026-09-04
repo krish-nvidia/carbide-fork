@@ -32,6 +32,9 @@ fn task_reference() -> OperationReference {
 
 fn job_reference() -> OperationReference {
     OperationReference::VendorJob {
+        uri: ODataId::from(
+            "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/JID_42".to_string(),
+        ),
         job_id: "JID_42".parse().expect("fixture job id is valid"),
         retry_after_seconds: Some(10),
     }
@@ -52,6 +55,7 @@ fn operation_references_are_stable() {
             job_reference(),
             json!({
                 "type": "vendor_job",
+                "uri": "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/JID_42",
                 "job_id": "JID_42",
                 "retry_after_seconds": 10
             }),
@@ -72,6 +76,7 @@ fn operation_references_are_stable() {
     assert!(
         serde_json::from_value::<OperationReference>(json!({
             "type": "vendor_job",
+            "uri": "/redfish/v1/Managers/1/Oem/Dell/Jobs/x",
             "job_id": " \t",
             "retry_after_seconds": null
         }))
@@ -133,7 +138,7 @@ fn driver_outcomes_round_trip_and_blocked_is_non_empty() {
         DriverOutcome::Complete {
             follow_up: vec![ControllerAction::BmcReset],
         },
-        DriverOutcome::Accepted(task_reference()),
+        DriverOutcome::accepted(task_reference()).then([ControllerAction::Power(ResetType::On)]),
         DriverOutcome::blocked(prerequisite.clone()),
         DriverOutcome::Blocked {
             prerequisite,

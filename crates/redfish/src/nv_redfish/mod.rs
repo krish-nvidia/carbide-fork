@@ -40,6 +40,26 @@ pub type RedfishBmc = HttpBmc<RedfishReqwestClient>;
 pub type ServiceRoot = NvServiceRoot<RedfishBmc>;
 pub type Error = NvError<RedfishBmc>;
 
+/// An authenticated transport and the service root created from that exact transport.
+///
+/// Keeping these together lets operation drivers use typed `Bmc` requests for
+/// OEM resources without creating a second connection or carrying credentials.
+///
+/// This pair exists only because nv-redfish's `ServiceRoot<B>` keeps its
+/// transport private. Once nv-redfish exposes a `bmc()` accessor on
+/// `ServiceRoot` (it already owns an `NvBmc<B>` wrapping `Arc<B>`), the pool
+/// can go back to caching `Arc<ServiceRoot>` alone, this type and
+/// `connection_with_bmc_credentials` can be deleted, and
+/// `bmc_runtime::ConnectedBmc` can hold just the root. That is an upstream
+/// change to be agreed with the nv-redfish maintainers.
+#[derive(Clone)]
+pub struct NvRedfishConnection {
+    /// The authenticated transport.
+    pub bmc: Arc<RedfishBmc>,
+    /// The service root fetched through `bmc`.
+    pub service_root: Arc<ServiceRoot>,
+}
+
 /// Service roots are refreshed hourly so long-running processes eventually
 /// observe BMC replacements, upgrades, and configuration changes.
 const DEFAULT_SERVICE_ROOT_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -82,7 +102,7 @@ impl ServiceRootCache {
 }
 
 struct CachedServiceRoot {
-    root: Arc<ServiceRoot>,
+    connection: NvRedfishConnection,
     generation: u64,
 }
 
@@ -146,8 +166,7 @@ impl NvRedfishClientPool {
         bmc_address: SocketAddr,
         credentials: Credentials,
     ) -> Result<Arc<ServiceRoot>, Error> {
-        let Credentials::UsernamePassword { username, password } = credentials;
-        self.service_root_with_bmc_credentials(bmc_address, BmcCredentials::new(username, password))
+        self.service_root_with_cache_predicate(bmc_address, credentials, |_| true)
             .await
     }
 
@@ -159,52 +178,48 @@ impl NvRedfishClientPool {
         credentials: Credentials,
         should_cache: impl FnOnce(&ServiceRoot) -> bool,
     ) -> Result<Arc<ServiceRoot>, Error> {
-        let Credentials::UsernamePassword { username, password } = credentials;
-        self.service_root_with_bmc_credentials_and_cache_predicate(
+        self.connection_with_cache_predicate(
             bmc_address,
-            BmcCredentials::new(username, password),
+            bmc_credentials(credentials),
             should_cache,
         )
         .await
+        .map(|connection| connection.service_root)
     }
 
-    /// Returns the service root using the supplied native BMC credentials.
+    /// Returns an authenticated BMC transport and its service root.
     ///
     /// The credentials, including the complete token or username/password
     /// material, are part of the cache key.
-    pub async fn service_root_with_bmc_credentials(
+    pub async fn connection_with_bmc_credentials(
         &self,
         bmc_address: SocketAddr,
         credentials: BmcCredentials,
-    ) -> Result<Arc<ServiceRoot>, Error> {
-        self.service_root_with_bmc_credentials_and_cache_predicate(bmc_address, credentials, |_| {
-            true
-        })
-        .await
+    ) -> Result<NvRedfishConnection, Error> {
+        self.connection_with_cache_predicate(bmc_address, credentials, |_| true)
+            .await
     }
 
-    /// Returns the service root using native BMC credentials, caching a
-    /// freshly fetched root only when `should_cache` accepts it.
-    pub async fn service_root_with_bmc_credentials_and_cache_predicate(
+    async fn connection_with_cache_predicate(
         &self,
         bmc_address: SocketAddr,
         credentials: BmcCredentials,
         should_cache: impl FnOnce(&ServiceRoot) -> bool,
-    ) -> Result<Arc<ServiceRoot>, Error> {
+    ) -> Result<NvRedfishConnection, Error> {
         self.remove_expired(Instant::now());
 
         let key = self.pool_key(bmc_address, credentials);
 
-        if let Some(sevice_root) = self.cached_root(&key) {
-            Ok(sevice_root)
+        if let Some(connection) = self.cached_connection(&key) {
+            Ok(connection)
         } else {
-            let bmc = Self::create_bmc_with_proxy(
+            let mut bmc = Self::create_bmc_with_proxy(
                 key.proxy_address.as_ref(),
                 key.bmc_address,
                 key.credentials.clone(),
                 false,
             )?;
-            let service_root = ServiceRoot::new(bmc).await?;
+            let service_root = ServiceRoot::new(bmc.clone()).await?;
             let service_root = if service_root.vendor()
                 == Some(nv_redfish::service_root::Vendor::new("HPE"))
                 && let Some(HpeManagerType::Ilo(version)) = service_root
@@ -222,7 +237,7 @@ impl NvRedfishClientPool {
                 // when reqwest thinks that connection is alive but it
                 // is about to close by server. Reusing such
                 // connections causes errors.
-                let bmc = Self::create_bmc_with_proxy(
+                bmc = Self::create_bmc_with_proxy(
                     key.proxy_address.as_ref(),
                     key.bmc_address,
                     key.credentials.clone(),
@@ -233,10 +248,11 @@ impl NvRedfishClientPool {
                 service_root
             };
             let service_root = Arc::new(service_root);
-            if should_cache(&service_root) {
-                self.update_cache(key, service_root.clone());
+            let connection = NvRedfishConnection { bmc, service_root };
+            if should_cache(&connection.service_root) {
+                self.update_cache(key, connection.clone());
             }
-            Ok(service_root)
+            Ok(connection)
         }
     }
 
@@ -249,25 +265,29 @@ impl NvRedfishClientPool {
         }
     }
 
-    fn cached_root(&self, key: &PoolKey) -> Option<Arc<ServiceRoot>> {
+    fn cached_connection(&self, key: &PoolKey) -> Option<NvRedfishConnection> {
         self.cache
             .lock()
             .expect("nv-redfish client cache mutex poisoned")
             .roots
             .get(key)
-            .map(|entry| entry.root.clone())
+            .map(|entry| entry.connection.clone())
     }
 
-    fn update_cache(&self, key: PoolKey, root: Arc<ServiceRoot>) {
+    fn update_cache(&self, key: PoolKey, connection: NvRedfishConnection) {
         let mut cache = self
             .cache
             .lock()
             .expect("nv-redfish client cache mutex poisoned");
         let expires_at = Instant::now() + self.cache_ttl;
         let generation = cache.allocate_generation();
-        cache
-            .roots
-            .insert(key.clone(), CachedServiceRoot { root, generation });
+        cache.roots.insert(
+            key.clone(),
+            CachedServiceRoot {
+                connection,
+                generation,
+            },
+        );
         cache.expirations.push(Reverse(CacheExpiration {
             expires_at,
             generation,
@@ -369,6 +389,12 @@ impl NvRedfishClientPool {
 /// Mirrors `health::BmcAddr::to_url()`: IPv6 hosts are bracketed so the URL
 /// authority parses — a bare `IpAddr` Display leaves IPv6 unbracketed
 /// (e.g. `2001:db8::1`), which `Url::parse` rejects.
+/// Converts stored NICo credentials into the transport's credential type.
+fn bmc_credentials(credentials: Credentials) -> BmcCredentials {
+    let Credentials::UsernamePassword { username, password } = credentials;
+    BmcCredentials::new(username, password)
+}
+
 fn build_bmc_url(
     proxy_address: &Option<HostPortPair>,
     bmc_address: SocketAddr,

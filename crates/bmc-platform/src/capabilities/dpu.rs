@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DriverOutcome, OpCx, PlatformError};
 
+/// Operating mode of a DPU: transparent NIC or full DPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NicMode {
@@ -28,6 +29,7 @@ pub enum NicMode {
     Dpu,
 }
 
+/// Host-side privilege over the DPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostPrivilegeLevel {
@@ -35,6 +37,7 @@ pub enum HostPrivilegeLevel {
     Restricted,
 }
 
+/// Whether the host RShim interface is enabled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RshimState {
@@ -42,9 +45,12 @@ pub enum RshimState {
     Disabled,
 }
 
+/// Observed DPU mode and host RShim state; `None` when the BMC does not report a value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DpuStatus {
+    /// Current mode; `None` when the BMC reports none.
     pub nic_mode: Option<NicMode>,
+    /// Host RShim state; `None` when the platform has no such control.
     pub host_rshim: Option<RshimState>,
 }
 

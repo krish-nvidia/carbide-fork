@@ -16,16 +16,22 @@
  */
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, StatusCode};
+use axum::http::header::{CONTENT_TYPE, IF_MATCH, LOCATION, RETRY_AFTER};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use nv_redfish::bmc_http::{
     BmcCredentials, CacheableError, HttpClient, RejectedUriReferenceError, RequestError,
 };
 use nv_redfish::core::upload::{MultipartUpdateRequest, UploadReader};
-use nv_redfish::core::{BoxTryStream, ModificationResponse, ODataETag, SessionCreateResponse};
+use nv_redfish::core::{
+    ActionError, AsyncTask, BoxTryStream, ModificationResponse, ODataETag, ODataId,
+    SessionCreateResponse,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tower::ServiceExt;
@@ -43,6 +49,20 @@ pub enum Error {
     Cache(String),
     RejectedUriReference(String),
     NotSupported(&'static str),
+}
+
+/// Test transports classify exactly like the production reqwest transport.
+impl bmc_platform::ClassifyBmcError for Error {
+    fn classify(self) -> bmc_platform::PlatformError {
+        match self {
+            Self::InvalidResponse { status, text, .. } => {
+                bmc_platform::PlatformError::from_http_response(status.as_u16(), &text)
+            }
+            other => bmc_platform::PlatformError::InvalidResponse {
+                message: other.to_string(),
+            },
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -63,6 +83,12 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl ActionError for Error {
+    fn not_supported() -> Self {
+        Self::NotSupported("action is not supported")
+    }
+}
 
 impl RequestError for Error {
     fn rejected_uri_reference(error: RejectedUriReferenceError) -> Self {
@@ -93,11 +119,34 @@ impl CacheableError for Error {
 #[derive(Clone)]
 pub struct AxumRouterHttpClient {
     router: Router,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
+}
+
+/// One request the client forwarded to the router.
+#[derive(Clone, Debug)]
+pub struct RecordedRequest {
+    pub method: Method,
+    pub uri: String,
+    pub headers: HeaderMap,
+    pub body: Vec<u8>,
 }
 
 impl AxumRouterHttpClient {
     pub fn new(router: Router) -> Self {
-        Self { router }
+        Self {
+            router,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Returns and clears every request made so far.
+    pub fn take_requests(&self) -> Vec<RecordedRequest> {
+        std::mem::take(
+            &mut *self
+                .requests
+                .lock()
+                .expect("request recorder mutex poisoned"),
+        )
     }
 
     fn request_builder(
@@ -114,6 +163,22 @@ impl AxumRouterHttpClient {
     }
 
     async fn call(&self, request: Request<Body>) -> Result<axum::response::Response, Error> {
+        let (parts, body) = request.into_parts();
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|_| Error::NotSupported("request body collect error"))?
+            .to_bytes();
+        self.requests
+            .lock()
+            .expect("request recorder mutex poisoned")
+            .push(RecordedRequest {
+                method: parts.method.clone(),
+                uri: parts.uri.to_string(),
+                headers: parts.headers.clone(),
+                body: bytes.to_vec(),
+            });
+        let request = Request::from_parts(parts, Body::from(bytes));
         let response = self
             .router
             .clone()
@@ -135,6 +200,53 @@ impl AxumRouterHttpClient {
             .map_err(|_| Error::NotSupported("response body collect error"))?
             .to_bytes();
         Ok((status, headers, bytes))
+    }
+
+    async fn modification_response<T>(
+        url: Url,
+        response: axum::response::Response,
+    ) -> Result<ModificationResponse<T>, Error>
+    where
+        T: DeserializeOwned + Send + Sync,
+    {
+        let (status, headers, bytes) = Self::response_bytes(response).await?;
+        if !status.is_success() {
+            return Err(Error::InvalidResponse {
+                url,
+                status,
+                text: String::from_utf8_lossy(&bytes).to_string(),
+            });
+        }
+        if status == StatusCode::ACCEPTED {
+            let location = headers
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| Error::InvalidResponse {
+                    url: url.clone(),
+                    status,
+                    text: "202 Accepted without Location header".to_string(),
+                })?;
+            let retry_after = headers
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_secs);
+            return Ok(ModificationResponse::Task(AsyncTask {
+                location: ODataId::from(location.to_string()).into(),
+                retry_after,
+            }));
+        }
+        if bytes.is_empty() {
+            return Ok(ModificationResponse::Empty);
+        }
+        let value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(Error::Json)?;
+        match serde_json::from_value(value.clone()) {
+            Ok(entity) => Ok(ModificationResponse::Entity(entity)),
+            Err(_) if value.as_object().is_some_and(serde_json::Map::is_empty) => {
+                Ok(ModificationResponse::Empty)
+            }
+            Err(error) => Err(Error::Json(error)),
+        }
     }
 }
 
@@ -167,43 +279,57 @@ impl HttpClient for AxumRouterHttpClient {
 
     async fn post<B, T>(
         &self,
-        _: Url,
-        _: &B,
-        _: &BmcCredentials,
-        _: &HeaderMap,
+        url: Url,
+        body: &B,
+        credentials: &BmcCredentials,
+        custom_headers: &HeaderMap,
     ) -> Result<ModificationResponse<T>, Self::Error>
     where
         B: Serialize + Send + Sync,
         T: DeserializeOwned + Send + Sync,
     {
-        Err(Error::NotSupported("POST is not supported yet"))
+        let bytes = serde_json::to_vec(body).map_err(Error::Json)?;
+        let request = Self::request_builder(Method::POST, &url, credentials, custom_headers)
+            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .body(Body::from(bytes))
+            .map_err(Error::Http)?;
+        Self::modification_response(url, self.call(request).await?).await
     }
 
     async fn patch<B, T>(
         &self,
-        _: Url,
-        _: ODataETag,
-        _: &B,
-        _: &BmcCredentials,
-        _: &HeaderMap,
+        url: Url,
+        etag: ODataETag,
+        body: &B,
+        credentials: &BmcCredentials,
+        custom_headers: &HeaderMap,
     ) -> Result<ModificationResponse<T>, Self::Error>
     where
         B: Serialize + Send + Sync,
         T: DeserializeOwned + Send + Sync,
     {
-        Err(Error::NotSupported("PATCH is not supported yet"))
+        let bytes = serde_json::to_vec(body).map_err(Error::Json)?;
+        let request = Self::request_builder(Method::PATCH, &url, credentials, custom_headers)
+            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .header(IF_MATCH, etag.to_string())
+            .body(Body::from(bytes))
+            .map_err(Error::Http)?;
+        Self::modification_response(url, self.call(request).await?).await
     }
 
     async fn delete<T>(
         &self,
-        _: Url,
-        _: &BmcCredentials,
-        _: &HeaderMap,
+        url: Url,
+        credentials: &BmcCredentials,
+        custom_headers: &HeaderMap,
     ) -> Result<ModificationResponse<T>, Self::Error>
     where
         T: DeserializeOwned + Send + Sync,
     {
-        Err(Error::NotSupported("DELETE is not supported yet"))
+        let request = Self::request_builder(Method::DELETE, &url, credentials, custom_headers)
+            .body(Body::empty())
+            .map_err(Error::Http)?;
+        Self::modification_response(url, self.call(request).await?).await
     }
 
     async fn sse<T: Send + Sized + for<'a> serde::Deserialize<'a>>(
@@ -241,5 +367,86 @@ impl HttpClient for AxumRouterHttpClient {
         V: Serialize + Send + Sync,
     {
         Err(Error::NotSupported("Multipart update is not supported yet"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::routing::{patch, post};
+    use serde_json::json;
+
+    use super::*;
+
+    fn credentials() -> BmcCredentials {
+        BmcCredentials::new("root".to_string(), "password".to_string())
+    }
+
+    #[tokio::test]
+    async fn mutations_are_forwarded_and_recorded() {
+        let router = Router::new()
+            .route(
+                "/redfish/v1/Systems/1",
+                patch(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/redfish/v1/UpdateService/Actions/Update",
+                post(|| async {
+                    (
+                        StatusCode::ACCEPTED,
+                        [
+                            (LOCATION, "/redfish/v1/TaskService/Tasks/42"),
+                            (RETRY_AFTER, "7"),
+                        ],
+                    )
+                }),
+            );
+        let client = AxumRouterHttpClient::new(router);
+
+        let patched: ModificationResponse<serde_json::Value> = client
+            .patch(
+                Url::parse("https://bmc.test/redfish/v1/Systems/1").expect("valid URL"),
+                ODataETag::from("*".to_string()),
+                &json!({"Boot": {"BootSourceOverrideTarget": "Pxe"}}),
+                &credentials(),
+                &HeaderMap::new(),
+            )
+            .await
+            .expect("PATCH succeeds");
+        assert!(matches!(patched, ModificationResponse::Empty));
+
+        let posted: ModificationResponse<serde_json::Value> = client
+            .post(
+                Url::parse("https://bmc.test/redfish/v1/UpdateService/Actions/Update")
+                    .expect("valid URL"),
+                &json!({"ImageURI": "https://example.test/image.bin"}),
+                &credentials(),
+                &HeaderMap::new(),
+            )
+            .await
+            .expect("POST succeeds");
+        let ModificationResponse::Task(task) = posted else {
+            panic!("expected asynchronous task")
+        };
+        assert_eq!(
+            task.location.0.to_string(),
+            "/redfish/v1/TaskService/Tasks/42"
+        );
+        assert_eq!(task.retry_after, Some(Duration::from_secs(7)));
+
+        let requests = client.take_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, Method::PATCH);
+        assert_eq!(
+            requests[0]
+                .headers
+                .get(IF_MATCH)
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&requests[1].body).expect("JSON body"),
+            json!({"ImageURI": "https://example.test/image.bin"})
+        );
+        assert!(client.take_requests().is_empty());
     }
 }

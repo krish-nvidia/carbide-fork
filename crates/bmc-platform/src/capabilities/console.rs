@@ -19,16 +19,18 @@ use std::num::NonZeroU16;
 
 use async_trait::async_trait;
 use nv_redfish::core::Bmc;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{DriverOutcome, OpCx, PlatformError};
 
-/// A non-empty owned byte sequence.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A byte string guaranteed non-empty, for prompts, commands, and escape tails.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<u8>")]
 pub struct NonEmptyBytes(Vec<u8>);
 
 impl NonEmptyBytes {
+    /// Validates that `value` has at least one byte.
     pub fn new(value: Vec<u8>) -> Result<Self, NonEmptyBytesError> {
         if value.is_empty() {
             return Err(NonEmptyBytesError);
@@ -36,6 +38,7 @@ impl NonEmptyBytes {
         Ok(Self(value))
     }
 
+    /// Returns the bytes.
     pub fn as_slice(&self) -> &[u8] {
         &self.0
     }
@@ -49,31 +52,11 @@ impl TryFrom<Vec<u8>> for NonEmptyBytes {
     }
 }
 
-impl Serialize for NonEmptyBytes {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for NonEmptyBytes {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<u8>::deserialize(deserializer)?
-            .try_into()
-            .map_err(serde::de::Error::custom)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("byte sequence must not be empty")]
 pub struct NonEmptyBytesError;
 
-/// Client-input bytes reserved by a console transport.
+/// Bytes the console client must swallow so they do not reach the BMC shell.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum EscapeSeq {
@@ -87,6 +70,7 @@ pub enum EscapeSeq {
 }
 
 impl EscapeSeq {
+    /// A two-part escape: `lead` followed by one of `trailing`; `trailing` must be non-empty.
     pub fn pair(lead: u8, trailing: Vec<u8>) -> Result<Self, NonEmptyBytesError> {
         Ok(Self::Pair {
             lead,
@@ -95,28 +79,50 @@ impl EscapeSeq {
     }
 }
 
+/// Whether the BIOS and BMC settings the console needs are in place.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsoleState {
+    /// Every checked setting has the console-enabled value.
     Enabled,
+    /// Settings disagree, or some were not reported.
     Partial,
+    /// Every checked setting has a console-disabled value.
     Disabled,
 }
 
+/// Console configuration state with the observed settings for diagnostics.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConsoleStatus {
     pub state: ConsoleState,
+    /// Human-readable `key=value` list of the settings that were checked.
     pub message: String,
 }
 
-/// Ordered recovery commands for a failed SSH-shell activation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// Commands to run when the shell answers the activation command with `trigger`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ConsoleFallbackWire")]
 pub struct ConsoleFallback {
     trigger: NonEmptyBytes,
     commands: Vec<NonEmptyBytes>,
 }
 
+#[derive(Deserialize)]
+struct ConsoleFallbackWire {
+    trigger: Vec<u8>,
+    commands: Vec<Vec<u8>>,
+}
+
+impl TryFrom<ConsoleFallbackWire> for ConsoleFallback {
+    type Error = ConsoleSpecError;
+
+    fn try_from(wire: ConsoleFallbackWire) -> Result<Self, Self::Error> {
+        Self::new(wire.trigger, wire.commands)
+    }
+}
+
 impl ConsoleFallback {
+    /// Validates a fallback: a non-empty `trigger` and at least one non-empty command.
     pub fn new(trigger: Vec<u8>, commands: Vec<Vec<u8>>) -> Result<Self, ConsoleSpecError> {
         let trigger =
             NonEmptyBytes::new(trigger).map_err(|_| ConsoleSpecError::EmptyFallbackTrigger)?;
@@ -132,169 +138,53 @@ impl ConsoleFallback {
         Ok(Self { trigger, commands })
     }
 
+    /// Shell output that means the activation command failed and the fallback applies.
     pub fn trigger(&self) -> &[u8] {
         self.trigger.as_slice()
     }
 
+    /// Commands to send, in order, before retrying activation.
     pub fn commands(&self) -> impl ExactSizeIterator<Item = &[u8]> {
         self.commands.iter().map(NonEmptyBytes::as_slice)
     }
 }
 
-#[derive(Deserialize)]
-struct ConsoleFallbackWire {
-    trigger: Vec<u8>,
-    commands: Vec<Vec<u8>>,
-}
-
-impl<'de> Deserialize<'de> for ConsoleFallback {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = ConsoleFallbackWire::deserialize(deserializer)?;
-        Self::new(wire.trigger, wire.commands).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Validated instructions for activating SOL from an interactive SSH shell.
+/// An SSH login that reaches the serial console through a BMC shell command.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SshShellSpec {
-    port: NonZeroU16,
-    activate: NonEmptyBytes,
-    fallback: Option<ConsoleFallback>,
-    prompt: NonEmptyBytes,
-    escape_filter: EscapeSeq,
+    /// SSH port of the BMC shell.
+    pub port: NonZeroU16,
+    /// Command typed at the shell prompt to attach to the serial console.
+    pub activate: NonEmptyBytes,
+    /// Recovery when `activate` fails because a stale session holds the console.
+    pub fallback: Option<ConsoleFallback>,
+    /// Shell prompt to wait for before sending `activate`.
+    pub prompt: NonEmptyBytes,
+    /// Bytes to swallow so they are not forwarded to the console.
+    pub escape_filter: EscapeSeq,
 }
 
-impl SshShellSpec {
-    pub fn new(
-        port: NonZeroU16,
-        activate: Vec<u8>,
-        fallback: Option<ConsoleFallback>,
-        prompt: Vec<u8>,
-        escape_filter: EscapeSeq,
-    ) -> Result<Self, ConsoleSpecError> {
-        let activate =
-            NonEmptyBytes::new(activate).map_err(|_| ConsoleSpecError::EmptyActivateCommand)?;
-        let prompt = NonEmptyBytes::new(prompt).map_err(|_| ConsoleSpecError::EmptyPrompt)?;
-        Ok(Self {
-            port,
-            activate,
-            fallback,
-            prompt,
-            escape_filter,
-        })
-    }
-
-    pub const fn port(&self) -> NonZeroU16 {
-        self.port
-    }
-
-    pub fn activate(&self) -> &[u8] {
-        self.activate.as_slice()
-    }
-
-    pub const fn fallback(&self) -> Option<&ConsoleFallback> {
-        self.fallback.as_ref()
-    }
-
-    pub fn prompt(&self) -> &[u8] {
-        self.prompt.as_slice()
-    }
-
-    pub const fn escape_filter(&self) -> &EscapeSeq {
-        &self.escape_filter
-    }
-}
-
-/// Validated instructions for using an SSH shell as the console directly.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SshDirectSpec {
-    port: NonZeroU16,
-}
-
-impl SshDirectSpec {
-    pub const fn new(port: NonZeroU16) -> Self {
-        Self { port }
-    }
-
-    pub const fn port(&self) -> NonZeroU16 {
-        self.port
-    }
-}
-
-/// Validated instructions for starting an IPMI SOL session.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct IpmiSolSpec {
-    port: NonZeroU16,
-    escape_filter: EscapeSeq,
-}
-
-impl IpmiSolSpec {
-    pub const fn new(port: NonZeroU16, escape_filter: EscapeSeq) -> Self {
-        Self {
-            port,
-            escape_filter,
-        }
-    }
-
-    pub const fn port(&self) -> NonZeroU16 {
-        self.port
-    }
-
-    pub const fn escape_filter(&self) -> &EscapeSeq {
-        &self.escape_filter
-    }
-}
-
-/// Validated explanation for an endpoint without a console transport.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct UnsupportedConsoleSpec {
-    reason: String,
-}
-
-impl UnsupportedConsoleSpec {
-    pub fn new(reason: String) -> Result<Self, ConsoleSpecError> {
-        if reason.trim().is_empty() {
-            return Err(ConsoleSpecError::EmptyUnsupportedReason);
-        }
-        Ok(Self { reason })
-    }
-
-    pub fn reason(&self) -> &str {
-        &self.reason
-    }
-}
-
-impl<'de> Deserialize<'de> for UnsupportedConsoleSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Wire {
-            reason: String,
-        }
-
-        Self::new(Wire::deserialize(deserializer)?.reason).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Complete, validated instructions for opening a BMC-backed console.
-///
-/// Ports are final connection ports after platform-specific discovery and have
-/// no implicit default.
+/// How a console client reaches the host serial console.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConsoleSpec {
     SshShell(SshShellSpec),
-    SshDirect(SshDirectSpec),
-    IpmiSol(IpmiSolSpec),
-    None(UnsupportedConsoleSpec),
+    /// SSH login lands on the console directly.
+    SshDirect {
+        port: NonZeroU16,
+    },
+    IpmiSol {
+        port: NonZeroU16,
+        escape_filter: EscapeSeq,
+    },
+    /// No console transport is known for this platform.
+    None {
+        reason: String,
+    },
 }
 
 impl ConsoleSpec {
+    /// Builds an [`SshShellSpec`]; `activate` and `prompt` must be non-empty.
     pub fn ssh_shell(
         port: NonZeroU16,
         activate: Vec<u8>,
@@ -302,47 +192,19 @@ impl ConsoleSpec {
         prompt: Vec<u8>,
         escape_filter: EscapeSeq,
     ) -> Result<Self, ConsoleSpecError> {
-        SshShellSpec::new(port, activate, fallback, prompt, escape_filter).map(Self::SshShell)
+        Ok(Self::SshShell(SshShellSpec {
+            port,
+            activate: NonEmptyBytes::new(activate)
+                .map_err(|_| ConsoleSpecError::EmptyActivateCommand)?,
+            fallback,
+            prompt: NonEmptyBytes::new(prompt).map_err(|_| ConsoleSpecError::EmptyPrompt)?,
+            escape_filter,
+        }))
     }
 
-    pub const fn ssh_direct(port: NonZeroU16) -> Self {
-        Self::SshDirect(SshDirectSpec::new(port))
-    }
-
-    pub const fn ipmi_sol(port: NonZeroU16, escape_filter: EscapeSeq) -> Self {
-        Self::IpmiSol(IpmiSolSpec::new(port, escape_filter))
-    }
-
-    pub fn unsupported(reason: String) -> Result<Self, ConsoleSpecError> {
-        UnsupportedConsoleSpec::new(reason).map(Self::None)
-    }
-
+    /// Returns the shell spec when this console is reached through a BMC shell.
     pub const fn as_ssh_shell(&self) -> Option<&SshShellSpec> {
         if let Self::SshShell(spec) = self {
-            Some(spec)
-        } else {
-            None
-        }
-    }
-
-    pub const fn as_ssh_direct(&self) -> Option<&SshDirectSpec> {
-        if let Self::SshDirect(spec) = self {
-            Some(spec)
-        } else {
-            None
-        }
-    }
-
-    pub const fn as_ipmi_sol(&self) -> Option<&IpmiSolSpec> {
-        if let Self::IpmiSol(spec) = self {
-            Some(spec)
-        } else {
-            None
-        }
-    }
-
-    pub const fn as_unsupported(&self) -> Option<&UnsupportedConsoleSpec> {
-        if let Self::None(spec) = self {
             Some(spec)
         } else {
             None
@@ -362,21 +224,14 @@ pub enum ConsoleSpecError {
     NoFallbackCommands,
     #[error("fallback commands must not be empty")]
     EmptyFallbackCommand,
-    #[error("unsupported console reason must not be empty")]
-    EmptyUnsupportedReason,
 }
 
-/// Resolves the console protocol and activation sequence for a BMC.
 #[async_trait]
 pub trait Console<B: Bmc>: Send + Sync {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError>;
 
-    /// Returns a validated connection specification.
-    ///
-    /// Drivers use [`ConsoleSpec`] constructors. Invalid persisted wire data
-    /// fails deserialization before a consumer can attempt a connection.
     async fn spec(&self, cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError>;
 }
 
@@ -393,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn console_constructors_expose_validated_values() {
+    fn console_constructors_reject_empty_values() {
         let fallback = ConsoleFallback::new(
             b"extraneous arguments".to_vec(),
             vec![b"console kill".to_vec(), b"console start".to_vec()],
@@ -408,14 +263,14 @@ mod tests {
         )
         .expect("SSH shell spec is valid");
         let shell = spec.as_ssh_shell().expect("spec is SSH shell");
-
-        assert_eq!(shell.port(), port(22));
-        assert_eq!(shell.activate(), b"console");
-        assert_eq!(shell.prompt(), b"> ");
-        let fallback = shell.fallback().expect("fallback is configured");
-        assert_eq!(fallback.trigger(), b"extraneous arguments");
+        assert_eq!(shell.activate.as_slice(), b"console");
         assert_eq!(
-            fallback.commands().collect::<Vec<_>>(),
+            shell
+                .fallback
+                .as_ref()
+                .expect("fallback is configured")
+                .commands()
+                .collect::<Vec<_>>(),
             vec![b"console kill".as_slice(), b"console start".as_slice()]
         );
         assert!(
@@ -424,11 +279,10 @@ mod tests {
         );
         assert!(ConsoleFallback::new(b"error".to_vec(), Vec::new()).is_err());
         assert!(EscapeSeq::pair(b'~', Vec::new()).is_err());
-        assert!(ConsoleSpec::unsupported(" \t".to_string()).is_err());
     }
 
     #[test]
-    fn console_specs_exhaustively_round_trip() {
+    fn console_specs_round_trip_and_reject_invalid_wire_values() {
         let specs = [
             ConsoleSpec::ssh_shell(
                 port(22),
@@ -441,15 +295,16 @@ mod tests {
                 EscapeSeq::None,
             )
             .expect("SSH shell spec is valid"),
-            ConsoleSpec::ssh_direct(port(2200)),
-            ConsoleSpec::ipmi_sol(
-                port(623),
-                EscapeSeq::pair(b'~', vec![b'.', b'B']).expect("escape pair is valid"),
-            ),
-            ConsoleSpec::unsupported("serial console is unavailable".to_string())
-                .expect("unsupported reason is valid"),
+            ConsoleSpec::SshDirect { port: port(2200) },
+            ConsoleSpec::IpmiSol {
+                port: port(623),
+                escape_filter: EscapeSeq::pair(b'~', vec![b'.', b'B'])
+                    .expect("escape pair is valid"),
+            },
+            ConsoleSpec::None {
+                reason: "serial console is unavailable".to_string(),
+            },
         ];
-
         for spec in specs {
             let encoded = serde_json::to_value(&spec).expect("console spec serializes");
             assert_eq!(
@@ -457,10 +312,6 @@ mod tests {
                 spec
             );
         }
-    }
-
-    #[test]
-    fn invalid_console_json_is_rejected() {
         let invalid = [
             json!({
                 "type": "ssh_shell",
@@ -487,9 +338,7 @@ mod tests {
                 }
             }),
             json!({"type": "ssh_direct", "port": 0}),
-            json!({"type": "none", "reason": " "}),
         ];
-
         for value in invalid {
             assert!(serde_json::from_value::<ConsoleSpec>(value).is_err());
         }

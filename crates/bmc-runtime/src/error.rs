@@ -16,43 +16,15 @@
  */
 
 use bmc_platform::PlatformError;
-use nv_redfish::{Bmc, Error as RedfishError};
 use thiserror::Error;
-
-use crate::CredentialRequestError;
 
 /// Failure while authenticating and connecting to a BMC.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectError {
-    /// Credential request metadata is invalid.
-    #[error(transparent)]
-    CredentialRequest(#[from] CredentialRequestError),
     /// Credential acquisition or refresh failed.
     #[error("BMC credential provider failed: {0}")]
     Credentials(PlatformError),
     /// Concrete Redfish transport or authentication failed.
     #[error("BMC connection failed: {0}")]
     Transport(PlatformError),
-}
-
-/// Maps errors shared by `nv-redfish` wrappers into platform errors.
-///
-/// The caller classifies `B::Error`, because only the concrete transport knows
-/// whether its error is authentication, reachability, or a BMC response.
-pub fn map_redfish_error<B, F>(error: RedfishError<B>, map_bmc: F) -> PlatformError
-where
-    B: Bmc,
-    F: FnOnce(B::Error) -> PlatformError,
-{
-    match error {
-        RedfishError::Bmc(error) => map_bmc(error),
-        RedfishError::AccountSlotNotAvailable => PlatformError::TooManyUsers,
-        RedfishError::ActionNotAvailable => PlatformError::Unsupported,
-        RedfishError::Json(error) => PlatformError::InvalidResponse {
-            message: error.to_string(),
-        },
-        other => PlatformError::InvalidResponse {
-            message: other.to_string(),
-        },
-    }
 }

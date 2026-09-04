@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::software_inventory::SoftwareInventory;
@@ -22,30 +24,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DriverOutcome, OpCx, PlatformError};
 
+/// One ComponentIntegrity resource as listed for attestation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComponentIntegritySummary {
+    /// Redfish `ComponentIntegrity` resource id.
     pub id: String,
     pub name: String,
+    /// `ComponentIntegrityEnabled` as reported.
     pub enabled: bool,
+    /// `ComponentIntegrityType`, for example `SPDM`.
     pub component_type: String,
+    /// `ComponentIntegrityTypeVersion`, the protocol version string.
     pub component_type_version: String,
 }
 
+/// The CA certificate a ComponentIntegrity responder authenticates with.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CaCertificate {
+    /// Certificate body in the encoding named by `certificate_type` (usually PEM).
     pub certificate_string: String,
+    /// Redfish `CertificateType`, for example `PEM`.
     pub certificate_type: String,
+    /// Redfish `CertificateUsageTypes`.
     pub certificate_usage_types: Vec<String>,
+    /// Certificate resource id.
     pub id: String,
     pub name: String,
+    /// SPDM certificate slot the responder presented.
     pub slot_id: u16,
 }
 
+/// Signed measurements retrieved for a component.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AttestationEvidence {
+    /// SPDM hashing algorithm name.
     pub hashing_algorithm: String,
+    /// Base64 SPDM `MEASUREMENTS` response as returned by the BMC.
     pub signed_measurements: String,
+    /// SPDM signing algorithm name.
     pub signing_algorithm: String,
+    /// SPDM protocol version of the evidence.
     pub version: String,
 }
 
@@ -61,7 +79,7 @@ pub trait Attestation<B: Bmc>: Send + Sync {
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
-    ) -> Result<SoftwareInventory, PlatformError>;
+    ) -> Result<Arc<SoftwareInventory>, PlatformError>;
 
     async fn ca_certificate(
         &self,
@@ -81,6 +99,4 @@ pub trait Attestation<B: Bmc>: Send + Sync {
         cx: &OpCx<'_, B>,
         component_id: &str,
     ) -> Result<AttestationEvidence, PlatformError>;
-
-    async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
 }

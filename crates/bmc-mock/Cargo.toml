@@ -24,6 +24,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+bmc-platform = { path = "../bmc-platform" }
 bmc-vendor = { path = "../bmc-vendor" }
 axum = { workspace = true }
 axum-extra = { features = ["typed-header"], workspace = true }

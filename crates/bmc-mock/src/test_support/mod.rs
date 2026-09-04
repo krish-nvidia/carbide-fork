@@ -67,7 +67,9 @@ lazy_static::lazy_static! {
 
 #[derive(Clone)]
 pub struct TestBmcHandle {
+    pub bmc: Arc<TestBmc>,
     pub service_root: Arc<nv_redfish::ServiceRoot<TestBmc>>,
+    pub http_client: AxumRouterHttpClient,
     pub state: BmcState,
 }
 
@@ -76,13 +78,18 @@ async fn test_bmc((router, state): (axum::Router, BmcState)) -> TestBmcHandle {
     let endpoint = Url::parse("https://bmc-mock.local").expect("valid URL");
     let credentials = BmcCredentials::new("root".to_string(), "password".to_string());
     let bmc = Arc::new(HttpBmc::new(
-        client,
+        client.clone(),
         endpoint,
         credentials,
         CacheSettings::with_capacity(32),
     ));
     TestBmcHandle {
-        service_root: nv_redfish::ServiceRoot::new(bmc).await.unwrap().into(),
+        service_root: nv_redfish::ServiceRoot::new(bmc.clone())
+            .await
+            .unwrap()
+            .into(),
+        bmc,
+        http_client: client,
         state,
     }
 }

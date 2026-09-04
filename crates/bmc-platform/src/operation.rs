@@ -19,25 +19,30 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
 
-use nv_redfish::core::ODataId;
+use nv_redfish::core::{ModificationResponse, ODataId};
 use nv_redfish::resource::ResetType;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::capabilities::{LockdownDesiredState, LockdownScope};
 
-/// Identifier returned by a vendor job service.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Rejects empty or whitespace-only identifiers shared by the newtypes below.
+fn non_empty(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+/// Vendor job identifier, such as an iDRAC `JID_…`; never empty.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct VendorJobId(String);
 
 impl VendorJobId {
+    /// Validates a job identifier; whitespace-only values are rejected.
     pub fn new(value: String) -> Result<Self, VendorJobIdError> {
-        if value.trim().is_empty() {
-            return Err(VendorJobIdError);
-        }
-        Ok(Self(value))
+        non_empty(value).map(Self).ok_or(VendorJobIdError)
     }
 
+    /// Returns the identifier as the BMC reported it.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -57,23 +62,11 @@ impl FromStr for VendorJobId {
     }
 }
 
-impl Serialize for VendorJobId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
+impl TryFrom<String> for VendorJobId {
+    type Error = VendorJobIdError;
 
-impl<'de> Deserialize<'de> for VendorJobId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(serde::de::Error::custom)
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -81,18 +74,20 @@ impl<'de> Deserialize<'de> for VendorJobId {
 #[error("vendor job id must not be empty")]
 pub struct VendorJobIdError;
 
-/// Stable machine-readable code for an operator action.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Operator-facing code naming the manual step a driver requires; never empty.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct ManualInterventionCode(String);
 
 impl ManualInterventionCode {
+    /// Validates a code; whitespace-only values are rejected.
     pub fn new(value: String) -> Result<Self, ManualInterventionCodeError> {
-        if value.trim().is_empty() {
-            return Err(ManualInterventionCodeError);
-        }
-        Ok(Self(value))
+        non_empty(value)
+            .map(Self)
+            .ok_or(ManualInterventionCodeError)
     }
 
+    /// Returns the code as text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -106,23 +101,11 @@ impl FromStr for ManualInterventionCode {
     }
 }
 
-impl Serialize for ManualInterventionCode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
+impl TryFrom<String> for ManualInterventionCode {
+    type Error = ManualInterventionCodeError;
 
-impl<'de> Deserialize<'de> for ManualInterventionCode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(serde::de::Error::custom)
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -134,17 +117,28 @@ pub struct ManualInterventionCodeError;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationReference {
+    /// A standard Redfish task, polled at `uri`.
     RedfishTask {
         uri: ODataId,
         retry_after_seconds: Option<u64>,
     },
+    /// A vendor job service entry, polled at `uri` and identified by `job_id`.
     VendorJob {
+        uri: ODataId,
         job_id: VendorJobId,
         retry_after_seconds: Option<u64>,
     },
 }
 
 impl OperationReference {
+    /// Resource to poll for completion.
+    pub const fn uri(&self) -> &ODataId {
+        match self {
+            Self::RedfishTask { uri, .. } | Self::VendorJob { uri, .. } => uri,
+        }
+    }
+
+    /// Poll interval the BMC suggested, if any.
     pub const fn retry_after_seconds(&self) -> Option<u64> {
         match self {
             Self::RedfishTask {
@@ -164,10 +158,13 @@ impl OperationReference {
 #[serde(tag = "outcome", content = "details", rename_all = "snake_case")]
 pub enum DriverOutcome {
     /// The requested state is satisfied, including already-satisfied no-op mutations.
-    Complete {
+    Complete { follow_up: Vec<ControllerAction> },
+    /// The BMC accepted asynchronous work; `follow_up` runs after it completes.
+    Accepted {
+        reference: OperationReference,
         follow_up: Vec<ControllerAction>,
     },
-    Accepted(OperationReference),
+    /// The prerequisites must be performed before the operation is retried.
     Blocked {
         prerequisite: ControllerAction,
         additional_prerequisites: Vec<ControllerAction>,
@@ -175,16 +172,101 @@ pub enum DriverOutcome {
 }
 
 impl DriverOutcome {
+    /// The requested state holds and nothing else needs to run.
     pub fn complete() -> Self {
         Self::Complete {
             follow_up: Vec::new(),
         }
     }
 
+    /// The BMC accepted asynchronous work to poll at `reference`, with no follow-up.
+    pub fn accepted(reference: OperationReference) -> Self {
+        Self::Accepted {
+            reference,
+            follow_up: Vec::new(),
+        }
+    }
+
+    /// Appends actions to run once this outcome's work has completed.
+    ///
+    /// A blocked outcome keeps its prerequisites; the follow-up belongs to the
+    /// retried operation, not to the prerequisite.
+    pub fn then(self, actions: impl IntoIterator<Item = ControllerAction>) -> Self {
+        match self {
+            Self::Complete { mut follow_up } => {
+                follow_up.extend(actions);
+                Self::Complete { follow_up }
+            }
+            Self::Accepted {
+                reference,
+                mut follow_up,
+            } => {
+                follow_up.extend(actions);
+                Self::Accepted {
+                    reference,
+                    follow_up,
+                }
+            }
+            blocked @ Self::Blocked { .. } => blocked,
+        }
+    }
+
+    /// One prerequisite must run before the operation is retried.
     pub fn blocked(prerequisite: ControllerAction) -> Self {
         Self::Blocked {
             prerequisite,
             additional_prerequisites: Vec::new(),
+        }
+    }
+
+    /// Combines the outcomes of two writes that were both issued.
+    ///
+    /// A blocked outcome wins because its prerequisite must run before either
+    /// write is retried. Otherwise accepted work outranks completion so the
+    /// caller keeps polling it, and follow-ups are concatenated in order. When
+    /// both writes were accepted the first reference is kept; the second job
+    /// keeps running on the BMC but is not polled.
+    pub fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (blocked @ Self::Blocked { .. }, _) | (_, blocked @ Self::Blocked { .. }) => blocked,
+            (Self::Complete { follow_up }, other) => other.prepend(follow_up),
+            (accepted @ Self::Accepted { .. }, Self::Complete { follow_up })
+            | (accepted @ Self::Accepted { .. }, Self::Accepted { follow_up, .. }) => {
+                accepted.then(follow_up)
+            }
+        }
+    }
+
+    fn prepend(self, mut actions: Vec<ControllerAction>) -> Self {
+        match self {
+            Self::Complete { follow_up } => {
+                actions.extend(follow_up);
+                Self::Complete { follow_up: actions }
+            }
+            Self::Accepted {
+                reference,
+                follow_up,
+            } => {
+                actions.extend(follow_up);
+                Self::Accepted {
+                    reference,
+                    follow_up: actions,
+                }
+            }
+            blocked @ Self::Blocked { .. } => blocked,
+        }
+    }
+}
+
+/// A Redfish mutation response is complete unless the BMC returned a task.
+impl<T> From<ModificationResponse<T>> for DriverOutcome {
+    fn from(response: ModificationResponse<T>) -> Self {
+        match response {
+            ModificationResponse::Entity(_) | ModificationResponse::Empty => Self::complete(),
+            ModificationResponse::Task(task) => Self::accepted(OperationReference::RedfishTask {
+                uri: task.location.0,
+                retry_after_seconds: task.retry_after.map(|duration| duration.as_secs()),
+            }),
         }
     }
 }

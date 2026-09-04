@@ -21,39 +21,51 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServiceRootIdentity {
+    /// ServiceRoot `Vendor`.
     pub vendor: Option<String>,
+    /// ServiceRoot `Product`.
     pub product: Option<String>,
+    /// Keys of the ServiceRoot `Oem` object, for example `Ami` or `Dell`.
     pub oem_keys: Vec<String>,
 }
 
 /// Identity evidence for the selected Redfish Manager resource.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct ManagerIdentity {
+    /// Resource id of the manager linked to the selected ComputerSystem.
+    pub id: String,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub firmware: Option<String>,
 }
 
 /// Identity evidence for the selected Redfish ComputerSystem resource.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct SystemIdentity {
     /// The resource id is selection evidence for platforms such as BlueField.
     pub id: String,
+    #[serde(default)]
     pub manufacturer: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub sku: Option<String>,
+    #[serde(default)]
     pub part_number: Option<String>,
+    #[serde(default)]
     pub bios_version: Option<String>,
 }
 
 /// Identity evidence for one Redfish Chassis resource.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct ChassisIdentity {
     pub id: String,
+    #[serde(default)]
     pub manufacturer: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
     pub part_number: Option<String>,
 }
 
@@ -82,6 +94,7 @@ mod tests {
                 "oem_keys": ["Nvidia"]
             },
             "manager": {
+                "id": "BMC_0",
                 "model": "OpenBMC",
                 "firmware": "1.2.3"
             },
@@ -126,5 +139,10 @@ mod tests {
         assert!(partial.manager.is_none());
         assert!(partial.system.is_none());
         assert!(partial.chassis.is_empty());
+        assert!(
+            serde_json::from_value::<PlatformIdentity>(json!({"system": {"model": "R750"}}))
+                .is_err(),
+            "a selected resource without its id is rejected"
+        );
     }
 }

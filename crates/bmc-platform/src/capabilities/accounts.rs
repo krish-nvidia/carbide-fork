@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nv_redfish::account::ManagerAccountCreate;
 use nv_redfish::core::Bmc;
@@ -25,7 +27,7 @@ use crate::{DriverOutcome, OpCx, PlatformError};
 /// BMC local-account and account-policy operations.
 #[async_trait]
 pub trait Accounts<B: Bmc>: Send + Sync {
-    async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<ManagerAccount>, PlatformError>;
+    async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError>;
 
     async fn create(
         &self,

@@ -19,12 +19,13 @@ use std::fmt;
 
 use blake3::{Hash, Hasher};
 use bmc_platform::{Capability, CapabilitySelection, DriverMap, PlatformIdentity};
+use carbide_utils::has_duplicates;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 use version_compare::{Cmp, Version};
 
 /// An identity value available to declarative selection rules.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityField {
     /// ServiceRoot `Vendor`.
@@ -60,7 +61,7 @@ pub enum IdentityField {
 }
 
 /// Inclusive validated firmware-version bounds.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FirmwareVersionRange {
     minimum: String,
     maximum: String,
@@ -79,14 +80,8 @@ impl FirmwareVersionRange {
         Ok(Self { minimum, maximum })
     }
 
-    /// Returns the inclusive minimum version.
-    pub fn minimum(&self) -> &str {
+    fn minimum(&self) -> &str {
         &self.minimum
-    }
-
-    /// Returns the inclusive maximum version.
-    pub fn maximum(&self) -> &str {
-        &self.maximum
     }
 
     fn contains(&self, candidate: &str) -> bool {
@@ -133,7 +128,7 @@ pub enum FirmwareVersionRangeError {
 }
 
 /// String comparison used by an identity matcher.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum MatchPattern {
     /// Requires an exact case-sensitive value.
@@ -144,6 +139,8 @@ pub enum MatchPattern {
     Prefix(String),
     /// Requires a case-sensitive substring.
     Contains(String),
+    /// Requires an ASCII case-insensitive substring.
+    ContainsAsciiCaseInsensitive(String),
     /// Requires an exact match against one of several canonical values.
     OneOf(Vec<String>),
     /// Requires a parseable version within inclusive validated bounds.
@@ -156,7 +153,8 @@ impl MatchPattern {
             Self::Exact(value)
             | Self::ExactAsciiCaseInsensitive(value)
             | Self::Prefix(value)
-            | Self::Contains(value) => Some(value),
+            | Self::Contains(value)
+            | Self::ContainsAsciiCaseInsensitive(value) => Some(value),
             Self::OneOf(values) => values.first().map(String::as_str),
             Self::FirmwareVersionRange(range) => Some(range.minimum()),
         }
@@ -168,39 +166,16 @@ impl MatchPattern {
             Self::ExactAsciiCaseInsensitive(value) => candidate.eq_ignore_ascii_case(value),
             Self::Prefix(value) => candidate.starts_with(value),
             Self::Contains(value) => candidate.contains(value),
+            Self::ContainsAsciiCaseInsensitive(value) => candidate
+                .to_ascii_lowercase()
+                .contains(&value.to_ascii_lowercase()),
             Self::OneOf(values) => values.iter().any(|value| candidate == value),
             Self::FirmwareVersionRange(range) => range.contains(candidate),
         }
     }
-
-    fn hash_into(&self, hasher: &mut Hasher) {
-        let (tag, value) = match self {
-            Self::Exact(value) => (0, value),
-            Self::ExactAsciiCaseInsensitive(value) => (1, value),
-            Self::Prefix(value) => (2, value),
-            Self::Contains(value) => (3, value),
-            Self::OneOf(values) => {
-                hasher.update(&[4]);
-                hash_length(hasher, values.len());
-                for value in values {
-                    hash_string(hasher, value);
-                }
-                return;
-            }
-            Self::FirmwareVersionRange(range) => {
-                hasher.update(&[5]);
-                hash_string(hasher, range.minimum());
-                hash_string(hasher, range.maximum());
-                return;
-            }
-        };
-        hasher.update(&[tag]);
-        hash_string(hasher, value);
-    }
 }
 
-/// One required identity predicate in a selection rule.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct IdentityMatcher {
     /// Identity field examined by this predicate.
     pub field: IdentityField,
@@ -240,30 +215,100 @@ pub enum Precedence {
 }
 
 /// A declarative driver-map selection rule.
+///
+/// Precedence is not declared: it is derived from the most specific identity
+/// field the rule reads, so a broad rule can never outrank a narrower one.
+/// Rules parsed as deployment overrides rank above every built-in rule.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(into = "SelectionRuleWire", try_from = "SelectionRuleWire")]
 pub struct SelectionRule {
     /// Stable non-empty identifier used in decisions and ambiguity errors.
     pub id: String,
-    /// Explicit semantic precedence.
-    pub precedence: Precedence,
     /// Capability selected by this rule.
     pub capability: Capability,
     /// Predicates that must all match. An empty list is a catch-all rule.
     pub matchers: Vec<IdentityMatcher>,
     /// Driver selected for the capability.
     pub selection: CapabilitySelection,
+    deployment_override: bool,
+}
+
+impl SelectionRule {
+    /// Creates a built-in rule; its precedence follows from `matchers`.
+    pub fn new(
+        id: impl Into<String>,
+        capability: Capability,
+        matchers: Vec<IdentityMatcher>,
+        selection: CapabilitySelection,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            capability,
+            matchers,
+            selection,
+            deployment_override: false,
+        }
+    }
+
+    /// The rank this rule competes at.
+    pub fn precedence(&self) -> Precedence {
+        if self.deployment_override {
+            return Precedence::DeploymentOverride;
+        }
+        derived_precedence(&self.matchers)
+    }
+}
+
+/// Wire form of a rule: `precedence` is emitted for readers and, when present
+/// on input, must agree with the rule's derived rank.
+#[derive(Serialize, Deserialize)]
+struct SelectionRuleWire {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    precedence: Option<Precedence>,
+    capability: Capability,
+    #[serde(default)]
+    matchers: Vec<IdentityMatcher>,
+    selection: CapabilitySelection,
+}
+
+impl From<SelectionRule> for SelectionRuleWire {
+    fn from(rule: SelectionRule) -> Self {
+        Self {
+            id: rule.id.clone(),
+            precedence: Some(rule.precedence()),
+            capability: rule.capability,
+            matchers: rule.matchers,
+            selection: rule.selection,
+        }
+    }
+}
+
+impl TryFrom<SelectionRuleWire> for SelectionRule {
+    type Error = RuleSetError;
+
+    fn try_from(wire: SelectionRuleWire) -> Result<Self, Self::Error> {
+        let mut rule = Self::new(wire.id, wire.capability, wire.matchers, wire.selection);
+        match wire.precedence {
+            None => {}
+            Some(Precedence::DeploymentOverride) => rule.deployment_override = true,
+            Some(declared) if declared == rule.precedence() => {}
+            Some(declared) => {
+                let required = rule.precedence();
+                return Err(RuleSetError::InvalidPrecedence {
+                    rule_id: rule.id,
+                    declared,
+                    required,
+                });
+            }
+        }
+        Ok(rule)
+    }
 }
 
 /// Deterministic BLAKE3 digest of a validated, canonical rule set.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RuleSetHash([u8; 32]);
-
-impl RuleSetHash {
-    /// Returns the raw 32-byte BLAKE3 digest.
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
 
 impl fmt::Display for RuleSetHash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -315,7 +360,7 @@ impl RuleSet {
                             field: matcher.field,
                         });
                     }
-                    if values.windows(2).any(|pair| pair[0] == pair[1]) {
+                    if has_duplicates(values.iter()) {
                         return Err(RuleSetError::DuplicateOneOfValue {
                             rule_id: rule.id.clone(),
                             field: matcher.field,
@@ -341,18 +386,49 @@ impl RuleSet {
                 }
             }
             rule.matchers.sort();
-            if rule.matchers.windows(2).any(|pair| pair[0] == pair[1]) {
+            if has_duplicates(&rule.matchers) {
                 return Err(RuleSetError::DuplicateMatcher {
                     rule_id: rule.id.clone(),
                 });
             }
         }
         rules.sort_by(|left, right| left.id.cmp(&right.id));
-        if rules.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        if has_duplicates(rules.iter().map(|rule| &rule.id)) {
             return Err(RuleSetError::DuplicateRuleId);
         }
         let hash = hash_rules(&rules);
         Ok(Self { rules, hash })
+    }
+
+    /// Layers deployment overrides parsed from TOML over compiled-in rules.
+    ///
+    /// The document holds `[[rules]]` tables in the [`SelectionRule`] wire
+    /// format. Every parsed rule ranks as a deployment override; a rule that
+    /// declares any other precedence is rejected.
+    pub fn with_overrides(
+        mut built_in: Vec<SelectionRule>,
+        overrides: &str,
+    ) -> Result<Self, RuleSetError> {
+        #[derive(Deserialize)]
+        struct Overrides {
+            #[serde(default)]
+            rules: Vec<SelectionRuleWire>,
+        }
+        let overrides: Overrides = toml::from_str(overrides)
+            .map_err(|error| RuleSetError::InvalidOverrides(error.to_string()))?;
+        for wire in overrides.rules {
+            if wire
+                .precedence
+                .is_some_and(|declared| declared != Precedence::DeploymentOverride)
+            {
+                return Err(RuleSetError::NonDeploymentOverride { rule_id: wire.id });
+            }
+            let mut rule =
+                SelectionRule::new(wire.id, wire.capability, wire.matchers, wire.selection);
+            rule.deployment_override = true;
+            built_in.push(rule);
+        }
+        Self::new(built_in)
     }
 
     /// Returns rules in canonical identifier order.
@@ -365,12 +441,17 @@ impl RuleSet {
         self.hash
     }
 
-    /// Resolves every capability independently, using standard when no rule matches.
+    /// Resolves every capability independently, taking `defaults` (normally
+    /// the driver table's default map) for capabilities no rule matches.
+    ///
+    /// The highest matching precedence wins; within it, the rule with the most
+    /// matchers wins. Two rules tied on both are ambiguous.
     pub fn resolve(
         &self,
         identity: &PlatformIdentity,
+        defaults: &DriverMap,
     ) -> Result<ResolvedSelection, SelectionError> {
-        let mut drivers = standard_driver_map();
+        let mut drivers = defaults.clone();
         let mut matched_rules = Vec::new();
         for capability in Capability::ALL {
             let matching = self
@@ -384,12 +465,23 @@ impl RuleSet {
                             .all(|matcher| matcher.matches(identity))
                 })
                 .collect::<Vec<_>>();
-            let Some(precedence) = matching.iter().map(|rule| rule.precedence).max() else {
+            let Some(precedence) = matching.iter().map(|rule| rule.precedence()).max() else {
                 continue;
             };
-            let winners = matching
+            // Within one precedence level a rule that had to satisfy more
+            // identity evidence is the narrower match.
+            let candidates = matching
                 .into_iter()
-                .filter(|rule| rule.precedence == precedence)
+                .filter(|rule| rule.precedence() == precedence)
+                .collect::<Vec<_>>();
+            let specificity = candidates
+                .iter()
+                .map(|rule| rule.matchers.len())
+                .max()
+                .unwrap_or_default();
+            let winners = candidates
+                .into_iter()
+                .filter(|rule| rule.matchers.len() == specificity)
                 .collect::<Vec<_>>();
             if winners.len() != 1 {
                 return Err(SelectionError::Ambiguous {
@@ -460,12 +552,31 @@ pub enum RuleSetError {
         /// Invalid field.
         field: IdentityField,
     },
+    /// The override document is not valid TOML in the rule wire format.
+    #[error("deployment override rules are invalid: {0}")]
+    InvalidOverrides(String),
+    /// An override rule must use deployment-override precedence.
+    #[error("deployment override rule {rule_id} does not declare deployment_override precedence")]
+    NonDeploymentOverride {
+        /// The offending rule.
+        rule_id: String,
+    },
+    /// A rule's declared precedence does not match its identity fields.
+    #[error("rule {rule_id} declares {declared:?} precedence but its match requires {required:?}")]
+    InvalidPrecedence {
+        /// Rule with the mismatched precedence.
+        rule_id: String,
+        /// Precedence the rule declares.
+        declared: Precedence,
+        /// Precedence implied by the rule's most specific identity field.
+        required: Precedence,
+    },
 }
 
 /// Failure to choose one rule for an identity.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SelectionError {
-    /// Multiple matching rules shared the highest precedence.
+    /// Multiple matching rules shared the highest precedence and matcher count.
     #[error("ambiguous {capability} driver selection at precedence {precedence:?}: {rule_ids:?}")]
     Ambiguous {
         /// Capability with multiple matching rules.
@@ -480,52 +591,31 @@ pub enum SelectionError {
 /// The rule selected for one capability.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MatchedRule {
-    capability: Capability,
-    rule_id: String,
-}
-
-impl MatchedRule {
     /// Capability selected by this rule.
-    pub const fn capability(&self) -> Capability {
-        self.capability
-    }
-
+    pub capability: Capability,
     /// Stable identifier of the selected rule.
-    pub fn rule_id(&self) -> &str {
-        &self.rule_id
-    }
+    pub rule_id: String,
 }
 
 /// The complete driver map, per-capability rule provenance, and source hash.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedSelection {
-    drivers: DriverMap,
-    matched_rules: Vec<MatchedRule>,
-    rule_set_hash: RuleSetHash,
+    /// The selected complete driver map.
+    pub drivers: DriverMap,
+    /// Selected-rule provenance in stable capability order; capabilities using
+    /// their portable default are absent.
+    pub matched_rules: Vec<MatchedRule>,
+    /// Hash of the rule set used for this decision.
+    pub rule_set_hash: RuleSetHash,
 }
 
 impl ResolvedSelection {
-    /// Returns the selected rule for `capability`, or `None` for standard fallback.
+    /// Returns the selected rule for `capability`, or `None` for the portable default.
     pub fn rule_for(&self, capability: Capability) -> Option<&str> {
         self.matched_rules
             .iter()
             .find(|rule| rule.capability == capability)
             .map(|rule| rule.rule_id.as_str())
-    }
-
-    /// Returns the selected complete driver map.
-    pub const fn drivers(&self) -> &DriverMap {
-        &self.drivers
-    }
-
-    /// Returns the hash of the rule set used for this decision.
-    pub const fn rule_set_hash(&self) -> RuleSetHash {
-        self.rule_set_hash
-    }
-
-    /// Returns selected-rule provenance in stable capability order.
-    pub fn matched_rules(&self) -> &[MatchedRule] {
-        &self.matched_rules
     }
 }
 
@@ -613,59 +703,41 @@ fn optional(value: Option<&str>) -> Vec<&str> {
     value.into_iter().collect()
 }
 
-fn standard_driver_map() -> DriverMap {
-    DriverMap {
-        power: CapabilitySelection::Standard,
-        bmc_control: CapabilitySelection::Standard,
-        bios: CapabilitySelection::Standard,
-        boot_order: CapabilitySelection::Standard,
-        secure_boot: CapabilitySelection::Standard,
-        lockdown: CapabilitySelection::Standard,
-        accounts: CapabilitySelection::Standard,
-        firmware: CapabilitySelection::Standard,
-        storage: CapabilitySelection::Standard,
-        dpu: CapabilitySelection::Standard,
-        attestation: CapabilitySelection::Standard,
-        console: CapabilitySelection::Standard,
+fn derived_precedence(matchers: &[IdentityMatcher]) -> Precedence {
+    matchers
+        .iter()
+        .filter_map(|matcher| field_precedence(matcher.field))
+        .max()
+        .unwrap_or(Precedence::StandardDefault)
+}
+
+const fn field_precedence(field: IdentityField) -> Option<Precedence> {
+    match field {
+        IdentityField::ServiceRootVendor
+        | IdentityField::ServiceRootOemKey
+        | IdentityField::SystemManufacturer
+        | IdentityField::ChassisManufacturer => Some(Precedence::VendorManufacturer),
+        IdentityField::ServiceRootProduct | IdentityField::ManagerModel => {
+            Some(Precedence::BmcProductManager)
+        }
+        IdentityField::SystemId
+        | IdentityField::SystemModel
+        | IdentityField::SystemSku
+        | IdentityField::SystemPartNumber
+        | IdentityField::ChassisId
+        | IdentityField::ChassisModel
+        | IdentityField::ChassisPartNumber => Some(Precedence::ExactSystemIdentity),
+        IdentityField::ManagerFirmware | IdentityField::SystemBiosVersion => None,
     }
 }
 
+/// Hashes the canonical (sorted, validated) rules through their wire form, so
+/// the digest changes exactly when the serialized rule set does.
 fn hash_rules(rules: &[SelectionRule]) -> RuleSetHash {
     let mut hasher = Hasher::new();
-    hasher.update(b"bmc-runtime-selection-rules-v3");
-    hash_length(&mut hasher, rules.len());
-    for rule in rules {
-        hash_string(&mut hasher, &rule.id);
-        hasher.update(&[rule.precedence as u8]);
-        hasher.update(&[rule.capability as u8]);
-        hash_length(&mut hasher, rule.matchers.len());
-        for matcher in &rule.matchers {
-            hasher.update(&(matcher.field as u8).to_le_bytes());
-            matcher.pattern.hash_into(&mut hasher);
-        }
-        match &rule.selection {
-            CapabilitySelection::Standard => {
-                hasher.update(&[0]);
-            }
-            CapabilitySelection::Unsupported => {
-                hasher.update(&[1]);
-            }
-            CapabilitySelection::Driver(driver) => {
-                hasher.update(&[2]);
-                hash_string(&mut hasher, driver.as_str());
-            }
-        }
-    }
+    hasher.update(b"bmc-runtime-selection-rules-v4");
+    hasher.update(&serde_json::to_vec(rules).expect("validated rules serialize"));
     RuleSetHash(*hasher.finalize().as_bytes())
-}
-
-fn hash_string(hasher: &mut Hasher, value: &str) {
-    hash_length(hasher, value.len());
-    hasher.update(value.as_bytes());
-}
-
-fn hash_length(hasher: &mut Hasher, length: usize) {
-    hasher.update(&(length as u64).to_le_bytes());
 }
 
 #[cfg(test)]

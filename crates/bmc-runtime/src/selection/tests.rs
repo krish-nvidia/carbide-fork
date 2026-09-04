@@ -15,10 +15,8 @@
  * limitations under the License.
  */
 
-use std::collections::HashSet;
-
 use bmc_platform::{
-    Capability, ChassisIdentity, ManagerIdentity, ServiceRootIdentity, SystemIdentity,
+    Capability, ChassisIdentity, DriverMap, ManagerIdentity, ServiceRootIdentity, SystemIdentity,
 };
 use carbide_test_support::value_scenarios;
 
@@ -32,6 +30,7 @@ fn identity() -> PlatformIdentity {
             oem_keys: vec!["Nvidia".to_string()],
         },
         manager: Some(ManagerIdentity {
+            id: "BMC_0".to_string(),
             model: Some("OpenBMC".to_string()),
             firmware: Some("1.2.3".to_string()),
         }),
@@ -52,14 +51,26 @@ fn identity() -> PlatformIdentity {
     }
 }
 
-fn rule(id: &str, precedence: Precedence, matcher: IdentityMatcher) -> SelectionRule {
-    SelectionRule {
-        id: id.to_string(),
-        precedence,
-        capability: Capability::Power,
-        matchers: vec![matcher],
-        selection: CapabilitySelection::Standard,
-    }
+fn rule(id: &str, matcher: IdentityMatcher) -> SelectionRule {
+    SelectionRule::new(
+        id,
+        Capability::Power,
+        vec![matcher],
+        CapabilitySelection::Standard,
+    )
+}
+
+/// The defaults the compiled driver table would supply.
+fn defaults() -> DriverMap {
+    DriverMap::filled(CapabilitySelection::Standard)
+        .with(Capability::Lockdown, CapabilitySelection::Unsupported)
+        .with(Capability::Storage, CapabilitySelection::Unsupported)
+        .with(Capability::Dpu, CapabilitySelection::Unsupported)
+        .with(Capability::Console, CapabilitySelection::Unsupported)
+}
+
+fn catch_all(id: &str, selection: CapabilitySelection) -> SelectionRule {
+    SelectionRule::new(id, Capability::Power, Vec::new(), selection)
 }
 
 #[test]
@@ -70,6 +81,7 @@ fn match_patterns_cover_every_comparison_mode() {
             MatchPattern::ExactAsciiCaseInsensitive("nvidia gb300".to_string()) => true,
             MatchPattern::Prefix("NVIDIA".to_string()) => true,
             MatchPattern::Contains("GB300".to_string()) => true,
+            MatchPattern::ContainsAsciiCaseInsensitive("nvidia gb".to_string()) => true,
         }
         "non-matching patterns" {
             MatchPattern::Exact("NVIDIA".to_string()) => false,
@@ -126,15 +138,9 @@ fn one_of_matches_any_exact_candidate_and_canonicalizes_order() {
     );
     assert!(matcher.matches(&identity()));
 
-    let left = RuleSet::new(vec![rule(
-        "models",
-        Precedence::ExactSystemIdentity,
-        matcher,
-    )])
-    .expect("one-of values are valid");
+    let left = RuleSet::new(vec![rule("models", matcher)]).expect("one-of values are valid");
     let right = RuleSet::new(vec![rule(
         "models",
-        Precedence::ExactSystemIdentity,
         IdentityMatcher::new(
             IdentityField::SystemModel,
             MatchPattern::OneOf(vec!["GB300".to_string(), "GB200".to_string()]),
@@ -202,14 +208,7 @@ fn extended_matchers_reject_invalid_declarations() {
     ];
 
     for (matcher, expected) in cases {
-        assert_eq!(
-            RuleSet::new(vec![rule(
-                "invalid",
-                Precedence::DeploymentOverride,
-                matcher,
-            )]),
-            Err(expected)
-        );
+        assert_eq!(RuleSet::new(vec![rule("invalid", matcher,)]), Err(expected));
     }
 }
 
@@ -230,12 +229,14 @@ fn higher_precedence_rule_wins_independent_of_input_order() {
         MatchPattern::Exact("NVIDIA".to_string()),
     );
     let rules = RuleSet::new(vec![
-        rule("specific", Precedence::VendorManufacturer, vendor.clone()),
-        rule("fallback", Precedence::StandardDefault, vendor),
+        rule("specific", vendor),
+        catch_all("fallback", CapabilitySelection::Standard),
     ])
     .expect("rules are valid");
 
-    let resolved = rules.resolve(&identity()).expect("one rule wins");
+    let resolved = rules
+        .resolve(&identity(), &defaults())
+        .expect("one rule wins");
     assert_eq!(resolved.rule_for(Capability::Power), Some("specific"));
 }
 
@@ -245,19 +246,17 @@ fn capabilities_resolve_independently() {
         IdentityField::ServiceRootVendor,
         MatchPattern::Exact("NVIDIA".to_string()),
     );
-    let mut power = rule(
-        "nvidia-power",
-        Precedence::VendorManufacturer,
-        matcher.clone(),
-    );
+    let mut power = rule("nvidia-power", matcher.clone());
     power.selection =
         CapabilitySelection::Driver("nvidia-power".parse().expect("fixture driver id is valid"));
-    let mut accounts = rule("nvidia-accounts", Precedence::VendorManufacturer, matcher);
+    let mut accounts = rule("nvidia-accounts", matcher);
     accounts.capability = Capability::Accounts;
     accounts.selection = CapabilitySelection::Unsupported;
     let rules = RuleSet::new(vec![accounts, power]).expect("rules are valid");
 
-    let resolved = rules.resolve(&identity()).expect("capabilities resolve");
+    let resolved = rules
+        .resolve(&identity(), &defaults())
+        .expect("capabilities resolve");
 
     assert_eq!(resolved.rule_for(Capability::Power), Some("nvidia-power"));
     assert_eq!(
@@ -265,14 +264,89 @@ fn capabilities_resolve_independently() {
         Some("nvidia-accounts")
     );
     assert!(matches!(
-        resolved.drivers().power,
+        resolved.drivers.get(Capability::Power),
         CapabilitySelection::Driver(_)
     ));
     assert_eq!(
-        resolved.drivers().accounts,
-        CapabilitySelection::Unsupported
+        resolved.drivers.get(Capability::Accounts),
+        &CapabilitySelection::Unsupported
     );
-    assert_eq!(resolved.drivers().bios, CapabilitySelection::Standard);
+    assert_eq!(
+        resolved.drivers.get(Capability::Bios),
+        &CapabilitySelection::Standard
+    );
+}
+
+#[test]
+fn more_matchers_win_within_one_precedence() {
+    let vendor = IdentityMatcher::new(
+        IdentityField::ServiceRootVendor,
+        MatchPattern::Exact("NVIDIA".to_string()),
+    );
+    let mut specific = rule("specific", vendor.clone());
+    specific.matchers.push(IdentityMatcher::new(
+        IdentityField::ServiceRootOemKey,
+        MatchPattern::Exact("Nvidia".to_string()),
+    ));
+    specific.selection = CapabilitySelection::Unsupported;
+    let rules = RuleSet::new(vec![specific, rule("broad", vendor)]).expect("rules are valid");
+
+    let resolved = rules
+        .resolve(&identity(), &defaults())
+        .expect("specific rule wins");
+    assert_eq!(resolved.rule_for(Capability::Power), Some("specific"));
+    assert_eq!(
+        resolved.drivers.get(Capability::Power),
+        &CapabilitySelection::Unsupported
+    );
+}
+
+#[test]
+fn toml_overrides_outrank_built_ins_and_must_declare_override_precedence() {
+    let built_in = vec![rule(
+        "vendor",
+        IdentityMatcher::new(
+            IdentityField::ServiceRootVendor,
+            MatchPattern::Exact("NVIDIA".to_string()),
+        ),
+    )];
+    let overrides = r#"
+        [[rules]]
+        id = "site-power"
+        precedence = "deployment_override"
+        capability = "power"
+        selection = "unsupported"
+        matchers = [{ field = "system_model", pattern = { kind = "contains", value = "GB300" } }]
+    "#;
+
+    let resolved = RuleSet::with_overrides(built_in.clone(), overrides)
+        .expect("override document is valid")
+        .resolve(&identity(), &defaults())
+        .expect("override resolves");
+    assert_eq!(resolved.rule_for(Capability::Power), Some("site-power"));
+    assert_eq!(
+        resolved.drivers.get(Capability::Power),
+        &CapabilitySelection::Unsupported
+    );
+
+    let undeclared = overrides.replace("precedence = \"deployment_override\"", "");
+    let resolved = RuleSet::with_overrides(built_in.clone(), &undeclared)
+        .expect("overrides need not declare precedence")
+        .resolve(&identity(), &defaults())
+        .expect("override resolves");
+    assert_eq!(resolved.rule_for(Capability::Power), Some("site-power"));
+
+    let not_override = overrides.replace("deployment_override", "exact_system_identity");
+    assert_eq!(
+        RuleSet::with_overrides(built_in.clone(), &not_override),
+        Err(RuleSetError::NonDeploymentOverride {
+            rule_id: "site-power".to_string(),
+        })
+    );
+    assert!(matches!(
+        RuleSet::with_overrides(built_in, "rules = 1"),
+        Err(RuleSetError::InvalidOverrides(_))
+    ));
 }
 
 #[test]
@@ -282,13 +356,13 @@ fn tied_highest_precedence_is_ambiguous_in_canonical_order() {
         MatchPattern::Exact("GB300".to_string()),
     );
     let rules = RuleSet::new(vec![
-        rule("z-rule", Precedence::ExactSystemIdentity, matcher.clone()),
-        rule("a-rule", Precedence::ExactSystemIdentity, matcher),
+        rule("z-rule", matcher.clone()),
+        rule("a-rule", matcher),
     ])
     .expect("rules are valid");
 
     assert_eq!(
-        rules.resolve(&identity()),
+        rules.resolve(&identity(), &defaults()),
         Err(SelectionError::Ambiguous {
             capability: Capability::Power,
             precedence: Precedence::ExactSystemIdentity,
@@ -307,14 +381,14 @@ fn rule_hash_is_order_independent_and_semantically_sensitive() {
         IdentityField::SystemModel,
         MatchPattern::Exact("GB300".to_string()),
     );
-    let first = rule("nvidia", Precedence::VendorManufacturer, vendor);
-    let second = rule("gb300", Precedence::ExactSystemIdentity, model);
+    let first = rule("nvidia", vendor);
+    let second = rule("gb300", model);
     let forward = RuleSet::new(vec![first.clone(), second.clone()]).expect("rules are valid");
     let reverse = RuleSet::new(vec![second.clone(), first.clone()]).expect("rules are valid");
     assert_eq!(forward.hash(), reverse.hash());
 
     let mut changed = second;
-    changed.precedence = Precedence::DeploymentOverride;
+    changed.selection = CapabilitySelection::Unsupported;
     let changed =
         RuleSet::new(vec![first, changed]).expect("changed rules remain structurally valid");
     assert_ne!(forward.hash(), changed.hash());
@@ -327,21 +401,17 @@ fn rule_validation_rejects_ambiguous_configuration_artifacts() {
         MatchPattern::Exact("GB300".to_string()),
     );
     let cases = [
-        (
-            vec![rule("", Precedence::StandardDefault, matcher.clone())],
-            RuleSetError::EmptyRuleId,
-        ),
+        (vec![rule("", matcher.clone())], RuleSetError::EmptyRuleId),
         (
             vec![
-                rule("duplicate", Precedence::StandardDefault, matcher.clone()),
-                rule("duplicate", Precedence::DeploymentOverride, matcher),
+                rule("duplicate", matcher.clone()),
+                rule("duplicate", matcher),
             ],
             RuleSetError::DuplicateRuleId,
         ),
         (
             vec![rule(
                 "empty",
-                Precedence::StandardDefault,
                 IdentityMatcher::new(
                     IdentityField::SystemModel,
                     MatchPattern::Exact(String::new()),
@@ -362,7 +432,6 @@ fn rule_validation_rejects_ambiguous_configuration_artifacts() {
 fn rule_set_hash_serializes_as_hex_and_round_trips() {
     let rules = RuleSet::new(vec![rule(
         "fallback",
-        Precedence::StandardDefault,
         IdentityMatcher::new(
             IdentityField::ServiceRootVendor,
             MatchPattern::Exact("NVIDIA".to_string()),
@@ -379,10 +448,9 @@ fn rule_set_hash_serializes_as_hex_and_round_trips() {
 }
 
 #[test]
-fn no_matching_rule_uses_standard_for_every_capability() {
+fn no_matching_rule_uses_each_capabilitys_portable_default() {
     let rules = RuleSet::new(vec![rule(
         "dell",
-        Precedence::VendorManufacturer,
         IdentityMatcher::new(
             IdentityField::ServiceRootVendor,
             MatchPattern::Exact("Dell".to_string()),
@@ -390,35 +458,43 @@ fn no_matching_rule_uses_standard_for_every_capability() {
     )])
     .expect("rules are valid");
     let resolved = rules
-        .resolve(&identity())
+        .resolve(&identity(), &defaults())
         .expect("standard fallback resolves");
-    assert!(resolved.matched_rules().is_empty());
-    assert!(
-        resolved
-            .drivers()
-            .iter()
-            .all(|(_, selection)| selection == &CapabilitySelection::Standard)
-    );
+    assert!(resolved.matched_rules.is_empty());
+    for (capability, selection) in resolved.drivers.iter() {
+        let expected = match capability {
+            Capability::Lockdown | Capability::Storage | Capability::Dpu | Capability::Console => {
+                &CapabilitySelection::Unsupported
+            }
+            _ => &CapabilitySelection::Standard,
+        };
+        assert_eq!(selection, expected, "unexpected default for {capability}");
+    }
 }
 
 #[test]
 fn explicit_catch_all_rule_overrides_one_capability() {
-    let rules = RuleSet::new(vec![SelectionRule {
-        id: "standard-default".to_string(),
-        precedence: Precedence::StandardDefault,
-        capability: Capability::Power,
-        matchers: Vec::new(),
-        selection: CapabilitySelection::Unsupported,
-    }])
+    let rules = RuleSet::new(vec![catch_all(
+        "standard-default",
+        CapabilitySelection::Unsupported,
+    )])
     .expect("catch-all rule is valid");
 
-    let resolved = rules.resolve(&identity()).expect("catch-all rule matches");
+    let resolved = rules
+        .resolve(&identity(), &defaults())
+        .expect("catch-all rule matches");
     assert_eq!(
         resolved.rule_for(Capability::Power),
         Some("standard-default")
     );
-    assert_eq!(resolved.drivers().power, CapabilitySelection::Unsupported);
-    assert_eq!(resolved.drivers().bios, CapabilitySelection::Standard);
+    assert_eq!(
+        resolved.drivers.get(Capability::Power),
+        &CapabilitySelection::Unsupported
+    );
+    assert_eq!(
+        resolved.drivers.get(Capability::Bios),
+        &CapabilitySelection::Standard
+    );
 }
 
 #[test]
@@ -427,11 +503,7 @@ fn duplicate_matcher_is_rejected_after_canonicalization() {
         IdentityField::SystemModel,
         MatchPattern::Exact("GB300".to_string()),
     );
-    let mut duplicate = rule(
-        "duplicate-matcher",
-        Precedence::StandardDefault,
-        matcher.clone(),
-    );
+    let mut duplicate = rule("duplicate-matcher", matcher.clone());
     duplicate.matchers.push(matcher);
     assert_eq!(
         RuleSet::new(vec![duplicate]),
@@ -442,10 +514,21 @@ fn duplicate_matcher_is_rejected_after_canonicalization() {
 }
 
 #[test]
-fn helper_driver_map_fixture_is_complete() {
-    let ids = standard_driver_map()
-        .iter()
-        .map(|(capability, _)| capability)
-        .collect::<HashSet<_>>();
-    assert_eq!(ids.len(), Capability::ALL.len());
+fn declared_precedence_on_the_wire_must_match_the_derived_rank() {
+    let wire = serde_json::json!({
+        "id": "wrong-level",
+        "precedence": "vendor_manufacturer",
+        "capability": "power",
+        "matchers": [{"field": "system_model", "pattern": {"kind": "exact", "value": "GB300"}}],
+        "selection": "standard"
+    });
+    assert!(serde_json::from_value::<SelectionRule>(wire.clone()).is_err());
+    let mut agreeing = wire;
+    agreeing["precedence"] = serde_json::json!("exact_system_identity");
+    let rule = serde_json::from_value::<SelectionRule>(agreeing).expect("agreeing rule parses");
+    assert_eq!(rule.precedence(), Precedence::ExactSystemIdentity);
+    assert_eq!(
+        serde_json::to_value(&rule).expect("rule serializes")["precedence"],
+        serde_json::json!("exact_system_identity")
+    );
 }

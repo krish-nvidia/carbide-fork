@@ -15,8 +15,6 @@
  * limitations under the License.
  */
 
-use std::time::SystemTime;
-
 use async_trait::async_trait;
 use nv_redfish::core::Bmc;
 use nv_redfish::resource::{PowerState, ResetType};
@@ -29,16 +27,6 @@ pub trait Power<B: Bmc>: Send + Sync {
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError>;
 
     async fn ac_power_cycle_supported(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError>;
-
-    /// Reports whether BMC event logs contain evidence of a restart since `since`.
-    ///
-    /// This is a decision-driving read used to verify force-restart requests;
-    /// general log retrieval remains outside the driver platform.
-    async fn restart_observed_since(
-        &self,
-        cx: &OpCx<'_, B>,
-        since: SystemTime,
-    ) -> Result<bool, PlatformError>;
 
     async fn set(
         &self,

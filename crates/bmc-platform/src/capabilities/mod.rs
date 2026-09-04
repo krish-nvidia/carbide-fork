@@ -15,18 +15,18 @@
  * limitations under the License.
  */
 
-pub mod accounts;
-pub mod attestation;
-pub mod bios;
-pub mod bmc_control;
-pub mod boot_order;
-pub mod console;
-pub mod dpu;
-pub mod firmware;
-pub mod lockdown;
-pub mod power;
-pub mod secure_boot;
-pub mod storage;
+mod accounts;
+mod attestation;
+mod bios;
+mod bmc_control;
+mod boot_order;
+mod console;
+mod dpu;
+mod firmware;
+mod lockdown;
+mod power;
+mod secure_boot;
+mod storage;
 
 pub use accounts::Accounts;
 pub use attestation::{Attestation, AttestationEvidence, CaCertificate, ComponentIntegritySummary};
@@ -34,7 +34,8 @@ pub use bios::{Bios, BiosDiff, BiosSettings, BiosStatus};
 pub use bmc_control::BmcControl;
 pub use boot_order::{BootInterfaceSelector, BootOrder, BootOrderStatus};
 pub use console::{
-    Console, ConsoleFallback, ConsoleSpec, ConsoleSpecError, ConsoleState, ConsoleStatus, EscapeSeq,
+    Console, ConsoleFallback, ConsoleSpec, ConsoleSpecError, ConsoleState, ConsoleStatus,
+    EscapeSeq, NonEmptyBytes, NonEmptyBytesError, SshShellSpec,
 };
 pub use dpu::{Dpu, DpuStatus, HostPrivilegeLevel, NicMode, RshimState};
 pub use firmware::Firmware;

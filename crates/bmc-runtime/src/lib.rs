@@ -15,30 +15,33 @@
  * limitations under the License.
  */
 
-//! Runtime-owned BMC endpoint wiring, identity projection, and driver selection.
+//! Runtime-owned BMC endpoint wiring, identity-based driver selection, and
+//! outcome execution.
 //!
-//! This crate does not poll Redfish tasks or execute controller actions.
-//! Controllers retain responsibility for interpreting [`bmc_platform::DriverOutcome`].
+//! [`Executor`] polls BMC tasks and jobs and performs the follow-up actions a
+//! driver requests; controllers only see the actions that need them.
 
 mod connection;
 mod credentials;
 mod endpoint;
 mod error;
+mod execute;
 mod ipmi;
 mod selection;
+mod table;
 
-pub use connection::{
-    AuthRetryError, AuthenticatedBmc, ConnectionManager, PlatformOperationFuture,
-};
+pub use connection::{AuthRetryError, ConnectionManager};
 pub use credentials::{
     CredentialLease, CredentialRequest, CredentialRequestError, RuntimeAuthMode,
     RuntimeCredentialProvider,
 };
 pub use endpoint::{BmcRef, BmcRefError, ConnectedBmc};
-pub use error::{ConnectError, map_redfish_error};
+pub use error::ConnectError;
+pub use execute::{ExecuteError, Executor, Progress};
 pub use ipmi::EndpointIpmiOps;
 pub use selection::{
     FirmwareVersionRange, FirmwareVersionRangeError, IdentityField, IdentityMatcher, MatchPattern,
     MatchedRule, Precedence, ResolvedSelection, RuleSet, RuleSetError, RuleSetHash, SelectionError,
     SelectionRule,
 };
+pub use table::{AnyDriver, DriverTable, DriverTableError};

@@ -789,6 +789,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmc-drivers"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bmc-mock",
+ "bmc-platform",
+ "bmc-runtime",
+ "carbide-test-support",
+ "hex",
+ "nv-redfish",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "bmc-explorer"
 version = "0.1.0"
 dependencies = [
@@ -833,6 +850,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "axum-server",
+ "bmc-platform",
  "bmc-vendor",
  "bytes",
  "carbide-axum-utils",
@@ -888,6 +906,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "bmc-mock",
  "bmc-platform",
  "carbide-ipmi",
  "carbide-redfish",
@@ -901,6 +920,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "toml 1.1.2+spec-1.1.0",
  "version-compare 0.2.1",
 ]
 
@@ -1172,8 +1192,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
- "bmc-platform",
- "bmc-runtime",
  "bmc-vendor",
  "byteorder",
  "carbide-api-db",

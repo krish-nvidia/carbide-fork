@@ -18,12 +18,13 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::de::{MapAccess, Visitor};
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-/// A BMC operation capability with independently selectable behavior.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// A BMC capability with its own driver trait and driver-map slot.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Capability {
     Power,
     BmcControl,
@@ -40,7 +41,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    /// Every capability in stable driver-map order.
+    /// Every capability in stable wire order; also the [`DriverMap`] slot order.
     pub const ALL: [Self; 12] = [
         Self::Power,
         Self::BmcControl,
@@ -56,7 +57,8 @@ impl Capability {
         Self::Console,
     ];
 
-    const fn as_str(self) -> &'static str {
+    /// The single source of each capability's wire name.
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Power => "power",
             Self::BmcControl => "bmc_control",
@@ -72,6 +74,10 @@ impl Capability {
             Self::Console => "console",
         }
     }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
 }
 
 impl fmt::Display for Capability {
@@ -80,11 +86,42 @@ impl fmt::Display for Capability {
     }
 }
 
-/// A validated, stable identifier for a compiled-in driver.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+impl FromStr for Capability {
+    type Err = UnknownCapability;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|capability| capability.as_str() == value)
+            .ok_or_else(|| UnknownCapability(value.to_owned()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("unknown capability {0:?}")]
+pub struct UnknownCapability(String);
+
+impl Serialize for Capability {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Capability {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Identifier of a named (non-standard) capability driver.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct DriverId(String);
 
 impl DriverId {
+    /// Returns the id as written in rules and driver maps.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -127,25 +164,6 @@ impl TryFrom<String> for DriverId {
     }
 }
 
-impl Serialize for DriverId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for DriverId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        value.parse().map_err(serde::de::Error::custom)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum DriverIdError {
     #[error("driver id is empty")]
@@ -158,7 +176,7 @@ pub enum DriverIdError {
     InvalidSeparator,
 }
 
-/// Selection for one capability in a complete driver map.
+/// Which driver serves one capability on one BMC.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CapabilitySelection {
     Standard,
@@ -167,10 +185,7 @@ pub enum CapabilitySelection {
 }
 
 impl Serialize for CapabilitySelection {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Standard => serializer.serialize_str("standard"),
             Self::Unsupported => serializer.serialize_str("unsupported"),
@@ -180,10 +195,7 @@ impl Serialize for CapabilitySelection {
 }
 
 impl<'de> Deserialize<'de> for CapabilitySelection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "standard" => Ok(Self::Standard),
@@ -196,72 +208,91 @@ impl<'de> Deserialize<'de> for CapabilitySelection {
     }
 }
 
-/// Persisted selection for every BMC operation capability.
+/// The complete per-capability driver selection persisted for one BMC.
 ///
-/// Deserialization requires all fields so a newly introduced capability cannot
-/// silently acquire a fallback driver.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct DriverMap {
-    pub power: CapabilitySelection,
-    pub bmc_control: CapabilitySelection,
-    pub bios: CapabilitySelection,
-    pub boot_order: CapabilitySelection,
-    pub secure_boot: CapabilitySelection,
-    pub lockdown: CapabilitySelection,
-    pub accounts: CapabilitySelection,
-    pub firmware: CapabilitySelection,
-    pub storage: CapabilitySelection,
-    pub dpu: CapabilitySelection,
-    pub attestation: CapabilitySelection,
-    pub console: CapabilitySelection,
-}
+/// Serializes as an object with one key per capability, in
+/// [`Capability::ALL`] order; deserialization requires every key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DriverMap([CapabilitySelection; 12]);
 
 impl DriverMap {
+    /// A map that selects `selection` for every capability.
+    pub fn filled(selection: CapabilitySelection) -> Self {
+        Self(std::array::from_fn(|_| selection.clone()))
+    }
+
+    /// Returns the selection for `capability`.
     pub fn get(&self, capability: Capability) -> &CapabilitySelection {
-        match capability {
-            Capability::Power => &self.power,
-            Capability::BmcControl => &self.bmc_control,
-            Capability::Bios => &self.bios,
-            Capability::BootOrder => &self.boot_order,
-            Capability::SecureBoot => &self.secure_boot,
-            Capability::Lockdown => &self.lockdown,
-            Capability::Accounts => &self.accounts,
-            Capability::Firmware => &self.firmware,
-            Capability::Storage => &self.storage,
-            Capability::Dpu => &self.dpu,
-            Capability::Attestation => &self.attestation,
-            Capability::Console => &self.console,
-        }
+        &self.0[capability.index()]
     }
 
+    /// Replaces the selection for `capability`.
     pub fn set(&mut self, capability: Capability, selection: CapabilitySelection) {
-        let target = match capability {
-            Capability::Power => &mut self.power,
-            Capability::BmcControl => &mut self.bmc_control,
-            Capability::Bios => &mut self.bios,
-            Capability::BootOrder => &mut self.boot_order,
-            Capability::SecureBoot => &mut self.secure_boot,
-            Capability::Lockdown => &mut self.lockdown,
-            Capability::Accounts => &mut self.accounts,
-            Capability::Firmware => &mut self.firmware,
-            Capability::Storage => &mut self.storage,
-            Capability::Dpu => &mut self.dpu,
-            Capability::Attestation => &mut self.attestation,
-            Capability::Console => &mut self.console,
-        };
-        *target = selection;
+        self.0[capability.index()] = selection;
     }
 
+    /// Returns `self` with `capability` switched to `selection`.
+    pub fn with(mut self, capability: Capability, selection: CapabilitySelection) -> Self {
+        self.set(capability, selection);
+        self
+    }
+
+    /// Iterates selections in [`Capability::ALL`] order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (Capability, &CapabilitySelection)> {
-        Capability::ALL
-            .into_iter()
-            .map(|capability| (capability, self.get(capability)))
+        Capability::ALL.into_iter().zip(&self.0)
+    }
+}
+
+impl Serialize for DriverMap {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (capability, selection) in self.iter() {
+            map.serialize_entry(capability.as_str(), selection)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DriverMap {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct MapVisitor;
+
+        impl<'de> Visitor<'de> for MapVisitor {
+            type Value = DriverMap;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object with one selection per capability")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut slots: [Option<CapabilitySelection>; 12] = Default::default();
+                while let Some((capability, selection)) =
+                    access.next_entry::<Capability, CapabilitySelection>()?
+                {
+                    if slots[capability.index()].replace(selection).is_some() {
+                        return Err(serde::de::Error::duplicate_field(capability.as_str()));
+                    }
+                }
+                let mut selections = Vec::with_capacity(slots.len());
+                for (capability, slot) in Capability::ALL.into_iter().zip(slots) {
+                    selections.push(
+                        slot.ok_or_else(|| serde::de::Error::missing_field(capability.as_str()))?,
+                    );
+                }
+                selections
+                    .try_into()
+                    .map(DriverMap)
+                    .map_err(|_| serde::de::Error::custom("driver map has the wrong arity"))
+            }
+        }
+
+        deserializer.deserialize_map(MapVisitor)
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use carbide_test_support::Outcome::{Fails, Yields};
     use carbide_test_support::{scenarios, value_scenarios};
     use serde_json::json;
@@ -269,22 +300,15 @@ mod tests {
     use super::*;
 
     fn complete_map() -> DriverMap {
-        DriverMap {
-            power: CapabilitySelection::Standard,
-            bmc_control: CapabilitySelection::Standard,
-            bios: CapabilitySelection::Standard,
-            boot_order: CapabilitySelection::Standard,
-            secure_boot: CapabilitySelection::Standard,
-            lockdown: CapabilitySelection::Standard,
-            accounts: CapabilitySelection::Standard,
-            firmware: CapabilitySelection::Standard,
-            storage: CapabilitySelection::Unsupported,
-            dpu: CapabilitySelection::Unsupported,
-            attestation: CapabilitySelection::Standard,
-            console: CapabilitySelection::Driver(
-                "xcc-console".parse().expect("fixture driver id is valid"),
-            ),
-        }
+        DriverMap::filled(CapabilitySelection::Standard)
+            .with(Capability::Storage, CapabilitySelection::Unsupported)
+            .with(Capability::Dpu, CapabilitySelection::Unsupported)
+            .with(
+                Capability::Console,
+                CapabilitySelection::Driver(
+                    "xcc-console".parse().expect("fixture driver id is valid"),
+                ),
+            )
     }
 
     #[test]

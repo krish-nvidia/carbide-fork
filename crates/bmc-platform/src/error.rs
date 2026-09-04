@@ -15,8 +15,11 @@
  * limitations under the License.
  */
 
+use nv_redfish::{Bmc, Error as RedfishError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::ClassifyBmcError;
 
 /// A typed authentication or authorization failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq, Serialize, Deserialize)]
@@ -46,8 +49,6 @@ pub enum PlatformError {
     UserNotFound { identifier: String },
     #[error("BMC has no free user slots")]
     TooManyUsers,
-    #[error("BMC vendor is missing")]
-    MissingVendor,
     #[error("boot option not found: {description}")]
     MissingBootOption { description: String },
     #[error("DPU is not present")]
@@ -66,6 +67,33 @@ pub enum PlatformError {
     InvalidResponse { message: String },
 }
 
+impl PlatformError {
+    /// Maps an `nv-redfish` wrapper failure into the platform vocabulary.
+    pub fn from_redfish<B>(error: RedfishError<B>) -> Self
+    where
+        B: Bmc,
+        B::Error: ClassifyBmcError,
+    {
+        Self::from_redfish_with(error, ClassifyBmcError::classify)
+    }
+
+    /// [`Self::from_redfish`] with an explicit transport classifier, for
+    /// contexts that captured the classifier instead of carrying the bound.
+    pub fn from_redfish_with<B: Bmc>(
+        error: RedfishError<B>,
+        classify: fn(B::Error) -> Self,
+    ) -> Self {
+        match error {
+            RedfishError::Bmc(error) => classify(error),
+            RedfishError::AccountSlotNotAvailable => Self::TooManyUsers,
+            RedfishError::ActionNotAvailable => Self::Unsupported,
+            other => Self::InvalidResponse {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,7 +108,6 @@ mod tests {
                 identifier: "operator".to_string(),
             },
             PlatformError::TooManyUsers,
-            PlatformError::MissingVendor,
             PlatformError::MissingBootOption {
                 description: "PXE IPv4".to_string(),
             },

@@ -26,7 +26,15 @@ repository.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 mac_address = { features = ["serde"], workspace = true }
-nv-redfish = { features = ["accounts", "boot-options", "computer-systems", "secure-boot", "update-service"], workspace = true }
+nv-redfish = { features = [
+    "accounts",
+    "bmc-http",
+    "boot-options",
+    "computer-systems",
+    "managers",
+    "secure-boot",
+    "update-service",
+], workspace = true }
 serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

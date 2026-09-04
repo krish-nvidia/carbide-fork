@@ -709,6 +709,7 @@ async fn get_system(State(state): State<BmcState>, Path(system_id): Path<String>
         .maybe_with(SystemBuilder::processors, &processors)
         .maybe_with(SystemBuilder::memory, &memory)
         .maybe_with(SystemBuilder::secure_boot, &secure_boot)
+        .reset_action(&system_id)
         .pcie_devices(&pcie_devices)
         .build()
         .into_ok_response()
@@ -1313,6 +1314,16 @@ impl SystemBuilder {
 
     fn secure_boot(self, secure_boot: &redfish::Resource<'_>) -> Self {
         self.apply_patch(secure_boot.nav_property("SecureBoot"))
+    }
+
+    fn reset_action(self, system_id: &str) -> Self {
+        self.apply_patch(json!({
+            "Actions": {
+                "#ComputerSystem.Reset": {
+                    "target": reset_target(system_id)
+                }
+            }
+        }))
     }
 
     fn pcie_devices(self, devices: &[redfish::Resource<'_>]) -> Self {

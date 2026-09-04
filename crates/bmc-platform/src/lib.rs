@@ -20,7 +20,7 @@
 //! This crate intentionally contains no transport implementation, credentials,
 //! endpoint origins, or API-model types.
 
-pub mod capabilities;
+mod capabilities;
 mod error;
 mod identity;
 mod operation;
@@ -32,8 +32,8 @@ pub use capabilities::{
     BmcControl, BootInterfaceSelector, BootOrder, BootOrderStatus, CaCertificate,
     ComponentIntegritySummary, Console, ConsoleFallback, ConsoleSpec, ConsoleSpecError,
     ConsoleState, ConsoleStatus, Dpu, DpuStatus, EscapeSeq, Firmware, HostPrivilegeLevel, Lockdown,
-    LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus, NicMode, Power, RshimState,
-    SecureBoot, SecureBootStatus, Storage,
+    LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus, NicMode, NonEmptyBytes,
+    NonEmptyBytesError, Power, RshimState, SecureBoot, SecureBootStatus, SshShellSpec, Storage,
 };
 pub use error::{AuthError, PlatformError};
 pub use identity::{
@@ -43,5 +43,7 @@ pub use operation::{
     ControllerAction, DriverOutcome, ManualInterventionCode, ManualInterventionCodeError,
     OperationReference, VendorJobId, VendorJobIdError,
 };
-pub use selection::{Capability, CapabilitySelection, DriverId, DriverIdError, DriverMap};
-pub use transport::{IpmiOps, OpCx};
+pub use selection::{
+    Capability, CapabilitySelection, DriverId, DriverIdError, DriverMap, UnknownCapability,
+};
+pub use transport::{ClassifyBmcError, EtagMode, Fetched, IpmiOps, OpCx};

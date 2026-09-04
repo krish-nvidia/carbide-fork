@@ -19,12 +19,15 @@ use async_trait::async_trait;
 
 use crate::PlatformError;
 
-/// Restricted IPMI operations available to capability drivers.
+/// The two out-of-band operations NICo performs over IPMI.
+///
+/// Redfish is always tried first; IPMI exists for BMCs whose Redfish reset is
+/// unavailable and for hosts whose Redfish restart cuts power to their DPUs.
 #[async_trait]
 pub trait IpmiOps: Send + Sync {
+    /// `ipmitool mc reset cold`.
     async fn bmc_cold_reset(&self) -> Result<(), PlatformError>;
 
+    /// `ipmitool chassis power reset`.
     async fn chassis_power_reset(&self) -> Result<(), PlatformError>;
-
-    async fn dpu_legacy_power_reset(&self) -> Result<(), PlatformError>;
 }

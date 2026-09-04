@@ -22,7 +22,6 @@ use carbide_uuid::machine::MachineId;
 use mac_address::MacAddress;
 
 mod bmc_session_manager;
-mod runtime_provider;
 
 pub(crate) use bmc_session_manager::{
     BmcAuthMaterial, BmcSessionError, BmcSessionManager, BmcSessionStore, PgBmcSessionStore,
