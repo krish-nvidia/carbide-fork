@@ -189,9 +189,9 @@ where
         .ok_or(PlatformError::Unsupported)?
         .change_password(
             cx.bmc(),
-            Some(password_name.to_string()),
+            password_name.to_string(),
             Some(current_password.to_string()),
-            Some(new_password.to_string()),
+            new_password.to_string(),
         )
         .await
         .map(DriverOutcome::from)

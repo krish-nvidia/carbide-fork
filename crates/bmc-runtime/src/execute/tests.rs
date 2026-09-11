@@ -21,14 +21,16 @@ use async_trait::async_trait;
 use bmc_mock::test_support::{TestBmc, dell_poweredge_r750_bmc};
 use bmc_platform::{
     CapabilitySelection, ControllerAction, DriverMap, DriverOutcome, EtagMode,
-    ManualInterventionCode, OpCx, PlatformError, PlatformIdentity, Power, SystemIdentity,
+    ManualInterventionCode, OpCx, OperationReference, PlatformError, PlatformIdentity, Power,
+    SystemIdentity,
 };
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use mac_address::MacAddress;
+use nv_redfish::core::ODataId;
 use nv_redfish::resource::{PowerState, ResetType};
 
 use super::*;
-use crate::{AnyDriver, BmcRef};
+use crate::{AnyDriver, BmcRef, ResolvedSelection, RuleSet};
 
 /// A power driver that replays scripted outcomes and records what it was asked.
 struct ScriptedPower {
@@ -101,8 +103,14 @@ async fn harness(
             ..PlatformIdentity::default()
         },
         EtagMode::default(),
-        DriverMap::filled(CapabilitySelection::Unsupported)
-            .with(Capability::Power, CapabilitySelection::Standard),
+        ResolvedSelection {
+            drivers: DriverMap::filled(CapabilitySelection::Unsupported)
+                .with(Capability::Power, CapabilitySelection::Standard),
+            matched_rules: Vec::new(),
+            rule_set_hash: RuleSet::new(Vec::new())
+                .expect("empty rules are valid")
+                .hash(),
+        },
     )
     .expect("endpoint");
     let connected = ConnectedBmc::new(endpoint, bmc.bmc.clone(), bmc.service_root, None);
@@ -172,6 +180,26 @@ async fn a_prerequisite_cycle_exhausts_the_action_budget() {
         "{error}"
     );
     assert_eq!(driver.calls.lock().expect("calls").len(), 3);
+}
+
+#[tokio::test]
+async fn every_accepted_reference_is_polled_before_follow_ups() {
+    let (connected, table, driver) = harness(vec![]).await;
+    let executor = Executor::new(&connected, &table, Duration::from_secs(5));
+    let outcome = DriverOutcome::Accepted {
+        reference: OperationReference::RedfishTask {
+            uri: ODataId::from("/redfish/v1/TaskService/Tasks/42".to_string()),
+            retry_after_seconds: None,
+        },
+        additional_references: vec![OperationReference::RedfishTask {
+            uri: ODataId::from("/redfish/v1/not-found".to_string()),
+            retry_after_seconds: None,
+        }],
+        follow_up: vec![power(ResetType::On)],
+    };
+
+    assert!(executor.drive(outcome).await.is_err());
+    assert!(driver.calls.lock().expect("calls").is_empty());
 }
 
 #[test]

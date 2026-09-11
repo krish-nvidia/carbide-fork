@@ -162,6 +162,8 @@ pub enum DriverOutcome {
     /// The BMC accepted asynchronous work; `follow_up` runs after it completes.
     Accepted {
         reference: OperationReference,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        additional_references: Vec<OperationReference>,
         follow_up: Vec<ControllerAction>,
     },
     /// The prerequisites must be performed before the operation is retried.
@@ -183,6 +185,7 @@ impl DriverOutcome {
     pub fn accepted(reference: OperationReference) -> Self {
         Self::Accepted {
             reference,
+            additional_references: Vec::new(),
             follow_up: Vec::new(),
         }
     }
@@ -199,11 +202,13 @@ impl DriverOutcome {
             }
             Self::Accepted {
                 reference,
+                additional_references,
                 mut follow_up,
             } => {
                 follow_up.extend(actions);
                 Self::Accepted {
                     reference,
+                    additional_references,
                     follow_up,
                 }
             }
@@ -223,18 +228,49 @@ impl DriverOutcome {
     ///
     /// A blocked outcome wins because its prerequisite must run before either
     /// write is retried. Otherwise accepted work outranks completion so the
-    /// caller keeps polling it, and follow-ups are concatenated in order. When
-    /// both writes were accepted the first reference is kept; the second job
-    /// keeps running on the BMC but is not polled.
+    /// caller keeps polling every accepted reference, and follow-ups are
+    /// concatenated in order.
     pub fn merge(self, other: Self) -> Self {
         match (self, other) {
             (blocked @ Self::Blocked { .. }, _) | (_, blocked @ Self::Blocked { .. }) => blocked,
             (Self::Complete { follow_up }, other) => other.prepend(follow_up),
-            (accepted @ Self::Accepted { .. }, Self::Complete { follow_up })
-            | (accepted @ Self::Accepted { .. }, Self::Accepted { follow_up, .. }) => {
+            (accepted @ Self::Accepted { .. }, Self::Complete { follow_up }) => {
                 accepted.then(follow_up)
             }
+            (
+                Self::Accepted {
+                    reference,
+                    mut additional_references,
+                    follow_up,
+                },
+                Self::Accepted {
+                    reference: other_reference,
+                    additional_references: other_additional_references,
+                    follow_up: other_follow_up,
+                },
+            ) => {
+                additional_references.push(other_reference);
+                additional_references.extend(other_additional_references);
+                Self::Accepted {
+                    reference,
+                    additional_references,
+                    follow_up: follow_up.into_iter().chain(other_follow_up).collect(),
+                }
+            }
         }
+    }
+
+    /// Returns every asynchronous work reference in issue order.
+    pub fn references(&self) -> impl Iterator<Item = &OperationReference> {
+        let (reference, additional_references) = match self {
+            Self::Accepted {
+                reference,
+                additional_references,
+                ..
+            } => (Some(reference), additional_references.as_slice()),
+            Self::Complete { .. } | Self::Blocked { .. } => (None, &[][..]),
+        };
+        reference.into_iter().chain(additional_references)
     }
 
     fn prepend(self, mut actions: Vec<ControllerAction>) -> Self {
@@ -245,11 +281,13 @@ impl DriverOutcome {
             }
             Self::Accepted {
                 reference,
+                additional_references,
                 follow_up,
             } => {
                 actions.extend(follow_up);
                 Self::Accepted {
                     reference,
+                    additional_references,
                     follow_up: actions,
                 }
             }

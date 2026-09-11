@@ -28,6 +28,8 @@ use nv_redfish::{Bmc, ServiceRoot};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::selection::{ResolvedSelection, RuleSet, RuleSetHash};
+
 /// Secret-free, serializable identity of a BMC access endpoint.
 ///
 /// Deserialization applies the same validation as [`BmcRef::new`], so a
@@ -41,7 +43,7 @@ pub struct BmcRef {
     identity: PlatformIdentity,
     #[serde(default)]
     etag_mode: EtagMode,
-    driver_map: DriverMap,
+    selection: ResolvedSelection,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +54,7 @@ struct BmcRefWire {
     identity: PlatformIdentity,
     #[serde(default)]
     etag_mode: EtagMode,
-    driver_map: DriverMap,
+    selection: ResolvedSelection,
 }
 
 impl TryFrom<BmcRefWire> for BmcRef {
@@ -64,7 +66,7 @@ impl TryFrom<BmcRefWire> for BmcRef {
             wire.credential_key,
             wire.identity,
             wire.etag_mode,
-            wire.driver_map,
+            wire.selection,
         )
     }
 }
@@ -79,7 +81,7 @@ impl BmcRef {
         credential_key: CredentialKey,
         identity: PlatformIdentity,
         etag_mode: EtagMode,
-        driver_map: DriverMap,
+        selection: ResolvedSelection,
     ) -> Result<Self, BmcRefError> {
         if root_mac_address(&credential_key).is_none() {
             return Err(BmcRefError::UnsupportedCredentialKey);
@@ -89,7 +91,7 @@ impl BmcRef {
             credential_key,
             identity,
             etag_mode,
-            driver_map,
+            selection,
         })
     }
 
@@ -99,7 +101,7 @@ impl BmcRef {
         credential_key: CredentialKey,
         identity: PlatformIdentity,
         etag_mode: EtagMode,
-        driver_map: DriverMap,
+        selection: ResolvedSelection,
     ) -> Result<Self, BmcRefError> {
         let ip = parse_uri_host_ip(&access.host)
             .ok_or_else(|| BmcRefError::InvalidIpAddress(access.host.clone()))?;
@@ -108,7 +110,7 @@ impl BmcRef {
             credential_key,
             identity,
             etag_mode,
-            driver_map,
+            selection,
         )?;
         if reference.mac_address() != access.mac_address {
             return Err(BmcRefError::MacAddressMismatch);
@@ -145,7 +147,22 @@ impl BmcRef {
 
     /// Returns the complete driver map persisted during exploration.
     pub const fn driver_map(&self) -> &DriverMap {
-        &self.driver_map
+        &self.selection.drivers
+    }
+
+    /// Returns the complete selection decision persisted during exploration.
+    pub const fn selection(&self) -> &ResolvedSelection {
+        &self.selection
+    }
+
+    /// Returns the hash of the rule set that produced the persisted selection.
+    pub const fn rule_set_hash(&self) -> RuleSetHash {
+        self.selection.rule_set_hash
+    }
+
+    /// Whether the persisted selection was produced by `rules`.
+    pub fn selection_is_current(&self, rules: &RuleSet) -> bool {
+        self.rule_set_hash() == rules.hash()
     }
 }
 
@@ -237,10 +254,22 @@ mod tests {
     use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 
     use super::*;
+    use crate::selection::RuleSet;
 
     fn unsupported_driver_map() -> DriverMap {
         DriverMap::filled(CapabilitySelection::Unsupported)
     }
+
+    fn selection(drivers: DriverMap) -> ResolvedSelection {
+        ResolvedSelection {
+            drivers,
+            matched_rules: Vec::new(),
+            rule_set_hash: RuleSet::new(Vec::new())
+                .expect("empty rules are valid")
+                .hash(),
+        }
+    }
+
     fn credential_key(mac_address: MacAddress) -> CredentialKey {
         CredentialKey::BmcCredentials {
             credential_type: BmcCredentialType::BmcRoot {
@@ -250,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn bmc_ref_round_trip_contains_only_access_identity() {
+    fn bmc_ref_round_trip_preserves_selection_without_secrets() {
         let mac_address = MacAddress::new([2, 0, 0, 0, 0, 1]);
         let driver_map = unsupported_driver_map();
         let reference = BmcRef::new(
@@ -258,7 +287,7 @@ mod tests {
             credential_key(mac_address),
             PlatformIdentity::default(),
             EtagMode::default(),
-            driver_map.clone(),
+            selection(driver_map.clone()),
         )
         .expect("root credential key is valid");
 
@@ -267,6 +296,10 @@ mod tests {
         assert_eq!(decoded.address(), reference.address());
         assert_eq!(decoded.mac_address(), mac_address);
         assert_eq!(decoded.driver_map(), &driver_map);
+        assert_eq!(decoded.rule_set_hash(), reference.rule_set_hash());
+        assert!(
+            decoded.selection_is_current(&RuleSet::new(Vec::new()).expect("empty rules are valid"))
+        );
         assert!(encoded.contains("192.0.2.10"));
         assert!(!encoded.to_ascii_lowercase().contains("password"));
         assert!(!encoded.to_ascii_lowercase().contains("token"));
@@ -297,7 +330,7 @@ mod tests {
             credential_key(mac_address),
             PlatformIdentity::default(),
             EtagMode::default(),
-            unsupported_driver_map(),
+            selection(unsupported_driver_map()),
         )
         .expect("IP endpoint converts");
 
@@ -320,7 +353,7 @@ mod tests {
                 credential_key(MacAddress::new([2, 0, 0, 0, 0, 2])),
                 PlatformIdentity::default(),
                 EtagMode::default(),
-                unsupported_driver_map(),
+                selection(unsupported_driver_map()),
             ),
             Err(BmcRefError::InvalidIpAddress(host)) if host == "bmc.example.test"
         ));
@@ -337,7 +370,7 @@ mod tests {
                 },
                 PlatformIdentity::default(),
                 EtagMode::default(),
-                unsupported_driver_map(),
+                selection(unsupported_driver_map()),
             ),
             Err(BmcRefError::UnsupportedCredentialKey)
         ));
@@ -353,7 +386,7 @@ mod tests {
                 credential_key(MacAddress::new([2, 0, 0, 0, 0, 3])),
                 PlatformIdentity::default(),
                 EtagMode::default(),
-                unsupported_driver_map(),
+                selection(unsupported_driver_map()),
             ),
             Err(BmcRefError::MacAddressMismatch)
         ));

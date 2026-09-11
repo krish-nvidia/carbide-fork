@@ -179,9 +179,18 @@ where
             DriverOutcome::Complete { follow_up } => self.run_all(cx, follow_up).await,
             DriverOutcome::Accepted {
                 reference,
+                additional_references,
                 follow_up,
             } => {
-                self.wait(&reference).await?;
+                let mut first_error = self.wait(&reference).await.err();
+                for reference in additional_references {
+                    if let Err(error) = self.wait(&reference).await {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                if let Some(error) = first_error {
+                    return Err(error);
+                }
                 self.run_all(cx, follow_up).await
             }
             DriverOutcome::Blocked {

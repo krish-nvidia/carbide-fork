@@ -167,6 +167,37 @@ fn driver_outcomes_round_trip_and_blocked_is_non_empty() {
 }
 
 #[test]
+fn merging_accepted_outcomes_preserves_every_reference_and_follow_up() {
+    let first = DriverOutcome::accepted(task_reference())
+        .then([ControllerAction::Power(ResetType::ForceOff)]);
+    let second =
+        DriverOutcome::accepted(job_reference()).then([ControllerAction::Power(ResetType::On)]);
+
+    let merged = first.merge(second);
+
+    assert_eq!(
+        merged.references().cloned().collect::<Vec<_>>(),
+        vec![task_reference(), job_reference()]
+    );
+    assert_eq!(
+        merged,
+        DriverOutcome::Accepted {
+            reference: task_reference(),
+            additional_references: vec![job_reference()],
+            follow_up: vec![
+                ControllerAction::Power(ResetType::ForceOff),
+                ControllerAction::Power(ResetType::On),
+            ],
+        }
+    );
+    let encoded = serde_json::to_value(&merged).expect("merged outcome serializes");
+    assert_eq!(
+        serde_json::from_value::<DriverOutcome>(encoded).expect("merged outcome deserializes"),
+        merged
+    );
+}
+
+#[test]
 fn operation_identifiers_reject_empty_values() {
     for invalid in ["", " \t"] {
         assert!(invalid.parse::<VendorJobId>().is_err());
