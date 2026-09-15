@@ -5,4 +5,4 @@
 
 mod xcc;
 
-pub(crate) use xcc::XCC_BIOS;
+pub(crate) use xcc::XccBios;

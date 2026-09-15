@@ -27,22 +27,38 @@ use nv_redfish::update_service::MultipartUpdateParameters;
 use crate::{DriverOutcome, OpCx, PlatformError};
 
 /// Firmware inventory and update operations.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait Firmware<B: Bmc>: Send + Sync {
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn Firmware<B>;
+
     async fn inventory(
         &self,
         cx: &OpCx<'_, B>,
-    ) -> Result<Vec<Arc<SoftwareInventory>>, PlatformError>;
+    ) -> Result<Vec<Arc<SoftwareInventory>>, PlatformError> {
+        self.standard().inventory(cx).await
+    }
 
     async fn multipart_update(
         &self,
         cx: &OpCx<'_, B>,
         request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, MultipartUpdateParameters>,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().multipart_update(cx, request).await
+    }
 
     async fn simple_update(
         &self,
         cx: &OpCx<'_, B>,
         request: &UpdateServiceSimpleUpdateAction,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().simple_update(cx, request).await
+    }
 }

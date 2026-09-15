@@ -5,11 +5,10 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{ActionError, Bmc};
-use nv_redfish::resource::ResetType;
+use nv_redfish::core::Bmc;
 use serde_json::json;
 
-use crate::bmc_control::standard;
+use crate::bmc_control::standard::StandardBmcControl;
 use crate::dell;
 
 /// Dell iDRAC manager-control behavior.
@@ -19,20 +18,9 @@ use crate::dell;
 pub(crate) struct IdracBmcControl;
 
 #[async_trait]
-impl<B> BmcControl<B> for IdracBmcControl
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
-    async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        standard::manager_reset(cx, ResetType::GracefulRestart).await
-    }
-
-    async fn reset_to_factory_defaults(
-        &self,
-        cx: &OpCx<'_, B>,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::reset_to_factory_defaults(cx, &standard::FactoryDefaults::Standard).await
+impl<B: Bmc> BmcControl<B> for IdracBmcControl {
+    fn standard(&self) -> &dyn BmcControl<B> {
+        &StandardBmcControl
     }
 
     async fn set_ntp_servers(
@@ -55,17 +43,5 @@ where
 
     async fn set_utc_timezone(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         dell::patch_manager_attributes(cx, json!({"Time.1.Timezone": "UTC"})).await
-    }
-
-    async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-        standard::ipmi_over_lan_enabled(cx).await
-    }
-
-    async fn set_ipmi_over_lan(
-        &self,
-        cx: &OpCx<'_, B>,
-        enabled: bool,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::update_network_protocol(cx, &standard::ipmi_payload(enabled)).await
     }
 }

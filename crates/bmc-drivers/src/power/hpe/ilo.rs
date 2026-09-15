@@ -5,11 +5,12 @@
 
 use async_trait::async_trait;
 use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::{ActionError, Bmc};
+use nv_redfish::Resource;
+use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::resource::{PowerState, ResetType};
 use serde_json::json;
 
-use crate::power::standard::{self, Anchor, OemPowerCycle};
+use crate::power::standard::{self, StandardPower};
 
 /// HPE iLO power behavior.
 ///
@@ -17,20 +18,19 @@ use crate::power::standard::{self, Anchor, OemPowerCycle};
 /// cycle is only accepted while the host is off.
 pub(crate) struct IloPower;
 
-const AUX_CYCLE: OemPowerCycle = OemPowerCycle {
-    anchor: Anchor::System,
-    action: "Hpe/HpeComputerSystemExt.SystemReset",
-    payload: || json!({"ResetType": "AuxCycle"}),
-};
+/// Posts the iLO auxiliary power cycle, which the BMC accepts only while the host is off.
+async fn aux_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+    let target = ODataId::from(format!(
+        "{}/Actions/Oem/Hpe/HpeComputerSystemExt.SystemReset",
+        cx.system()?.odata_id()
+    ));
+    cx.post(&target, &json!({"ResetType": "AuxCycle"})).await
+}
 
 #[async_trait]
-impl<B> Power<B> for IloPower
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
-    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
-        standard::state(cx)
+impl<B: Bmc> Power<B> for IloPower {
+    fn standard(&self) -> &dyn Power<B> {
+        &StandardPower
     }
 
     async fn ac_power_cycle_supported(&self, _cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
@@ -43,25 +43,16 @@ where
         reset_type: ResetType,
     ) -> Result<DriverOutcome, PlatformError> {
         match reset_type {
-            ResetType::ForceRestart => standard::reset(cx, ResetType::GracefulRestart).await,
+            ResetType::ForceRestart => self.standard().set(cx, ResetType::GracefulRestart).await,
             ResetType::FullPowerCycle => {
                 if standard::state(cx)? != PowerState::Off {
                     return Ok(DriverOutcome::blocked(ControllerAction::Power(
                         ResetType::ForceOff,
                     )));
                 }
-                standard::oem_power_cycle(cx, &AUX_CYCLE).await
+                aux_power_cycle(cx).await
             }
-            other => standard::reset(cx, other).await,
+            other => self.standard().set(cx, other).await,
         }
-    }
-
-    async fn chassis_reset(
-        &self,
-        cx: &OpCx<'_, B>,
-        chassis_id: &str,
-        reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::chassis_reset(cx, chassis_id, reset_type).await
     }
 }

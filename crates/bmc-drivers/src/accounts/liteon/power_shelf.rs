@@ -3,9 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use crate::accounts::standard::{StandardAccounts, openbmc_minimum_lockout_policy};
+use async_trait::async_trait;
+use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::core::Bmc;
 
-/// Lite-On power shelf: standard account operations with the OpenBMC lockout policy.
-pub(crate) static LITEON_POWER_SHELF_ACCOUNTS: StandardAccounts = StandardAccounts {
-    default_policy: Some(openbmc_minimum_lockout_policy),
-};
+use crate::accounts::standard::{StandardAccounts, apply_policy};
+use crate::accounts::support::openbmc_minimum_lockout_policy;
+
+/// Lite-On power shelf: applies the OpenBMC lockout policy.
+pub(crate) struct LiteOnPowerShelfAccounts;
+
+#[async_trait]
+impl<B: Bmc> Accounts<B> for LiteOnPowerShelfAccounts {
+    fn standard(&self) -> &dyn Accounts<B> {
+        &StandardAccounts
+    }
+
+    async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        apply_policy(cx, &openbmc_minimum_lockout_policy()).await
+    }
+}

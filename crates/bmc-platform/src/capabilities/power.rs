@@ -22,22 +22,43 @@ use nv_redfish::resource::{PowerState, ResetType};
 use crate::{DriverOutcome, OpCx, PlatformError};
 
 /// Host and chassis power observations and mutations.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait Power<B: Bmc>: Send + Sync {
-    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError>;
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn Power<B>;
 
-    async fn ac_power_cycle_supported(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError>;
+    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
+        self.standard().state(cx).await
+    }
+
+    /// Whether `set` can perform [`ResetType::FullPowerCycle`] on this platform.
+    async fn ac_power_cycle_supported(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+        self.standard().ac_power_cycle_supported(cx).await
+    }
 
     async fn set(
         &self,
         cx: &OpCx<'_, B>,
         reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().set(cx, reset_type).await
+    }
 
     async fn chassis_reset(
         &self,
         cx: &OpCx<'_, B>,
         chassis_id: &str,
         reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .chassis_reset(cx, chassis_id, reset_type)
+            .await
+    }
 }

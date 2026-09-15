@@ -25,21 +25,37 @@ use nv_redfish::schema::manager_account::ManagerAccount;
 use crate::{DriverOutcome, OpCx, PlatformError};
 
 /// BMC local-account and account-policy operations.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait Accounts<B: Bmc>: Send + Sync {
-    async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError>;
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn Accounts<B>;
+
+    async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError> {
+        self.standard().list(cx).await
+    }
 
     async fn create(
         &self,
         cx: &OpCx<'_, B>,
         request: &ManagerAccountCreate,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().create(cx, request).await
+    }
 
     async fn delete(
         &self,
         cx: &OpCx<'_, B>,
         username: &str,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().delete(cx, username).await
+    }
 
     /// Changes the named account's password.
     ///
@@ -50,14 +66,24 @@ pub trait Accounts<B: Bmc>: Send + Sync {
         cx: &OpCx<'_, B>,
         account_username: &str,
         password: &str,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .change_password(cx, account_username, password)
+            .await
+    }
 
     async fn change_username(
         &self,
         cx: &OpCx<'_, B>,
         old_username: &str,
         new_username: &str,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .change_username(cx, old_username, new_username)
+            .await
+    }
 
-    async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
+    async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().apply_default_policy(cx).await
+    }
 }

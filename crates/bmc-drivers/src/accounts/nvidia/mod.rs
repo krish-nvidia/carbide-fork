@@ -8,7 +8,7 @@ mod openbmc;
 mod switch;
 mod viking;
 
-pub(crate) use bluefield::BLUEFIELD_ACCOUNTS;
-pub(crate) use openbmc::OPENBMC_ACCOUNTS;
-pub(crate) use switch::SWITCH_ACCOUNTS;
-pub(crate) use viking::VIKING_ACCOUNTS;
+pub(crate) use bluefield::BlueFieldAccounts;
+pub(crate) use openbmc::OpenBmcAccounts;
+pub(crate) use switch::SwitchAccounts;
+pub(crate) use viking::VikingAccounts;

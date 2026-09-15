@@ -5,4 +5,4 @@
 
 mod ilo;
 
-pub(crate) use ilo::ILO_CONSOLE;
+pub(crate) use ilo::IloConsole;

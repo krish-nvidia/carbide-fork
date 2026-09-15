@@ -16,10 +16,10 @@
  */
 
 use nv_redfish::computer_system::ComputerSystem;
-use nv_redfish::core::{EntityTypeRef, ModificationResponse, ODataETag, ODataId};
+use nv_redfish::core::{Action, EntityTypeRef, ModificationResponse, ODataETag, ODataId};
 use nv_redfish::manager::Manager;
 use nv_redfish::{Bmc, Error as RedfishError, Resource, ServiceRoot};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ClassifyBmcError, EtagMode, IpmiOps};
@@ -182,7 +182,27 @@ impl<'a, B: Bmc> OpCx<'a, B> {
             .map_err(|error| self.map_bmc_error(error))
     }
 
-    /// Posts `body` to `id`, for actions and collection inserts.
+    /// Runs an advertised Redfish action with `params`.
+    ///
+    /// The transport resolves the action target the same way `nv-redfish`
+    /// does for its typed actions, so drivers never rebuild standard URIs.
+    pub async fn action<T, R>(
+        &self,
+        action: &Action<T, R>,
+        params: &T,
+    ) -> Result<DriverOutcome, PlatformError>
+    where
+        T: Serialize + Send + Sync,
+        R: for<'de> Deserialize<'de> + Send + Sync,
+    {
+        action
+            .run(self.bmc, params)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_bmc_error(error))
+    }
+
+    /// Posts `body` to `id`, for OEM actions and collection inserts.
     pub async fn post<T>(&self, id: &ODataId, body: &T) -> Result<DriverOutcome, PlatformError>
     where
         T: Serialize + Send + Sync,

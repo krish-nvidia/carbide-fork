@@ -5,4 +5,4 @@
 
 mod megarac;
 
-pub(crate) use megarac::MEGARAC_CONSOLE;
+pub(crate) use megarac::MegaRacConsole;

@@ -5,7 +5,7 @@
 
 use bmc_platform::DriverId;
 use bmc_runtime::{AnyDriver, DriverTable};
-use nv_redfish::core::{ActionError, Bmc};
+use nv_redfish::core::Bmc;
 
 use crate::{
     accounts, attestation, bios, bmc_control, boot_order, console, dpu, firmware, lockdown, power,
@@ -17,20 +17,16 @@ use crate::{
 /// Standard drivers serve `CapabilitySelection::Standard`; named drivers are
 /// the ids selection rules and persisted driver maps refer to. The table is
 /// validated by tests, so an inconsistent entry list is a build-time defect.
-pub fn drivers<B>() -> DriverTable<B>
-where
-    B: Bmc + 'static,
-    B::Error: ActionError,
-{
+pub fn drivers<B: Bmc + 'static>() -> DriverTable<B> {
     let standard = [
-        AnyDriver::Power(&power::STANDARD_POWER),
-        AnyDriver::BmcControl(&bmc_control::STANDARD_BMC_CONTROL),
-        AnyDriver::Bios(&bios::STANDARD_BIOS),
+        AnyDriver::Power(&power::StandardPower),
+        AnyDriver::BmcControl(&bmc_control::StandardBmcControl),
+        AnyDriver::Bios(&bios::StandardBios),
         AnyDriver::BootOrder(&boot_order::StandardBootOrder),
         AnyDriver::SecureBoot(&secure_boot::StandardSecureBoot),
-        AnyDriver::Accounts(&accounts::STANDARD_ACCOUNTS),
-        AnyDriver::Firmware(&firmware::STANDARD_FIRMWARE),
-        AnyDriver::Attestation(&attestation::STANDARD_ATTESTATION),
+        AnyDriver::Accounts(&accounts::StandardAccounts),
+        AnyDriver::Firmware(&firmware::StandardFirmware),
+        AnyDriver::Attestation(&attestation::StandardAttestation),
     ]
     .into_iter()
     .map(|driver| (None, driver));
@@ -45,10 +41,10 @@ where
             AnyDriver::Power(&power::LiteOnPowerShelfPower),
         ),
         ("hpe-ilo-power", AnyDriver::Power(&power::IloPower)),
-        ("lenovo-xcc-power", AnyDriver::Power(&power::XCC_POWER)),
+        ("lenovo-xcc-power", AnyDriver::Power(&power::XccPower)),
         (
             "lenovo-sr650-v4-power",
-            AnyDriver::Power(&power::SR650_V4_POWER),
+            AnyDriver::Power(&power::Sr650V4Power),
         ),
         (
             "lenovo-sr675-v3-ovx-power",
@@ -56,16 +52,13 @@ where
         ),
         (
             "nvidia-openbmc-power",
-            AnyDriver::Power(&power::OPENBMC_POWER),
+            AnyDriver::Power(&power::OpenBmcPower),
         ),
-        (
-            "nvidia-viking-power",
-            AnyDriver::Power(&power::VIKING_POWER),
-        ),
-        ("supermicro-smc-power", AnyDriver::Power(&power::SMC_POWER)),
+        ("nvidia-viking-power", AnyDriver::Power(&power::VikingPower)),
+        ("supermicro-smc-power", AnyDriver::Power(&power::SmcPower)),
         (
             "ami-megarac-bmc-control",
-            AnyDriver::BmcControl(&bmc_control::MEGARAC_BMC_CONTROL),
+            AnyDriver::BmcControl(&bmc_control::MegaRacBmcControl),
         ),
         (
             "dell-idrac-bmc-control",
@@ -77,16 +70,16 @@ where
         ),
         (
             "supermicro-smc-bmc-control",
-            AnyDriver::BmcControl(&bmc_control::SMC_BMC_CONTROL),
+            AnyDriver::BmcControl(&bmc_control::SmcBmcControl),
         ),
         ("dell-idrac-bios", AnyDriver::Bios(&bios::IdracBios)),
-        ("lenovo-xcc-bios", AnyDriver::Bios(&bios::XCC_BIOS)),
-        ("ami-megarac-bios", AnyDriver::Bios(&bios::MEGARAC_BIOS)),
-        ("nvidia-openbmc-bios", AnyDriver::Bios(&bios::OPENBMC_BIOS)),
-        ("nvidia-viking-bios", AnyDriver::Bios(&bios::VIKING_BIOS)),
+        ("lenovo-xcc-bios", AnyDriver::Bios(&bios::XccBios)),
+        ("ami-megarac-bios", AnyDriver::Bios(&bios::MegaRacBios)),
+        ("nvidia-openbmc-bios", AnyDriver::Bios(&bios::OpenBmcBios)),
+        ("nvidia-viking-bios", AnyDriver::Bios(&bios::VikingBios)),
         (
             "nvidia-bluefield-bios",
-            AnyDriver::Bios(&bios::BLUEFIELD_BIOS),
+            AnyDriver::Bios(&bios::BlueFieldBios),
         ),
         (
             "dell-idrac-boot-order",
@@ -118,15 +111,15 @@ where
         ),
         (
             "supermicro-smc-lockdown",
-            AnyDriver::Lockdown(&lockdown::SMC_LOCKDOWN),
+            AnyDriver::Lockdown(&lockdown::SmcLockdown),
         ),
         (
             "supermicro-ars121l-lockdown",
-            AnyDriver::Lockdown(&lockdown::ARS121L_LOCKDOWN),
+            AnyDriver::Lockdown(&lockdown::Ars121lLockdown),
         ),
         (
             "ami-megarac-lockdown",
-            AnyDriver::Lockdown(&lockdown::MEGARAC_LOCKDOWN),
+            AnyDriver::Lockdown(&lockdown::MegaRacLockdown),
         ),
         (
             "lenovo-ami-lockdown",
@@ -134,7 +127,7 @@ where
         ),
         (
             "lenovo-gb300-lockdown",
-            AnyDriver::Lockdown(&lockdown::GB300_LOCKDOWN),
+            AnyDriver::Lockdown(&lockdown::Gb300Lockdown),
         ),
         (
             "nvidia-viking-lockdown",
@@ -150,55 +143,51 @@ where
         ),
         (
             "hpe-ilo-accounts",
-            AnyDriver::Accounts(&accounts::ILO_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::IloAccounts),
         ),
         (
             "lenovo-xcc-accounts",
-            AnyDriver::Accounts(&accounts::XCC_ACCOUNTS),
-        ),
-        (
-            "ami-megarac-accounts",
-            AnyDriver::Accounts(&accounts::MEGARAC_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::XccAccounts),
         ),
         (
             "nvidia-viking-accounts",
-            AnyDriver::Accounts(&accounts::VIKING_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::VikingAccounts),
         ),
         (
             "nvidia-openbmc-accounts",
-            AnyDriver::Accounts(&accounts::OPENBMC_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::OpenBmcAccounts),
         ),
         (
             "nvidia-bluefield-accounts",
-            AnyDriver::Accounts(&accounts::BLUEFIELD_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::BlueFieldAccounts),
         ),
         (
             "nvidia-switch-accounts",
-            AnyDriver::Accounts(&accounts::SWITCH_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::SwitchAccounts),
         ),
         (
             "delta-power-shelf-accounts",
-            AnyDriver::Accounts(&accounts::DELTA_POWER_SHELF_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::DeltaPowerShelfAccounts),
         ),
         (
             "liteon-power-shelf-accounts",
-            AnyDriver::Accounts(&accounts::LITEON_POWER_SHELF_ACCOUNTS),
+            AnyDriver::Accounts(&accounts::LiteOnPowerShelfAccounts),
         ),
         (
             "dell-idrac-firmware",
-            AnyDriver::Firmware(&firmware::IDRAC_FIRMWARE),
+            AnyDriver::Firmware(&firmware::IdracFirmware),
         ),
         (
             "ami-megarac-firmware",
-            AnyDriver::Firmware(&firmware::MEGARAC_FIRMWARE),
+            AnyDriver::Firmware(&firmware::MegaRacFirmware),
         ),
         (
             "nvidia-viking-firmware",
-            AnyDriver::Firmware(&firmware::VIKING_FIRMWARE),
+            AnyDriver::Firmware(&firmware::VikingFirmware),
         ),
         (
             "nvidia-openbmc-firmware",
-            AnyDriver::Firmware(&firmware::OPENBMC_FIRMWARE),
+            AnyDriver::Firmware(&firmware::OpenBmcFirmware),
         ),
         (
             "dell-idrac-boss-storage",
@@ -208,16 +197,16 @@ where
         ("nvidia-bluefield2-dpu", AnyDriver::Dpu(&dpu::BlueField2Dpu)),
         (
             "nvidia-hgx-attestation",
-            AnyDriver::Attestation(&attestation::HGX_ATTESTATION),
+            AnyDriver::Attestation(&attestation::HgxAttestation),
         ),
         (
             "dell-idrac-console",
             AnyDriver::Console(&console::IdracConsole),
         ),
-        ("hpe-ilo-console", AnyDriver::Console(&console::ILO_CONSOLE)),
+        ("hpe-ilo-console", AnyDriver::Console(&console::IloConsole)),
         (
             "lenovo-xcc-console",
-            AnyDriver::Console(&console::XCC_CONSOLE),
+            AnyDriver::Console(&console::XccConsole),
         ),
         (
             "supermicro-bmc-console",
@@ -225,23 +214,23 @@ where
         ),
         (
             "ami-megarac-console",
-            AnyDriver::Console(&console::MEGARAC_CONSOLE),
+            AnyDriver::Console(&console::MegaRacConsole),
         ),
         (
             "lenovo-ami-console",
-            AnyDriver::Console(&console::LENOVO_AMI_CONSOLE),
+            AnyDriver::Console(&console::LenovoAmiConsole),
         ),
         (
             "lenovo-gb300-console",
-            AnyDriver::Console(&console::GB300_CONSOLE),
+            AnyDriver::Console(&console::Gb300Console),
         ),
         (
             "nvidia-viking-console",
-            AnyDriver::Console(&console::VIKING_CONSOLE),
+            AnyDriver::Console(&console::VikingConsole),
         ),
         (
             "nvidia-bluefield-console",
-            AnyDriver::Console(&console::BLUEFIELD_CONSOLE),
+            AnyDriver::Console(&console::BlueFieldConsole),
         ),
     ]
     .into_iter()

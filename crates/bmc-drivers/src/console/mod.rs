@@ -13,9 +13,9 @@ mod nvidia;
 mod supermicro;
 mod support;
 
-pub(crate) use ami::MEGARAC_CONSOLE;
+pub(crate) use ami::MegaRacConsole;
 pub(crate) use dell::IdracConsole;
-pub(crate) use hpe::ILO_CONSOLE;
-pub(crate) use lenovo::{GB300_CONSOLE, LENOVO_AMI_CONSOLE, XCC_CONSOLE};
-pub(crate) use nvidia::{BLUEFIELD_CONSOLE, VIKING_CONSOLE};
+pub(crate) use hpe::IloConsole;
+pub(crate) use lenovo::{Gb300Console, LenovoAmiConsole, XccConsole};
+pub(crate) use nvidia::{BlueFieldConsole, VikingConsole};
 pub(crate) use supermicro::SupermicroBmcConsole;

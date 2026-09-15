@@ -4,14 +4,12 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{
-    BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
-};
+use bmc_platform::{BootOrder, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
-use crate::boot_order::standard::{configure, status};
+use crate::boot_order::standard::StandardBootOrder;
 use crate::dell;
 
 /// Dell iDRAC boot behavior.
@@ -19,30 +17,6 @@ use crate::dell;
 /// iDRAC rejects `BootSourceOverrideTarget` writes, so a UEFI HTTP override is
 /// pinned through the `HttpDev1*` BIOS attributes as a configuration job.
 pub(crate) struct IdracBootOrder;
-
-async fn set_http_override<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    override_setting: &BootUpdate,
-) -> Result<DriverOutcome, PlatformError> {
-    if override_setting.boot_source_override_target != Some(BootSource::UefiHttp) {
-        return Err(PlatformError::Unsupported);
-    }
-    let uri = override_setting
-        .http_boot_uri
-        .as_deref()
-        .ok_or(PlatformError::Unsupported)?;
-    dell::stage_bios_attributes(
-        cx,
-        json!({
-            "HttpDev1Uri": uri,
-            "HttpDev1EnDis": "Enabled",
-            "HttpDev1DhcpEnDis": "Disabled",
-            "HttpDev1Protocol": "IPv4"
-        }),
-    )
-    .await
-    .map_err(read_only_attribute_is_unsupported)
-}
 
 // Some iDRACs report `HttpDev1Uri` as read-only (MessageId `IDRAC.*.SYS410`)
 // for reasons that have not been isolated; callers then fall back to DHCP.
@@ -65,12 +39,8 @@ fn read_only_attribute_is_unsupported(error: PlatformError) -> PlatformError {
 
 #[async_trait]
 impl<B: Bmc> BootOrder<B> for IdracBootOrder {
-    async fn status(
-        &self,
-        cx: &OpCx<'_, B>,
-        selector: &BootInterfaceSelector,
-    ) -> Result<BootOrderStatus, PlatformError> {
-        status(cx, selector).await
+    fn standard(&self) -> &dyn BootOrder<B> {
+        &StandardBootOrder
     }
 
     async fn set_override(
@@ -78,15 +48,24 @@ impl<B: Bmc> BootOrder<B> for IdracBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_http_override(cx, override_setting).await
-    }
-
-    async fn configure(
-        &self,
-        cx: &OpCx<'_, B>,
-        selector: &BootInterfaceSelector,
-    ) -> Result<DriverOutcome, PlatformError> {
-        configure(cx, selector).await
+        if override_setting.boot_source_override_target != Some(BootSource::UefiHttp) {
+            return Err(PlatformError::Unsupported);
+        }
+        let uri = override_setting
+            .http_boot_uri
+            .as_deref()
+            .ok_or(PlatformError::Unsupported)?;
+        dell::stage_bios_attributes(
+            cx,
+            json!({
+                "HttpDev1Uri": uri,
+                "HttpDev1EnDis": "Enabled",
+                "HttpDev1DhcpEnDis": "Disabled",
+                "HttpDev1Protocol": "IPv4"
+            }),
+        )
+        .await
+        .map_err(read_only_attribute_is_unsupported)
     }
 }
 

@@ -32,21 +32,39 @@ pub enum SecureBootStatus {
 }
 
 /// Secure Boot status, enablement, and certificate operations.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait SecureBoot<B: Bmc>: Send + Sync {
-    async fn status(&self, cx: &OpCx<'_, B>) -> Result<SecureBootStatus, PlatformError>;
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn SecureBoot<B>;
+
+    async fn status(&self, cx: &OpCx<'_, B>) -> Result<SecureBootStatus, PlatformError> {
+        self.standard().status(cx).await
+    }
 
     async fn set(
         &self,
         cx: &OpCx<'_, B>,
         update: &SecureBootUpdate,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().set(cx, update).await
+    }
 
-    async fn has_platform_key(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError>;
+    async fn has_platform_key(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+        self.standard().has_platform_key(cx).await
+    }
 
     async fn add_platform_key(
         &self,
         cx: &OpCx<'_, B>,
         pem: &str,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().add_platform_key(cx, pem).await
+    }
 }

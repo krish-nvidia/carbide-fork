@@ -10,7 +10,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::{Value, json};
 
-use super::super::support::{
+use crate::console::support::{
     AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, optional_attr, spec_error,
 };
 use crate::dell;

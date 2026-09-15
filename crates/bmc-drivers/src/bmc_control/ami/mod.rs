@@ -5,4 +5,4 @@
 
 mod megarac;
 
-pub(crate) use megarac::MEGARAC_BMC_CONTROL;
+pub(crate) use megarac::MegaRacBmcControl;

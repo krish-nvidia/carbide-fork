@@ -54,8 +54,18 @@ impl BootOrderStatus {
 }
 
 /// One-time boot override and persistent boot-order policy.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait BootOrder<B: Bmc>: Send + Sync {
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn BootOrder<B>;
+
     /// Evaluates the complete boot-order policy for the selected host interface.
     ///
     /// The interface may be a DPU, a DPU in NIC mode, or a conventional NIC.
@@ -63,20 +73,26 @@ pub trait BootOrder<B: Bmc>: Send + Sync {
         &self,
         cx: &OpCx<'_, B>,
         boot_interface_selector: &BootInterfaceSelector,
-    ) -> Result<BootOrderStatus, PlatformError>;
+    ) -> Result<BootOrderStatus, PlatformError> {
+        self.standard().status(cx, boot_interface_selector).await
+    }
 
     async fn set_override(
         &self,
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().set_override(cx, override_setting).await
+    }
 
     /// Applies the complete boot-order policy for the selected host interface.
     async fn configure(
         &self,
         cx: &OpCx<'_, B>,
         boot_interface_selector: &BootInterfaceSelector,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().configure(cx, boot_interface_selector).await
+    }
 }
 
 #[cfg(test)]

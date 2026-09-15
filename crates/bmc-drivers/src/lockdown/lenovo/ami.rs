@@ -15,7 +15,7 @@ use nv_redfish::oem::ami::config_bmc::{
 };
 use serde_json::json;
 
-use crate::lockdown::support::{signal, state_from_signals, status};
+use crate::lockdown::{signal, state_from_signals, status};
 
 /// Lenovo AMI lockdown driver.
 ///

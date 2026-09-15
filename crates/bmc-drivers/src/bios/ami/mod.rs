@@ -5,4 +5,4 @@
 
 mod megarac;
 
-pub(crate) use megarac::MEGARAC_BIOS;
+pub(crate) use megarac::MegaRacBios;

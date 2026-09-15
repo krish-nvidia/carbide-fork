@@ -18,6 +18,10 @@ pub(crate) struct StandardSecureBoot;
 
 #[async_trait]
 impl<B: Bmc> SecureBoot<B> for StandardSecureBoot {
+    fn standard(&self) -> &dyn SecureBoot<B> {
+        self
+    }
+
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<SecureBootStatus, PlatformError> {
         status(cx).await
     }

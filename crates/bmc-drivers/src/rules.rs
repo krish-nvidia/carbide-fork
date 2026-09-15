@@ -87,7 +87,6 @@ fn built_ins() -> Vec<SelectionRule> {
             (Capability::BmcControl, "ami-megarac-bmc-control"),
             (Capability::Bios, "ami-megarac-bios"),
             (Capability::Lockdown, "ami-megarac-lockdown"),
-            (Capability::Accounts, "ami-megarac-accounts"),
             (Capability::Console, "ami-megarac-console"),
         ],
     );
@@ -102,11 +101,17 @@ fn built_ins() -> Vec<SelectionRule> {
             (Capability::BmcControl, "ami-megarac-bmc-control"),
             (Capability::Bios, "ami-megarac-bios"),
             (Capability::Lockdown, "lenovo-ami-lockdown"),
-            (Capability::Accounts, "ami-megarac-accounts"),
             (Capability::Firmware, "ami-megarac-firmware"),
             (Capability::Console, "lenovo-ami-console"),
         ],
     );
+    // The AMI firmware takes the standard lockout policy, not XCC's.
+    rules.push(SelectionRule::new(
+        "lenovo-ami-accounts",
+        Capability::Accounts,
+        vec![service_root_vendor("Lenovo"), service_root_oem_key("Ami")],
+        CapabilitySelection::Standard,
+    ));
 
     family(
         &mut rules,
@@ -568,7 +573,7 @@ mod tests {
         );
         assert_eq!(
             lenovo_ami.drivers.get(Capability::Accounts),
-            &driver("ami-megarac-accounts")
+            &CapabilitySelection::Standard
         );
         assert_eq!(
             resolve(&rules, &identity("Lenovo", None))

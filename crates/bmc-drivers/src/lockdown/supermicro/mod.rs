@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+mod ars121l;
 mod smc;
 
-pub(crate) use smc::{ARS121L_LOCKDOWN, SMC_LOCKDOWN};
+pub(crate) use ars121l::Ars121lLockdown;
+pub(crate) use smc::SmcLockdown;

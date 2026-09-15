@@ -3,14 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+//! BMC manager-control capability drivers.
+
 mod ami;
 mod dell;
 mod hpe;
 mod standard;
 mod supermicro;
+mod support;
 
-pub(crate) use ami::MEGARAC_BMC_CONTROL;
+pub(crate) use ami::MegaRacBmcControl;
 pub(crate) use dell::IdracBmcControl;
 pub(crate) use hpe::IloBmcControl;
-pub(crate) use standard::STANDARD_BMC_CONTROL;
-pub(crate) use supermicro::SMC_BMC_CONTROL;
+pub(crate) use standard::StandardBmcControl;
+pub(crate) use supermicro::SmcBmcControl;

@@ -68,35 +68,59 @@ pub struct AttestationEvidence {
 }
 
 /// Collection of hardware attestation evidence.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait Attestation<B: Bmc>: Send + Sync {
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn Attestation<B>;
+
     async fn components(
         &self,
         cx: &OpCx<'_, B>,
-    ) -> Result<Vec<ComponentIntegritySummary>, PlatformError>;
+    ) -> Result<Vec<ComponentIntegritySummary>, PlatformError> {
+        self.standard().components(cx).await
+    }
 
     async fn firmware_for_component(
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
-    ) -> Result<Arc<SoftwareInventory>, PlatformError>;
+    ) -> Result<Arc<SoftwareInventory>, PlatformError> {
+        self.standard()
+            .firmware_for_component(cx, component_id)
+            .await
+    }
 
     async fn ca_certificate(
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
-    ) -> Result<CaCertificate, PlatformError>;
+    ) -> Result<CaCertificate, PlatformError> {
+        self.standard().ca_certificate(cx, component_id).await
+    }
 
     async fn trigger_evidence(
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
         nonce: &[u8],
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .trigger_evidence(cx, component_id, nonce)
+            .await
+    }
 
     async fn evidence(
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
-    ) -> Result<AttestationEvidence, PlatformError>;
+    ) -> Result<AttestationEvidence, PlatformError> {
+        self.standard().evidence(cx, component_id).await
+    }
 }

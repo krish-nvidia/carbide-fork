@@ -3,16 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use bmc_platform::{ConsoleSpec, EscapeSeq, PlatformError};
+use async_trait::async_trait;
+use bmc_platform::{
+    Console, ConsoleSpec, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx, PlatformError,
+};
+use nv_redfish::core::Bmc;
 
-use super::super::support::{AttrExpectation, BiosAttributeConsole, SSH_PORT, attr, spec_error};
+use crate::console::support::{
+    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, setup_bios_attributes,
+    spec_error,
+};
 
 /// HPE iLO console; the virtual serial port is reached with `vsp`.
-pub(crate) static ILO_CONSOLE: BiosAttributeConsole = BiosAttributeConsole {
-    attrs: ATTRS,
-    write_only: &[("UefiSerialDebugLevel", "ErrorsOnly")],
-    spec: hpe_spec,
-};
+pub(crate) struct IloConsole;
 
 const ATTRS: &[AttrExpectation] = &[
     attr("EmbeddedSerialPort", &["Com2Irq3"], &["Disabled"]),
@@ -23,6 +26,9 @@ const ATTRS: &[AttrExpectation] = &[
     attr("VirtualSerialPort", &["Com1Irq4"], &["Disabled"]),
 ];
 
+/// Attributes `setup` writes that the BIOS does not report back meaningfully.
+const WRITE_ONLY: &[(&str, &str)] = &[("UefiSerialDebugLevel", "ErrorsOnly")];
+
 fn hpe_spec() -> Result<ConsoleSpec, PlatformError> {
     ConsoleSpec::ssh_shell(
         SSH_PORT,
@@ -32,6 +38,21 @@ fn hpe_spec() -> Result<ConsoleSpec, PlatformError> {
         EscapeSeq::pair(0x1b, vec![0x28]).map_err(spec_error)?,
     )
     .map_err(spec_error)
+}
+
+#[async_trait]
+impl<B: Bmc> Console<B> for IloConsole {
+    async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        setup_bios_attributes(cx, ATTRS, WRITE_ONLY).await
+    }
+
+    async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
+        Ok(attr_status(&bios_attributes(cx).await?, ATTRS))
+    }
+
+    async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {
+        hpe_spec()
+    }
 }
 
 #[cfg(test)]

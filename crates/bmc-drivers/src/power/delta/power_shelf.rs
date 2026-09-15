@@ -5,12 +5,13 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, Fetched, OpCx, PlatformError, Power};
-use nv_redfish::core::{ActionError, Bmc, EntityTypeRef, ODataId};
+use nv_redfish::core::{Bmc, EntityTypeRef, ODataId};
 use nv_redfish::resource::{PowerState, ResetType};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::power::standard::{self, power_state_from_supplies, power_supplies};
+use crate::power::standard::StandardPower;
+use crate::power::support::{power_state_from_supplies, power_supplies};
 
 /// Delta power-shelf power behavior.
 ///
@@ -88,11 +89,11 @@ async fn set_psus<B: Bmc>(cx: &OpCx<'_, B>, on: bool) -> Result<DriverOutcome, P
 }
 
 #[async_trait]
-impl<B> Power<B> for DeltaPowerShelfPower
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
+impl<B: Bmc> Power<B> for DeltaPowerShelfPower {
+    fn standard(&self) -> &dyn Power<B> {
+        &StandardPower
+    }
+
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
         let mut states = Vec::new();
         for supply in power_supplies(cx).await? {
@@ -106,10 +107,6 @@ where
         power_state_from_supplies(&states)
     }
 
-    async fn ac_power_cycle_supported(&self, _cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-        Ok(false)
-    }
-
     async fn set(
         &self,
         cx: &OpCx<'_, B>,
@@ -120,14 +117,5 @@ where
             ResetType::ForceOff | ResetType::GracefulShutdown => set_psus(cx, false).await,
             _ => Err(PlatformError::Unsupported),
         }
-    }
-
-    async fn chassis_reset(
-        &self,
-        cx: &OpCx<'_, B>,
-        chassis_id: &str,
-        reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::chassis_reset(cx, chassis_id, reset_type).await
     }
 }

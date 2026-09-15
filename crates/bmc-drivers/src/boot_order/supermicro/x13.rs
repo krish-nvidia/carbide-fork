@@ -11,11 +11,10 @@ use bmc_platform::{
 use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ModificationResponse, ODataId};
 use nv_redfish::resource::ResetType;
-use nv_redfish::schema::computer_system::BootUpdate;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::boot_order::standard::{configure, selector_matches, set_standard_override, status};
+use crate::boot_order::standard::{StandardBootOrder, selector_matches};
 use crate::resources::{patch_bios_settings, selected_bios};
 
 /// Supermicro X13 boot behavior.
@@ -150,12 +149,16 @@ async fn enable_http_boot<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Pla
 
 #[async_trait]
 impl<B: Bmc> BootOrder<B> for X13BootOrder {
+    fn standard(&self) -> &dyn BootOrder<B> {
+        &StandardBootOrder
+    }
+
     async fn status(
         &self,
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
-        match status(cx, selector).await {
+        match self.standard().status(cx, selector).await {
             Err(error) if boot_order_unavailable(&error) => {
                 Ok(fixed_status(&fixed_boot_order(cx).await?.1, selector))
             }
@@ -163,20 +166,12 @@ impl<B: Bmc> BootOrder<B> for X13BootOrder {
         }
     }
 
-    async fn set_override(
-        &self,
-        cx: &OpCx<'_, B>,
-        override_setting: &BootUpdate,
-    ) -> Result<DriverOutcome, PlatformError> {
-        set_standard_override(cx, override_setting).await
-    }
-
     async fn configure(
         &self,
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        match configure(cx, selector).await {
+        match self.standard().configure(cx, selector).await {
             Err(PlatformError::MissingBootOption { .. }) => enable_http_boot(cx).await,
             Err(error) if boot_order_unavailable(&error) => configure_fixed(cx, selector).await,
             result => result,

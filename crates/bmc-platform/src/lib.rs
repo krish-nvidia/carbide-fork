@@ -17,6 +17,11 @@
 
 //! Contracts shared by BMC operation drivers and their runtime.
 //!
+//! A capability whose operations have a spec-compliant Redfish form defaults
+//! every operation to the driver named by its `standard` method, so a vendor
+//! or model driver implements only its deviations. The standard behavior
+//! itself lives with the drivers.
+//!
 //! This crate intentionally contains no transport implementation, credentials,
 //! endpoint origins, or API-model types.
 

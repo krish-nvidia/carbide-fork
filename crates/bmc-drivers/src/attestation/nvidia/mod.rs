@@ -5,4 +5,4 @@
 
 mod hgx;
 
-pub(crate) use hgx::HGX_ATTESTATION;
+pub(crate) use hgx::HgxAttestation;

@@ -7,6 +7,6 @@ mod ami;
 mod gb300;
 mod xcc;
 
-pub(crate) use ami::LENOVO_AMI_CONSOLE;
-pub(crate) use gb300::GB300_CONSOLE;
-pub(crate) use xcc::XCC_CONSOLE;
+pub(crate) use ami::LenovoAmiConsole;
+pub(crate) use gb300::Gb300Console;
+pub(crate) use xcc::XccConsole;

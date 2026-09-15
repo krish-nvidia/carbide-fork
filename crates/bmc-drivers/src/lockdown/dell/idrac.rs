@@ -12,7 +12,7 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dell;
-use crate::lockdown::support::{signal, state_from_signals, status};
+use crate::lockdown::{signal, state_from_signals, status};
 use crate::resources::selected_bios;
 
 /// Dell iDRAC lockdown driver.

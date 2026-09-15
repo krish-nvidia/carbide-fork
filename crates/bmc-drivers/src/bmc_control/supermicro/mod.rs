@@ -5,4 +5,4 @@
 
 mod smc;
 
-pub(crate) use smc::SMC_BMC_CONTROL;
+pub(crate) use smc::SmcBmcControl;

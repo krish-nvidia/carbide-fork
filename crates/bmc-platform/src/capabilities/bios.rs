@@ -52,27 +52,49 @@ pub struct BiosStatus {
 }
 
 /// Current, pending, and desired BIOS configuration operations.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait Bios<B: Bmc>: Send + Sync {
-    async fn current(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError>;
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn Bios<B>;
 
-    async fn pending(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError>;
+    async fn current(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
+        self.standard().current(cx).await
+    }
+
+    async fn pending(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
+        self.standard().pending(cx).await
+    }
 
     async fn status(
         &self,
         cx: &OpCx<'_, B>,
         expected: &BiosSettings,
-    ) -> Result<BiosStatus, PlatformError>;
+    ) -> Result<BiosStatus, PlatformError> {
+        self.standard().status(cx, expected).await
+    }
 
     async fn apply(
         &self,
         cx: &OpCx<'_, B>,
         expected: &BiosSettings,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().apply(cx, expected).await
+    }
 
-    async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
+    async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().reset(cx).await
+    }
 
-    async fn clear_pending(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
+    async fn clear_pending(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().clear_pending(cx).await
+    }
 
     /// Changes the UEFI administrator password; the driver knows the BIOS's password slot.
     async fn change_uefi_password(
@@ -80,11 +102,19 @@ pub trait Bios<B: Bmc>: Send + Sync {
         cx: &OpCx<'_, B>,
         current_password: &str,
         new_password: &str,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .change_uefi_password(cx, current_password, new_password)
+            .await
+    }
 
     async fn clear_uefi_password(
         &self,
         cx: &OpCx<'_, B>,
         current_password: &str,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .clear_uefi_password(cx, current_password)
+            .await
+    }
 }

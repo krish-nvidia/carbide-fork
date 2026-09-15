@@ -5,4 +5,4 @@
 
 mod megarac;
 
-pub(crate) use megarac::MEGARAC_LOCKDOWN;
+pub(crate) use megarac::MegaRacLockdown;

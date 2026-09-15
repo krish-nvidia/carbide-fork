@@ -3,33 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
-use nv_redfish::core::{ActionError, Bmc};
-use nv_redfish::schema::software_inventory::SoftwareInventory;
-use nv_redfish::schema::update_service::UpdateServiceSimpleUpdateAction;
+use nv_redfish::core::Bmc;
 use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService};
 use serde_json::json;
 
-use crate::firmware::standard::{self, StandardFirmware, UploadRequest};
+use crate::firmware::standard::{StandardFirmware, UploadRequest, update_service, upload};
+use crate::firmware::support::upload_uri;
 
 /// AMI MegaRAC firmware behavior for Lenovo HS350x-class BMCs.
 ///
 /// The BMC accepts only its BIOS or BMC image targets with `OemParameters`,
-/// and a BMC image wipes configuration unless preservation is requested first.
-pub(crate) struct MegaRacFirmware {
-    /// Standard upload, with MegaRAC's `upload` path when none is advertised.
-    upload: StandardFirmware,
-}
+/// uploads through `upload` when `MultipartUpload` is not advertised, and a
+/// BMC image wipes configuration unless preservation is requested first.
+pub(crate) struct MegaRacFirmware;
 
-pub(crate) static MEGARAC_FIRMWARE: MegaRacFirmware = MegaRacFirmware {
-    upload: StandardFirmware {
-        multipart_fallback: Some("/redfish/v1/UpdateService/upload"),
-        force_update: false,
-    },
-};
+const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/upload";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Image {
@@ -70,16 +60,9 @@ async fn preserve_bmc_configuration<B: Bmc>(
 }
 
 #[async_trait]
-impl<B> Firmware<B> for MegaRacFirmware
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
-    async fn inventory(
-        &self,
-        cx: &OpCx<'_, B>,
-    ) -> Result<Vec<Arc<SoftwareInventory>>, PlatformError> {
-        standard::inventory(cx).await
+impl<B: Bmc> Firmware<B> for MegaRacFirmware {
+    fn standard(&self) -> &dyn Firmware<B> {
+        &StandardFirmware
     }
 
     async fn multipart_update(
@@ -96,19 +79,11 @@ where
             return Err(PlatformError::Unsupported);
         }
         if image == Image::Bmc {
-            let service = standard::update_service(cx).await?;
+            let service = update_service(cx).await?;
             preserve_bmc_configuration(cx, &service).await?;
         }
-        let uri = self.upload.upload_uri(cx).await?;
-        standard::upload(cx, request, &uri).await
-    }
-
-    async fn simple_update(
-        &self,
-        cx: &OpCx<'_, B>,
-        request: &UpdateServiceSimpleUpdateAction,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::simple_update(cx, request).await
+        let uri = upload_uri(cx, MULTIPART_UPLOAD).await?;
+        upload(cx, request, &uri).await
     }
 }
 

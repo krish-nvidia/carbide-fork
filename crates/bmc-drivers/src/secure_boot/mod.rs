@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+//! Secure Boot capability drivers.
+
 mod standard;
 
 pub(crate) use standard::StandardSecureBoot;

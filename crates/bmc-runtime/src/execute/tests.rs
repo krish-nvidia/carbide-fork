@@ -40,6 +40,10 @@ struct ScriptedPower {
 
 #[async_trait]
 impl Power<TestBmc> for ScriptedPower {
+    fn standard(&self) -> &dyn Power<TestBmc> {
+        self
+    }
+
     async fn state(&self, _cx: &OpCx<'_, TestBmc>) -> Result<PowerState, PlatformError> {
         Ok(PowerState::On)
     }

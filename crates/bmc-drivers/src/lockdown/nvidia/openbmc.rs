@@ -11,8 +11,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::json;
 
-use crate::lockdown::host_interfaces;
-use crate::lockdown::support::{signal, state_from_signals, status};
+use crate::lockdown::{host_interfaces, signal, state_from_signals, status};
 
 /// NVIDIA OpenBMC lockdown driver; every host interface is the single control.
 pub(crate) struct OpenBmcLockdown;

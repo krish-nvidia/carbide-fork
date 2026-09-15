@@ -5,4 +5,4 @@
 
 mod xcc;
 
-pub(crate) use xcc::XCC_ACCOUNTS;
+pub(crate) use xcc::XccAccounts;

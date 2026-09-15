@@ -5,4 +5,4 @@
 
 mod ilo;
 
-pub(crate) use ilo::ILO_ACCOUNTS;
+pub(crate) use ilo::IloAccounts;

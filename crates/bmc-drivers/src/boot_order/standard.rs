@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+//! Standard Redfish boot control.
+
 use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
@@ -12,6 +14,111 @@ use nv_redfish::core::{Bmc, EntityTypeRef, ModificationResponse, ODataId};
 use nv_redfish::schema::boot_option::BootOption as BootOptionSchema;
 use nv_redfish::schema::computer_system::BootUpdate;
 use serde::Serialize;
+
+/// Standard boot-option and boot-order policy using advertised BootOptions.
+pub(crate) struct StandardBootOrder;
+
+#[async_trait]
+impl<B: Bmc> BootOrder<B> for StandardBootOrder {
+    fn standard(&self) -> &dyn BootOrder<B> {
+        self
+    }
+
+    async fn status(
+        &self,
+        cx: &OpCx<'_, B>,
+        selector: &BootInterfaceSelector,
+    ) -> Result<BootOrderStatus, PlatformError> {
+        let (_, order, options) = state(cx).await?;
+        Ok(boot_order_status(&order, &options, selector))
+    }
+
+    async fn set_override(
+        &self,
+        cx: &OpCx<'_, B>,
+        override_setting: &BootUpdate,
+    ) -> Result<DriverOutcome, PlatformError> {
+        set_override(cx, override_setting).await
+    }
+
+    async fn configure(
+        &self,
+        cx: &OpCx<'_, B>,
+        selector: &BootInterfaceSelector,
+    ) -> Result<DriverOutcome, PlatformError> {
+        configure(cx, selector).await
+    }
+}
+
+/// Places a one-time override on the live system resource; the pending
+/// settings object is for staged BIOS changes.
+async fn set_override<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    override_setting: &BootUpdate,
+) -> Result<DriverOutcome, PlatformError> {
+    #[derive(Serialize)]
+    struct BootPayload<'a> {
+        #[serde(rename = "Boot")]
+        boot: &'a BootUpdate,
+    }
+
+    let system = cx.system()?;
+    let raw = system.raw();
+    cx.patch_id(
+        raw.odata_id(),
+        raw.etag(),
+        &BootPayload {
+            boot: override_setting,
+        },
+    )
+    .await
+    .map(DriverOutcome::from)
+}
+
+/// Promotes the selected interface's boot option, disables the other network
+/// options, and writes the resulting `BootOrder`.
+async fn configure<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    selector: &BootInterfaceSelector,
+) -> Result<DriverOutcome, PlatformError> {
+    let (system, order, options) = state(cx).await?;
+    if boot_order_status(&order, &options, selector).is_configured() {
+        return Ok(DriverOutcome::complete());
+    }
+    let (configured, selected) = configured_order(&order, &options, selector)?;
+    for option in &options {
+        let desired = if option.reference == selected.reference {
+            true
+        } else if is_network(option) {
+            false
+        } else {
+            option.enabled.unwrap_or(true)
+        };
+        if option.enabled != Some(desired) {
+            set_option_enabled(cx, system, option, desired).await?;
+        }
+    }
+    system
+        .set_boot_order(
+            configured
+                .into_iter()
+                .map(BootOptionReference::new)
+                .collect(),
+        )
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
+}
+
+/// Reports whether a boot entry's descriptive text names the selected interface.
+pub(super) fn selector_matches(text: &str, selector: &BootInterfaceSelector) -> bool {
+    let haystack = normalized(text);
+    let (mac, interface_id) = selector_parts(selector);
+    mac.as_ref().is_none_or(|mac| haystack.contains(mac))
+        && interface_id
+            .map(normalized)
+            .is_none_or(|interface_id| haystack.contains(&interface_id))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BootOptionInfo {
@@ -61,16 +168,6 @@ fn selector_parts(selector: &BootInterfaceSelector) -> (Option<String>, Option<&
 
 fn boot_option_matches(option: &BootOptionInfo, selector: &BootInterfaceSelector) -> bool {
     selector_matches(&option.description(), selector)
-}
-
-/// Reports whether a boot entry's descriptive text names the selected interface.
-pub(super) fn selector_matches(text: &str, selector: &BootInterfaceSelector) -> bool {
-    let haystack = normalized(text);
-    let (mac, interface_id) = selector_parts(selector);
-    mac.as_ref().is_none_or(|mac| haystack.contains(mac))
-        && interface_id
-            .map(normalized)
-            .is_none_or(|interface_id| haystack.contains(&interface_id))
 }
 
 fn is_network(option: &BootOptionInfo) -> bool {
@@ -197,108 +294,12 @@ async fn set_option_enabled<B: Bmc>(
     }
 }
 
-pub(crate) async fn status<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    selector: &BootInterfaceSelector,
-) -> Result<BootOrderStatus, PlatformError> {
-    let (_, order, options) = state(cx).await?;
-    Ok(boot_order_status(&order, &options, selector))
-}
-
-pub(crate) async fn configure<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    selector: &BootInterfaceSelector,
-) -> Result<DriverOutcome, PlatformError> {
-    let (system, order, options) = state(cx).await?;
-    if boot_order_status(&order, &options, selector).is_configured() {
-        return Ok(DriverOutcome::complete());
-    }
-    let (configured, selected) = configured_order(&order, &options, selector)?;
-    for option in &options {
-        let desired = if option.reference == selected.reference {
-            true
-        } else if is_network(option) {
-            false
-        } else {
-            option.enabled.unwrap_or(true)
-        };
-        if option.enabled != Some(desired) {
-            set_option_enabled(cx, system, option, desired).await?;
-        }
-    }
-    system
-        .set_boot_order(
-            configured
-                .into_iter()
-                .map(BootOptionReference::new)
-                .collect(),
-        )
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-pub(crate) async fn set_standard_override<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    override_setting: &BootUpdate,
-) -> Result<DriverOutcome, PlatformError> {
-    #[derive(Serialize)]
-    struct BootPayload<'a> {
-        #[serde(rename = "Boot")]
-        boot: &'a BootUpdate,
-    }
-
-    // A one-time override belongs on the live system resource; the pending
-    // settings object is for staged BIOS changes.
-    let system = cx.system()?;
-    let raw = system.raw();
-    cx.patch_id(
-        raw.odata_id(),
-        raw.etag(),
-        &BootPayload {
-            boot: override_setting,
-        },
-    )
-    .await
-    .map(DriverOutcome::from)
-}
-
-/// Standard boot-option and boot-order policy using advertised BootOptions.
-pub(crate) struct StandardBootOrder;
-
-#[async_trait]
-impl<B: Bmc> BootOrder<B> for StandardBootOrder {
-    async fn status(
-        &self,
-        cx: &OpCx<'_, B>,
-        selector: &BootInterfaceSelector,
-    ) -> Result<BootOrderStatus, PlatformError> {
-        status(cx, selector).await
-    }
-
-    async fn set_override(
-        &self,
-        cx: &OpCx<'_, B>,
-        override_setting: &BootUpdate,
-    ) -> Result<DriverOutcome, PlatformError> {
-        set_standard_override(cx, override_setting).await
-    }
-
-    async fn configure(
-        &self,
-        cx: &OpCx<'_, B>,
-        selector: &BootInterfaceSelector,
-    ) -> Result<DriverOutcome, PlatformError> {
-        configure(cx, selector).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn selector() -> BootInterfaceSelector {
-        BootInterfaceSelector::Mac("b8:e9:24:17:6d:72".parse().unwrap())
+        BootInterfaceSelector::Mac("b8:e9:24:17:6d:72".parse().expect("valid MAC"))
     }
 
     fn option(reference: &str, name: &str, enabled: bool) -> BootOptionInfo {

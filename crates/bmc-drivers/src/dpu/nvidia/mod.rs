@@ -3,6 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod bluefield;
+mod bluefield2;
+mod bluefield3;
+mod support;
 
-pub(crate) use bluefield::{BlueField2Dpu, BlueField3Dpu};
+pub(crate) use bluefield2::BlueField2Dpu;
+pub(crate) use bluefield3::BlueField3Dpu;

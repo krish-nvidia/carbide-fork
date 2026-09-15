@@ -4,12 +4,13 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, Fetched, OpCx, PlatformError, Power};
-use nv_redfish::core::{ActionError, Bmc, EntityTypeRef};
-use nv_redfish::resource::{PowerState, ResetType};
+use bmc_platform::{Fetched, OpCx, PlatformError, Power};
+use nv_redfish::core::{Bmc, EntityTypeRef};
+use nv_redfish::resource::PowerState;
 use serde::Deserialize;
 
-use crate::power::standard::{self, power_state_from_supplies, power_supplies};
+use crate::power::standard::StandardPower;
+use crate::power::support::{power_state_from_supplies, power_supplies};
 
 /// Lite-On power-shelf power behavior.
 ///
@@ -25,11 +26,11 @@ struct SupplyPowerState {
 }
 
 #[async_trait]
-impl<B> Power<B> for LiteOnPowerShelfPower
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
+impl<B: Bmc> Power<B> for LiteOnPowerShelfPower {
+    fn standard(&self) -> &dyn Power<B> {
+        &StandardPower
+    }
+
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
         let mut states = Vec::new();
         for supply in power_supplies(cx).await? {
@@ -41,26 +42,5 @@ where
             states.push(supply.power_state);
         }
         power_state_from_supplies(&states)
-    }
-
-    async fn ac_power_cycle_supported(&self, _cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-        Ok(false)
-    }
-
-    async fn set(
-        &self,
-        cx: &OpCx<'_, B>,
-        reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::reset(cx, reset_type).await
-    }
-
-    async fn chassis_reset(
-        &self,
-        cx: &OpCx<'_, B>,
-        chassis_id: &str,
-        reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::chassis_reset(cx, chassis_id, reset_type).await
     }
 }

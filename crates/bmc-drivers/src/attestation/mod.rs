@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+//! Hardware attestation capability drivers.
+
 mod nvidia;
 mod standard;
 
-pub(crate) use nvidia::HGX_ATTESTATION;
-pub(crate) use standard::STANDARD_ATTESTATION;
+pub(crate) use nvidia::HgxAttestation;
+pub(crate) use standard::StandardAttestation;

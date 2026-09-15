@@ -8,5 +8,5 @@ mod gb300;
 mod xcc;
 
 pub(crate) use ami::LenovoAmiLockdown;
-pub(crate) use gb300::GB300_LOCKDOWN;
+pub(crate) use gb300::Gb300Lockdown;
 pub(crate) use xcc::XccLockdown;

@@ -3,18 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use bmc_platform::{ConsoleFallback, ConsoleSpec, EscapeSeq, PlatformError};
+use async_trait::async_trait;
+use bmc_platform::{
+    Console, ConsoleFallback, ConsoleSpec, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx,
+    PlatformError,
+};
+use nv_redfish::core::Bmc;
 
-use super::super::support::{
-    AttrExpectation, BiosAttributeConsole, SSH_PORT, attr, optional_attr, spec_error,
+use crate::console::support::{
+    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, optional_attr,
+    setup_bios_attributes, spec_error,
 };
 
-/// Lenovo XClarity Controller console.
-pub(crate) static XCC_CONSOLE: BiosAttributeConsole = BiosAttributeConsole {
-    attrs: ATTRS,
-    write_only: &[],
-    spec: xcc_spec,
-};
+/// Lenovo XClarity Controller console, reached through the `console 1` shell command.
+pub(crate) struct XccConsole;
 
 const ATTRS: &[AttrExpectation] = &[
     attr("DevicesandIOPorts_COMPort1", &["Enabled"], &[]),
@@ -60,6 +62,21 @@ fn xcc_spec() -> Result<ConsoleSpec, PlatformError> {
         EscapeSeq::pair(0x1b, vec![0x28]).map_err(spec_error)?,
     )
     .map_err(spec_error)
+}
+
+#[async_trait]
+impl<B: Bmc> Console<B> for XccConsole {
+    async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        setup_bios_attributes(cx, ATTRS, &[]).await
+    }
+
+    async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
+        Ok(attr_status(&bios_attributes(cx).await?, ATTRS))
+    }
+
+    async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {
+        xcc_spec()
+    }
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use bmc_platform::{
 };
 use nv_redfish::core::Bmc;
 
-use super::super::support::ipmi_sol_spec;
+use crate::console::support::ipmi_sol_spec;
 
 /// Supermicro console driver.
 ///

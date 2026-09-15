@@ -4,11 +4,10 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{ActionError, Bmc};
-use serde_json::Value;
+use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::core::Bmc;
 
-use crate::bios::standard;
+use crate::bios::standard::{self, StandardBios};
 use crate::dell;
 
 /// Dell iDRAC BIOS behavior.
@@ -21,40 +20,20 @@ pub(crate) struct IdracBios;
 /// iDRAC exposes the UEFI administrator password as `SetupPassword`.
 const UEFI_PASSWORD_NAME: &str = "SetupPassword";
 
-async fn change_password<B>(
+async fn change_password<B: Bmc>(
     cx: &OpCx<'_, B>,
     current_password: &str,
     new_password: &str,
-) -> Result<DriverOutcome, PlatformError>
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
+) -> Result<DriverOutcome, PlatformError> {
     dell::clear_job_queue(cx).await?;
     standard::change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await?;
     dell::create_bios_config_job(cx).await
 }
 
 #[async_trait]
-impl<B> Bios<B> for IdracBios
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
-    async fn current(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
-        standard::current_settings(cx).await
-    }
-
-    async fn pending(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
-        standard::pending_settings(cx).await
-    }
-
-    async fn status(
-        &self,
-        cx: &OpCx<'_, B>,
-        expected: &BiosSettings,
-    ) -> Result<BiosStatus, PlatformError> {
-        standard::status(cx, expected).await
+impl<B: Bmc> Bios<B> for IdracBios {
+    fn standard(&self) -> &dyn Bios<B> {
+        &StandardBios
     }
 
     async fn apply(
@@ -62,19 +41,15 @@ where
         cx: &OpCx<'_, B>,
         expected: &BiosSettings,
     ) -> Result<DriverOutcome, PlatformError> {
-        if standard::status(cx, expected).await?.is_applied {
+        if self.standard().status(cx, expected).await?.is_applied {
             return Ok(DriverOutcome::complete());
         }
-        let attributes: serde_json::Map<String, Value> = expected
-            .attributes
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        dell::stage_bios_attributes(cx, Value::Object(attributes)).await
-    }
-
-    async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        standard::reset_bios(cx).await
+        let attributes = serde_json::to_value(&expected.attributes).map_err(|error| {
+            PlatformError::InvalidResponse {
+                message: format!("failed to serialize BIOS attributes: {error}"),
+            }
+        })?;
+        dell::stage_bios_attributes(cx, attributes).await
     }
 
     async fn clear_pending(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {

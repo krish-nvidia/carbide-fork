@@ -5,4 +5,4 @@
 
 mod smc;
 
-pub(crate) use smc::SMC_POWER;
+pub(crate) use smc::SmcPower;

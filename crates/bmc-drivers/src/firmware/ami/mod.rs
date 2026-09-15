@@ -5,4 +5,4 @@
 
 mod megarac;
 
-pub(crate) use megarac::MEGARAC_FIRMWARE;
+pub(crate) use megarac::MegaRacFirmware;

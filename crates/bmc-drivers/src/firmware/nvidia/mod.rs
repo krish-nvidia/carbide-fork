@@ -6,5 +6,5 @@
 mod openbmc;
 mod viking;
 
-pub(crate) use openbmc::OPENBMC_FIRMWARE;
-pub(crate) use viking::VIKING_FIRMWARE;
+pub(crate) use openbmc::OpenBmcFirmware;
+pub(crate) use viking::VikingFirmware;

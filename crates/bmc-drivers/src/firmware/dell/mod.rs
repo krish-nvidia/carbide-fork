@@ -5,4 +5,4 @@
 
 mod idrac;
 
-pub(crate) use idrac::IDRAC_FIRMWARE;
+pub(crate) use idrac::IdracFirmware;

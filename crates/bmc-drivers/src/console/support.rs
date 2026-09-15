@@ -6,10 +6,8 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 
-use async_trait::async_trait;
 use bmc_platform::{
-    Console, ConsoleSpec, ConsoleState, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx,
-    PlatformError,
+    ConsoleSpec, ConsoleState, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx, PlatformError,
 };
 use nv_redfish::core::Bmc;
 use serde_json::{Map, Value};
@@ -20,42 +18,18 @@ pub(super) const SSH_PORT: NonZeroU16 = NonZeroU16::new(22).expect("22 is nonzer
 pub(super) const DPU_SSH_PORT: NonZeroU16 = NonZeroU16::new(2200).expect("2200 is nonzero");
 pub(super) const IPMI_PORT: NonZeroU16 = NonZeroU16::new(623).expect("623 is nonzero");
 
-/// A console that needs no setup because SSH login lands on it directly.
-pub(crate) struct DirectSshConsole {
-    pub(crate) port: NonZeroU16,
-    pub(crate) message: &'static str,
-}
-
-#[async_trait]
-impl<B: Bmc> Console<B> for DirectSshConsole {
-    async fn setup(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        Ok(DriverOutcome::complete())
-    }
-
-    async fn status(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
-        Ok(ConsoleStatus {
-            state: ConsoleState::Enabled,
-            message: self.message.to_string(),
-        })
-    }
-
-    async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {
-        Ok(ConsoleSpec::SshDirect { port: self.port })
-    }
-}
-
 /// One BIOS attribute the console depends on.
 ///
 /// `enabled[0]` is also the value `setup` writes, so the expectation table is
 /// the single description of the console configuration. Values spelled
 /// `true`/`false` are written as booleans, which is how those BIOSes report them.
 #[derive(Clone, Copy)]
-pub(crate) struct AttrExpectation {
-    pub(crate) key: &'static str,
-    pub(crate) enabled: &'static [&'static str],
-    pub(crate) disabled: &'static [&'static str],
+pub(super) struct AttrExpectation {
+    pub(super) key: &'static str,
+    pub(super) enabled: &'static [&'static str],
+    pub(super) disabled: &'static [&'static str],
     /// Older firmware omits the attribute: it is then neither checked nor written.
-    pub(crate) optional: bool,
+    pub(super) optional: bool,
 }
 
 pub(super) const fn attr(
@@ -92,41 +66,25 @@ fn attr_value(text: &str) -> Value {
     }
 }
 
-/// A console configured entirely through BIOS attributes.
-pub(crate) struct BiosAttributeConsole {
-    /// Attributes whose values decide the console state; `setup` writes each
-    /// one's first enabled value.
-    pub(crate) attrs: &'static [AttrExpectation],
-    /// Attributes `setup` writes that the BIOS does not report back meaningfully.
-    pub(crate) write_only: &'static [(&'static str, &'static str)],
-    pub(crate) spec: fn() -> Result<ConsoleSpec, PlatformError>,
-}
-
-#[async_trait]
-impl<B: Bmc> Console<B> for BiosAttributeConsole {
-    async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        let current = bios_attributes(cx).await?;
-        let attributes: Map<String, Value> = self
-            .attrs
-            .iter()
-            .filter(|attr| !attr.optional || current.contains_key(attr.key))
-            .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
-            .chain(
-                self.write_only
-                    .iter()
-                    .map(|(key, value)| ((*key).to_string(), attr_value(value))),
-            )
-            .collect();
-        patch_bios_attributes(cx, Value::Object(attributes)).await
-    }
-
-    async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
-        Ok(attr_status(&bios_attributes(cx).await?, self.attrs))
-    }
-
-    async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {
-        (self.spec)()
-    }
+/// Writes each attribute's first enabled value plus `write_only` values, so
+/// the expectation table is the single description of the console setup.
+pub(super) async fn setup_bios_attributes<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    attrs: &[AttrExpectation],
+    write_only: &[(&str, &str)],
+) -> Result<DriverOutcome, PlatformError> {
+    let current = bios_attributes(cx).await?;
+    let attributes: Map<String, Value> = attrs
+        .iter()
+        .filter(|attr| !attr.optional || current.contains_key(attr.key))
+        .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
+        .chain(
+            write_only
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), attr_value(value))),
+        )
+        .collect();
+    patch_bios_attributes(cx, Value::Object(attributes)).await
 }
 
 pub(super) fn attr_status(

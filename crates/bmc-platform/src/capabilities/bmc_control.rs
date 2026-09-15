@@ -21,28 +21,50 @@ use nv_redfish::core::Bmc;
 use crate::{DriverOutcome, OpCx, PlatformError};
 
 /// BMC reset, factory-default, and time-configuration mutations.
+///
+/// Every operation defaults to delegating to [`Self::standard`], so a driver
+/// implements only the operations its platform deviates on.
 #[async_trait]
 pub trait BmcControl<B: Bmc>: Send + Sync {
-    async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
+    /// The driver every operation this driver does not implement delegates to.
+    ///
+    /// Vendor and model drivers return the capability's standard driver and
+    /// implement only their deviations. The standard driver implements every
+    /// operation and returns `self`.
+    fn standard(&self) -> &dyn BmcControl<B>;
+
+    async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().reset(cx).await
+    }
 
     async fn reset_to_factory_defaults(
         &self,
         cx: &OpCx<'_, B>,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().reset_to_factory_defaults(cx).await
+    }
 
     async fn set_ntp_servers(
         &self,
         cx: &OpCx<'_, B>,
         servers: &[String],
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().set_ntp_servers(cx, servers).await
+    }
 
-    async fn set_utc_timezone(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>;
+    async fn set_utc_timezone(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().set_utc_timezone(cx).await
+    }
 
-    async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError>;
+    async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+        self.standard().ipmi_over_lan_enabled(cx).await
+    }
 
     async fn set_ipmi_over_lan(
         &self,
         cx: &OpCx<'_, B>,
         enabled: bool,
-    ) -> Result<DriverOutcome, PlatformError>;
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().set_ipmi_over_lan(cx, enabled).await
+    }
 }

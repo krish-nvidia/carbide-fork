@@ -12,8 +12,8 @@ mod lenovo;
 mod nvidia;
 mod standard;
 
-pub(crate) use ami::MEGARAC_BIOS;
+pub(crate) use ami::MegaRacBios;
 pub(crate) use dell::IdracBios;
-pub(crate) use lenovo::XCC_BIOS;
-pub(crate) use nvidia::{BLUEFIELD_BIOS, OPENBMC_BIOS, VIKING_BIOS};
-pub(crate) use standard::STANDARD_BIOS;
+pub(crate) use lenovo::XccBios;
+pub(crate) use nvidia::{BlueFieldBios, OpenBmcBios, VikingBios};
+pub(crate) use standard::StandardBios;

@@ -13,12 +13,13 @@ mod liteon;
 mod nvidia;
 mod standard;
 mod supermicro;
+mod support;
 
 pub(crate) use dell::IdracPower;
 pub(crate) use delta::DeltaPowerShelfPower;
 pub(crate) use hpe::IloPower;
-pub(crate) use lenovo::{SR650_V4_POWER, Sr675V3OvxPower, XCC_POWER};
+pub(crate) use lenovo::{Sr650V4Power, Sr675V3OvxPower, XccPower};
 pub(crate) use liteon::LiteOnPowerShelfPower;
-pub(crate) use nvidia::{OPENBMC_POWER, VIKING_POWER};
-pub(crate) use standard::STANDARD_POWER;
-pub(crate) use supermicro::SMC_POWER;
+pub(crate) use nvidia::{OpenBmcPower, VikingPower};
+pub(crate) use standard::StandardPower;
+pub(crate) use supermicro::SmcPower;

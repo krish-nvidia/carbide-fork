@@ -7,17 +7,28 @@ use std::num::NonZeroU64;
 
 use async_trait::async_trait;
 use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::{ActionError, Bmc};
+use nv_redfish::Resource;
+use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::resource::{PowerState, ResetType};
+use serde_json::json;
 
-use super::xcc::XCC_AC_POWER_CYCLE;
-use crate::power::standard;
+use crate::power::standard::{self, StandardPower};
 
 /// Lenovo ThinkSystem SR675 V3 OVX power workaround.
 ///
 /// The selection rule limits this driver to SKU `7D9RCTOLWW` with UEFI 7.10
 /// and BMC 9.10, where a standard ForceRestart can hang.
 pub(crate) struct Sr675V3OvxPower;
+
+/// Restores AC power through the XCC OEM system reset.
+async fn ac_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+    let target = ODataId::from(format!(
+        "{}/Actions/Oem/LenovoComputerSystem.SystemReset",
+        cx.system()?.odata_id()
+    ));
+    cx.post(&target, &json!({"ResetType": "ACPowerCycle"}))
+        .await
+}
 
 fn force_restart_outcome(state: PowerState) -> DriverOutcome {
     if state != PowerState::Off {
@@ -35,13 +46,9 @@ fn force_restart_outcome(state: PowerState) -> DriverOutcome {
 }
 
 #[async_trait]
-impl<B> Power<B> for Sr675V3OvxPower
-where
-    B: Bmc,
-    B::Error: ActionError,
-{
-    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
-        standard::state(cx)
+impl<B: Bmc> Power<B> for Sr675V3OvxPower {
+    fn standard(&self) -> &dyn Power<B> {
+        &StandardPower
     }
 
     async fn ac_power_cycle_supported(&self, _cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
@@ -55,18 +62,9 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         match reset_type {
             ResetType::ForceRestart => Ok(force_restart_outcome(standard::state(cx)?)),
-            ResetType::FullPowerCycle => standard::oem_power_cycle(cx, &XCC_AC_POWER_CYCLE).await,
-            other => standard::reset(cx, other).await,
+            ResetType::FullPowerCycle => ac_power_cycle(cx).await,
+            other => self.standard().set(cx, other).await,
         }
-    }
-
-    async fn chassis_reset(
-        &self,
-        cx: &OpCx<'_, B>,
-        chassis_id: &str,
-        reset_type: ResetType,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::chassis_reset(cx, chassis_id, reset_type).await
     }
 }
 

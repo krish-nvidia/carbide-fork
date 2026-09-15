@@ -7,6 +7,6 @@ mod bluefield;
 mod openbmc;
 mod viking;
 
-pub(crate) use bluefield::BLUEFIELD_BIOS;
-pub(crate) use openbmc::OPENBMC_BIOS;
-pub(crate) use viking::VIKING_BIOS;
+pub(crate) use bluefield::BlueFieldBios;
+pub(crate) use openbmc::OpenBmcBios;
+pub(crate) use viking::VikingBios;
