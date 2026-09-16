@@ -27,8 +27,6 @@ mod endpoint;
 mod error;
 mod execute;
 mod ipmi;
-mod selection;
-mod table;
 
 pub use connection::{AuthRetryError, ConnectionManager};
 pub use credentials::{
@@ -39,9 +37,3 @@ pub use endpoint::{BmcRef, BmcRefError, ConnectedBmc};
 pub use error::ConnectError;
 pub use execute::{ExecuteError, Executor, Progress};
 pub use ipmi::EndpointIpmiOps;
-pub use selection::{
-    FirmwareVersionRange, FirmwareVersionRangeError, IdentityField, IdentityMatcher, MatchPattern,
-    MatchedRule, Precedence, ResolvedSelection, RuleSet, RuleSetError, RuleSetHash, SelectionError,
-    SelectionRule,
-};
-pub use table::{AnyDriver, DriverTable, DriverTableError};

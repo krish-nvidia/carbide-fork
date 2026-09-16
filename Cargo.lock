@@ -793,16 +793,18 @@ name = "bmc-drivers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "bmc-mock",
  "bmc-platform",
- "bmc-runtime",
  "carbide-test-support",
+ "carbide-utils",
  "hex",
  "nv-redfish",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -898,6 +900,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "version-compare 0.2.1",
 ]
 
 [[package]]
@@ -905,7 +908,7 @@ name = "bmc-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "blake3",
+ "bmc-drivers",
  "bmc-mock",
  "bmc-platform",
  "carbide-ipmi",
@@ -920,8 +923,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "toml 1.1.2+spec-1.1.0",
- "version-compare 0.2.1",
 ]
 
 [[package]]

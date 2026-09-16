@@ -18,8 +18,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use bmc_drivers::{
+    Catalog, CatalogError, DriverMap, Drivers, ResolvedSelection, Rules, SelectionHash,
+};
 use bmc_platform::{
-    ClassifyBmcError, DriverMap, EtagMode, IpmiOps, OpCx, PlatformError, PlatformIdentity,
+    Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, ClassifyBmcError, Console, Dpu,
+    EtagMode, Firmware, IpmiOps, Lockdown, OpCx, PlatformError, PlatformIdentity, Power,
+    SecureBoot, Storage,
 };
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use carbide_utils::redfish::{BmcAccessInfo, parse_uri_host_ip};
@@ -27,8 +32,6 @@ use mac_address::MacAddress;
 use nv_redfish::{Bmc, ServiceRoot};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::selection::{ResolvedSelection, RuleSet, RuleSetHash};
 
 /// Secret-free, serializable identity of a BMC access endpoint.
 ///
@@ -41,8 +44,6 @@ pub struct BmcRef {
     credential_key: CredentialKey,
     #[serde(default)]
     identity: PlatformIdentity,
-    #[serde(default)]
-    etag_mode: EtagMode,
     selection: ResolvedSelection,
 }
 
@@ -52,8 +53,6 @@ struct BmcRefWire {
     credential_key: CredentialKey,
     #[serde(default)]
     identity: PlatformIdentity,
-    #[serde(default)]
-    etag_mode: EtagMode,
     selection: ResolvedSelection,
 }
 
@@ -65,7 +64,6 @@ impl TryFrom<BmcRefWire> for BmcRef {
             wire.address,
             wire.credential_key,
             wire.identity,
-            wire.etag_mode,
             wire.selection,
         )
     }
@@ -80,7 +78,6 @@ impl BmcRef {
         address: SocketAddr,
         credential_key: CredentialKey,
         identity: PlatformIdentity,
-        etag_mode: EtagMode,
         selection: ResolvedSelection,
     ) -> Result<Self, BmcRefError> {
         if root_mac_address(&credential_key).is_none() {
@@ -90,7 +87,6 @@ impl BmcRef {
             address,
             credential_key,
             identity,
-            etag_mode,
             selection,
         })
     }
@@ -100,7 +96,6 @@ impl BmcRef {
         access: &BmcAccessInfo,
         credential_key: CredentialKey,
         identity: PlatformIdentity,
-        etag_mode: EtagMode,
         selection: ResolvedSelection,
     ) -> Result<Self, BmcRefError> {
         let ip = parse_uri_host_ip(&access.host)
@@ -109,7 +104,6 @@ impl BmcRef {
             SocketAddr::new(ip, access.port.unwrap_or(443)),
             credential_key,
             identity,
-            etag_mode,
             selection,
         )?;
         if reference.mac_address() != access.mac_address {
@@ -140,9 +134,9 @@ impl BmcRef {
         &self.identity
     }
 
-    /// Returns the `If-Match` convention selected for this BMC.
+    /// Returns the `If-Match` convention the selected rule declared.
     pub const fn etag_mode(&self) -> EtagMode {
-        self.etag_mode
+        self.selection.etag_mode
     }
 
     /// Returns the complete driver map persisted during exploration.
@@ -156,13 +150,13 @@ impl BmcRef {
     }
 
     /// Returns the hash of the rule set that produced the persisted selection.
-    pub const fn rule_set_hash(&self) -> RuleSetHash {
-        self.selection.rule_set_hash
+    pub const fn selection_hash(&self) -> SelectionHash {
+        self.selection.hash
     }
 
     /// Whether the persisted selection was produced by `rules`.
-    pub fn selection_is_current(&self, rules: &RuleSet) -> bool {
-        self.rule_set_hash() == rules.hash()
+    pub fn selection_is_current(&self, rules: &Rules) -> bool {
+        self.selection_hash() == rules.hash()
     }
 }
 
@@ -190,14 +184,19 @@ pub enum BmcRefError {
 }
 
 /// A live Redfish endpoint using the driver map persisted during exploration.
-pub struct ConnectedBmc<B: Bmc> {
+///
+/// The capability accessors ([`ConnectedBmc::power`] and friends) resolve
+/// the persisted selection through the compiled catalogue, so a controller
+/// writes `bmc.power()?.set(&cx, reset_type)` and never sees driver ids.
+pub struct ConnectedBmc<B: Bmc + 'static> {
     endpoint: BmcRef,
     bmc: Arc<B>,
     service_root: Arc<ServiceRoot<B>>,
     ipmi: Option<Arc<dyn IpmiOps>>,
+    catalog: &'static dyn Catalog<B>,
 }
 
-impl<B: Bmc> ConnectedBmc<B>
+impl<B: Bmc + 'static> ConnectedBmc<B>
 where
     B::Error: ClassifyBmcError,
 {
@@ -213,7 +212,86 @@ where
             bmc,
             service_root,
             ipmi,
+            catalog: &Drivers,
         }
+    }
+
+    /// Replaces the compiled catalogue, for tests that script driver behavior.
+    pub fn with_catalog(mut self, catalog: &'static dyn Catalog<B>) -> Self {
+        self.catalog = catalog;
+        self
+    }
+
+    /// The power driver selected for this BMC.
+    pub fn power(&self) -> Result<&dyn Power<B>, CatalogError> {
+        self.catalog
+            .power(self.endpoint.driver_map().get(Capability::Power))
+    }
+
+    /// The manager-control driver selected for this BMC.
+    pub fn bmc_control(&self) -> Result<&dyn BmcControl<B>, CatalogError> {
+        self.catalog
+            .bmc_control(self.endpoint.driver_map().get(Capability::BmcControl))
+    }
+
+    /// The BIOS driver selected for this BMC.
+    pub fn bios(&self) -> Result<&dyn Bios<B>, CatalogError> {
+        self.catalog
+            .bios(self.endpoint.driver_map().get(Capability::Bios))
+    }
+
+    /// The boot-order driver selected for this BMC.
+    pub fn boot_order(&self) -> Result<&dyn BootOrder<B>, CatalogError> {
+        self.catalog
+            .boot_order(self.endpoint.driver_map().get(Capability::BootOrder))
+    }
+
+    /// The Secure Boot driver selected for this BMC.
+    pub fn secure_boot(&self) -> Result<&dyn SecureBoot<B>, CatalogError> {
+        self.catalog
+            .secure_boot(self.endpoint.driver_map().get(Capability::SecureBoot))
+    }
+
+    /// The lockdown driver selected for this BMC.
+    pub fn lockdown(&self) -> Result<&dyn Lockdown<B>, CatalogError> {
+        self.catalog
+            .lockdown(self.endpoint.driver_map().get(Capability::Lockdown))
+    }
+
+    /// The accounts driver selected for this BMC.
+    pub fn accounts(&self) -> Result<&dyn Accounts<B>, CatalogError> {
+        self.catalog
+            .accounts(self.endpoint.driver_map().get(Capability::Accounts))
+    }
+
+    /// The firmware driver selected for this BMC.
+    pub fn firmware(&self) -> Result<&dyn Firmware<B>, CatalogError> {
+        self.catalog
+            .firmware(self.endpoint.driver_map().get(Capability::Firmware))
+    }
+
+    /// The storage driver selected for this BMC.
+    pub fn storage(&self) -> Result<&dyn Storage<B>, CatalogError> {
+        self.catalog
+            .storage(self.endpoint.driver_map().get(Capability::Storage))
+    }
+
+    /// The DPU driver selected for this BMC.
+    pub fn dpu(&self) -> Result<&dyn Dpu<B>, CatalogError> {
+        self.catalog
+            .dpu(self.endpoint.driver_map().get(Capability::Dpu))
+    }
+
+    /// The attestation driver selected for this BMC.
+    pub fn attestation(&self) -> Result<&dyn Attestation<B>, CatalogError> {
+        self.catalog
+            .attestation(self.endpoint.driver_map().get(Capability::Attestation))
+    }
+
+    /// The console driver selected for this BMC.
+    pub fn console(&self) -> Result<&dyn Console<B>, CatalogError> {
+        self.catalog
+            .console(self.endpoint.driver_map().get(Capability::Console))
     }
 
     /// Returns the unconnected endpoint metadata.
@@ -250,11 +328,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use bmc_platform::{CapabilitySelection, DriverMap};
+    use bmc_drivers::CapabilitySelection;
     use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 
     use super::*;
-    use crate::selection::RuleSet;
 
     fn unsupported_driver_map() -> DriverMap {
         DriverMap::filled(CapabilitySelection::Unsupported)
@@ -263,8 +340,9 @@ mod tests {
     fn selection(drivers: DriverMap) -> ResolvedSelection {
         ResolvedSelection {
             drivers,
+            etag_mode: EtagMode::default(),
             matched_rules: Vec::new(),
-            rule_set_hash: RuleSet::new(Vec::new())
+            hash: Rules::new(Vec::new())
                 .expect("empty rules are valid")
                 .hash(),
         }
@@ -286,7 +364,6 @@ mod tests {
             "192.0.2.10:8443".parse().expect("valid socket address"),
             credential_key(mac_address),
             PlatformIdentity::default(),
-            EtagMode::default(),
             selection(driver_map.clone()),
         )
         .expect("root credential key is valid");
@@ -296,9 +373,9 @@ mod tests {
         assert_eq!(decoded.address(), reference.address());
         assert_eq!(decoded.mac_address(), mac_address);
         assert_eq!(decoded.driver_map(), &driver_map);
-        assert_eq!(decoded.rule_set_hash(), reference.rule_set_hash());
+        assert_eq!(decoded.selection_hash(), reference.selection_hash());
         assert!(
-            decoded.selection_is_current(&RuleSet::new(Vec::new()).expect("empty rules are valid"))
+            decoded.selection_is_current(&Rules::new(Vec::new()).expect("empty rules are valid"))
         );
         assert!(encoded.contains("192.0.2.10"));
         assert!(!encoded.to_ascii_lowercase().contains("password"));
@@ -329,7 +406,6 @@ mod tests {
             &access,
             credential_key(mac_address),
             PlatformIdentity::default(),
-            EtagMode::default(),
             selection(unsupported_driver_map()),
         )
         .expect("IP endpoint converts");
@@ -352,7 +428,6 @@ mod tests {
                 },
                 credential_key(MacAddress::new([2, 0, 0, 0, 0, 2])),
                 PlatformIdentity::default(),
-                EtagMode::default(),
                 selection(unsupported_driver_map()),
             ),
             Err(BmcRefError::InvalidIpAddress(host)) if host == "bmc.example.test"
@@ -369,7 +444,6 @@ mod tests {
                     credential_type: BmcCredentialType::SiteWideRoot,
                 },
                 PlatformIdentity::default(),
-                EtagMode::default(),
                 selection(unsupported_driver_map()),
             ),
             Err(BmcRefError::UnsupportedCredentialKey)
@@ -385,7 +459,6 @@ mod tests {
                 &access,
                 credential_key(MacAddress::new([2, 0, 0, 0, 0, 3])),
                 PlatformIdentity::default(),
-                EtagMode::default(),
                 selection(unsupported_driver_map()),
             ),
             Err(BmcRefError::MacAddressMismatch)

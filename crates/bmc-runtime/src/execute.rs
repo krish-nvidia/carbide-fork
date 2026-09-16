@@ -20,9 +20,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use bmc_drivers::CatalogError;
 use bmc_platform::{
-    Capability, ClassifyBmcError, ControllerAction, DriverOutcome, Fetched, OpCx,
-    OperationReference, PlatformError,
+    ClassifyBmcError, ControllerAction, DriverOutcome, Fetched, OpCx, OperationReference,
+    PlatformError,
 };
 use nv_redfish::Bmc;
 use nv_redfish::core::ODataId;
@@ -30,7 +31,7 @@ use nv_redfish::schema::task::{Task, TaskState};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{ConnectedBmc, DriverTable, DriverTableError};
+use crate::ConnectedBmc;
 
 /// Where an operation stands after the executor has done what it can.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,7 +54,7 @@ pub enum ExecuteError {
     #[error(transparent)]
     Platform(#[from] PlatformError),
     #[error(transparent)]
-    Drivers(#[from] DriverTableError),
+    Drivers(#[from] CatalogError),
     /// Asynchronous BMC work ended in a failed state.
     #[error("BMC work {uri} ended in state {state}")]
     Failed { uri: ODataId, state: String },
@@ -74,7 +75,6 @@ pub enum ExecuteError {
 /// so a prerequisite cycle between drivers fails instead of recursing forever.
 pub struct Executor<'a, B: Bmc + 'static> {
     bmc: &'a ConnectedBmc<B>,
-    drivers: &'a DriverTable<B>,
     poll_interval: Duration,
     deadline: Instant,
     remaining_actions: AtomicU32,
@@ -140,10 +140,9 @@ where
     pub const MIN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
     /// Creates an executor that gives up after `budget` of wall-clock time.
-    pub fn new(bmc: &'a ConnectedBmc<B>, drivers: &'a DriverTable<B>, budget: Duration) -> Self {
+    pub fn new(bmc: &'a ConnectedBmc<B>, budget: Duration) -> Self {
         Self {
             bmc,
-            drivers,
             poll_interval: Duration::from_secs(5),
             deadline: Instant::now() + budget,
             remaining_actions: AtomicU32::new(Self::DEFAULT_MAX_ACTIONS),
@@ -305,36 +304,19 @@ where
                 });
             }
             self.charge(&action)?;
-            let map = self.bmc.endpoint().driver_map();
             let outcome = match action {
                 ControllerAction::Wait { seconds } => {
                     tokio::time::sleep(Duration::from_secs(seconds.get())).await;
                     return Ok(Progress::Complete);
                 }
                 ControllerAction::Power(reset_type) => {
-                    self.drivers
-                        .power(map.get(Capability::Power))?
-                        .set(cx, reset_type)
-                        .await?
+                    self.bmc.power()?.set(cx, reset_type).await?
                 }
-                ControllerAction::BmcReset => {
-                    self.drivers
-                        .bmc_control(map.get(Capability::BmcControl))?
-                        .reset(cx)
-                        .await?
-                }
+                ControllerAction::BmcReset => self.bmc.bmc_control()?.reset(cx).await?,
                 ControllerAction::SetLockdown { scope, state } => {
-                    self.drivers
-                        .lockdown(map.get(Capability::Lockdown))?
-                        .set(cx, scope, state)
-                        .await?
+                    self.bmc.lockdown()?.set(cx, scope, state).await?
                 }
-                ControllerAction::ClearNvram => {
-                    self.drivers
-                        .bios(map.get(Capability::Bios))?
-                        .reset(cx)
-                        .await?
-                }
+                ControllerAction::ClearNvram => self.bmc.bios()?.reset(cx).await?,
                 ControllerAction::RefreshExploration
                 | ControllerAction::ManualIntervention { .. } => unreachable!("deferred above"),
             };

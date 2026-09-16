@@ -18,11 +18,13 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use bmc_drivers::{
+    CapabilitySelection, Catalog, CatalogError, DriverMap, ResolvedSelection, Rules,
+};
 use bmc_mock::test_support::{TestBmc, dell_poweredge_r750_bmc};
 use bmc_platform::{
-    CapabilitySelection, ControllerAction, DriverMap, DriverOutcome, EtagMode,
-    ManualInterventionCode, OpCx, OperationReference, PlatformError, PlatformIdentity, Power,
-    SystemIdentity,
+    Capability, ControllerAction, DriverOutcome, EtagMode, ManualInterventionCode, OpCx,
+    OperationReference, PlatformError, PlatformIdentity, Power, SystemIdentity,
 };
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use mac_address::MacAddress;
@@ -30,7 +32,7 @@ use nv_redfish::core::ODataId;
 use nv_redfish::resource::{PowerState, ResetType};
 
 use super::*;
-use crate::{AnyDriver, BmcRef, ResolvedSelection, RuleSet};
+use crate::BmcRef;
 
 /// A power driver that replays scripted outcomes and records what it was asked.
 struct ScriptedPower {
@@ -79,19 +81,22 @@ impl Power<TestBmc> for ScriptedPower {
     }
 }
 
-async fn harness(
-    outcomes: Vec<DriverOutcome>,
-) -> (
-    ConnectedBmc<TestBmc>,
-    DriverTable<TestBmc>,
-    &'static ScriptedPower,
-) {
+/// A catalogue that serves the scripted power driver for every power selection.
+struct ScriptedCatalog(&'static ScriptedPower);
+
+impl Catalog<TestBmc> for ScriptedCatalog {
+    fn power(&self, _selection: &CapabilitySelection) -> Result<&dyn Power<TestBmc>, CatalogError> {
+        Ok(self.0)
+    }
+}
+
+async fn harness(outcomes: Vec<DriverOutcome>) -> (ConnectedBmc<TestBmc>, &'static ScriptedPower) {
     let bmc = dell_poweredge_r750_bmc().await;
     let power: &'static ScriptedPower = Box::leak(Box::new(ScriptedPower {
         outcomes: Mutex::new(outcomes),
         calls: Mutex::new(Vec::new()),
     }));
-    let table = DriverTable::new([(None, AnyDriver::Power(power))]).expect("table builds");
+    let catalog: &'static ScriptedCatalog = Box::leak(Box::new(ScriptedCatalog(power)));
     let endpoint = BmcRef::new(
         "192.0.2.10:443".parse().expect("socket address"),
         CredentialKey::BmcCredentials {
@@ -106,19 +111,20 @@ async fn harness(
             }),
             ..PlatformIdentity::default()
         },
-        EtagMode::default(),
         ResolvedSelection {
             drivers: DriverMap::filled(CapabilitySelection::Unsupported)
                 .with(Capability::Power, CapabilitySelection::Standard),
+            etag_mode: EtagMode::default(),
             matched_rules: Vec::new(),
-            rule_set_hash: RuleSet::new(Vec::new())
+            hash: Rules::new(Vec::new())
                 .expect("empty rules are valid")
                 .hash(),
         },
     )
     .expect("endpoint");
-    let connected = ConnectedBmc::new(endpoint, bmc.bmc.clone(), bmc.service_root, None);
-    (connected, table, power)
+    let connected =
+        ConnectedBmc::new(endpoint, bmc.bmc.clone(), bmc.service_root, None).with_catalog(catalog);
+    (connected, power)
 }
 
 fn power(reset_type: ResetType) -> ControllerAction {
@@ -127,8 +133,8 @@ fn power(reset_type: ResetType) -> ControllerAction {
 
 #[tokio::test]
 async fn follow_ups_run_in_order_and_blocked_becomes_retry() {
-    let (connected, table, driver) = harness(vec![]).await;
-    let executor = Executor::new(&connected, &table, Duration::from_secs(5));
+    let (connected, driver) = harness(vec![]).await;
+    let executor = Executor::new(&connected, Duration::from_secs(5));
 
     let progress = executor
         .drive(DriverOutcome::complete().then([power(ResetType::ForceOff), power(ResetType::On)]))
@@ -149,8 +155,8 @@ async fn follow_ups_run_in_order_and_blocked_becomes_retry() {
 
 #[tokio::test]
 async fn deferred_actions_carry_the_rest_of_the_queue() {
-    let (connected, table, _) = harness(vec![]).await;
-    let executor = Executor::new(&connected, &table, Duration::from_secs(5));
+    let (connected, _) = harness(vec![]).await;
+    let executor = Executor::new(&connected, Duration::from_secs(5));
     let code = ManualInterventionCode::new("replace-psu".to_string()).expect("code");
     let progress = executor
         .drive(DriverOutcome::complete().then([
@@ -173,8 +179,8 @@ async fn a_prerequisite_cycle_exhausts_the_action_budget() {
     let looping = std::iter::repeat_with(|| DriverOutcome::blocked(power(ResetType::ForceOff)))
         .take(100)
         .collect();
-    let (connected, table, driver) = harness(looping).await;
-    let executor = Executor::new(&connected, &table, Duration::from_secs(5)).with_max_actions(3);
+    let (connected, driver) = harness(looping).await;
+    let executor = Executor::new(&connected, Duration::from_secs(5)).with_max_actions(3);
     let error = executor
         .drive(DriverOutcome::blocked(power(ResetType::ForceOff)))
         .await
@@ -188,8 +194,8 @@ async fn a_prerequisite_cycle_exhausts_the_action_budget() {
 
 #[tokio::test]
 async fn every_accepted_reference_is_polled_before_follow_ups() {
-    let (connected, table, driver) = harness(vec![]).await;
-    let executor = Executor::new(&connected, &table, Duration::from_secs(5));
+    let (connected, driver) = harness(vec![]).await;
+    let executor = Executor::new(&connected, Duration::from_secs(5));
     let outcome = DriverOutcome::Accepted {
         reference: OperationReference::RedfishTask {
             uri: ODataId::from("/redfish/v1/TaskService/Tasks/42".to_string()),

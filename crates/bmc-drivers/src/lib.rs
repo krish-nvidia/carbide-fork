@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! Compiled BMC capability drivers, their selection rules, and write policy.
+//! Compiled BMC capability drivers and the platform rules that select them.
 
 mod accounts;
 mod attestation;
@@ -14,15 +14,18 @@ mod console;
 mod dell;
 mod dpu;
 mod drivers;
-mod etag_mode;
 mod firmware;
 mod lockdown;
 mod power;
 mod resources;
 mod rules;
 mod secure_boot;
+mod selection;
 mod storage;
 
-pub use drivers::drivers;
-pub use etag_mode::etag_mode;
+pub use drivers::{Catalog, CatalogError, Driver, Drivers, PluginId, PluginIdError};
 pub use rules::{built_in_rules, rules_with_overrides};
+pub use selection::{
+    CapabilitySelection, DriverMap, MatchedRule, ResolvedSelection, Rule, RuleError, Rules,
+    SelectionError, SelectionHash,
+};

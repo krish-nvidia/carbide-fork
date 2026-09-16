@@ -3,381 +3,247 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use bmc_platform::{Capability, CapabilitySelection};
-use bmc_runtime::{
-    IdentityField, IdentityMatcher, MatchPattern, RuleSet, RuleSetError, SelectionRule,
-};
+//! The compiled platform rules mapping identity to capability drivers.
+//!
+//! Rules are declared from broad to narrow: vendor-wide evidence first,
+//! then BMC product, then exact model or firmware. Precedence is derived from
+//! the identity fields a rule reads, so declaration order carries no weight;
+//! it only keeps the file readable. Tests prove every rule names a compiled
+//! driver of the right capability.
 
-/// The compiled selection rules mapping platform identity to capability drivers.
-///
-/// Tests prove every rule names a driver in [`crate::drivers`].
-pub fn built_in_rules() -> RuleSet {
-    RuleSet::new(built_ins()).expect("compiled selection rules must be valid")
+use bmc_platform::{Capability, EtagMode, IdentityField, IdentityMatcher, MatchPattern};
+
+use crate::drivers::Driver::{self, *};
+use crate::selection::{Rule, RuleError, Rules};
+
+/// The compiled rules.
+pub fn built_in_rules() -> Rules {
+    Rules::new(built_ins()).expect("compiled rules must be valid")
 }
 
 /// The compiled rules plus deployment overrides written as TOML `[[rules]]`.
 ///
-/// Parsed rules rank as deployment overrides, so they outrank every built-in
-/// rule and can never be shadowed by one.
-pub fn rules_with_overrides(overrides: &str) -> Result<RuleSet, RuleSetError> {
-    RuleSet::with_overrides(built_ins(), overrides)
+/// Parsed rules rank as deployment overrides, so they outrank every
+/// built-in rule and can never be shadowed by one.
+pub fn rules_with_overrides(overrides: &str) -> Result<Rules, RuleError> {
+    Rules::with_overrides(built_ins(), overrides)
 }
 
-fn built_ins() -> Vec<SelectionRule> {
-    let mut rules = Vec::new();
-
-    family(
-        &mut rules,
-        "dell",
-        vec![service_root_vendor("Dell")],
-        &[
-            (Capability::Power, "dell-idrac-power"),
-            (Capability::BmcControl, "dell-idrac-bmc-control"),
-            (Capability::Bios, "dell-idrac-bios"),
-            (Capability::BootOrder, "dell-idrac-boot-order"),
-            (Capability::Lockdown, "dell-idrac-lockdown"),
-            (Capability::Accounts, "dell-idrac-accounts"),
-            (Capability::Firmware, "dell-idrac-firmware"),
-            (Capability::Storage, "dell-idrac-boss-storage"),
-            (Capability::Console, "dell-idrac-console"),
-        ],
-    );
-    family(
-        &mut rules,
-        "hpe",
-        vec![service_root_vendor("HPE")],
-        &[
-            (Capability::Power, "hpe-ilo-power"),
-            (Capability::BmcControl, "hpe-ilo-bmc-control"),
-            (Capability::BootOrder, "hpe-ilo-boot-order"),
-            (Capability::Lockdown, "hpe-ilo-lockdown"),
-            (Capability::Accounts, "hpe-ilo-accounts"),
-            (Capability::Console, "hpe-ilo-console"),
-        ],
-    );
-    family(
-        &mut rules,
-        "lenovo-xcc",
-        vec![service_root_vendor("Lenovo")],
-        &[
-            (Capability::Power, "lenovo-xcc-power"),
-            (Capability::Bios, "lenovo-xcc-bios"),
-            (Capability::Lockdown, "lenovo-xcc-lockdown"),
-            (Capability::Accounts, "lenovo-xcc-accounts"),
-            (Capability::Console, "lenovo-xcc-console"),
-        ],
-    );
-    family(
-        &mut rules,
-        "supermicro",
-        vec![service_root_vendor("Supermicro")],
-        &[
-            (Capability::Power, "supermicro-smc-power"),
-            (Capability::BmcControl, "supermicro-smc-bmc-control"),
-            (Capability::BootOrder, "supermicro-x13-boot-order"),
-            (Capability::Lockdown, "supermicro-smc-lockdown"),
-            (Capability::Console, "supermicro-bmc-console"),
-        ],
-    );
-    family(
-        &mut rules,
-        "ami-megarac",
-        vec![service_root_vendor("AMI")],
-        &[
-            (Capability::BmcControl, "ami-megarac-bmc-control"),
-            (Capability::Bios, "ami-megarac-bios"),
-            (Capability::Lockdown, "ami-megarac-lockdown"),
-            (Capability::Console, "ami-megarac-console"),
-        ],
-    );
-
-    // Lenovo HS350x-class trays run AMI firmware behind a Lenovo service root;
-    // the extra OEM-key matcher outranks the plain XCC vendor rule.
-    family(
-        &mut rules,
-        "lenovo-ami",
-        vec![service_root_vendor("Lenovo"), service_root_oem_key("Ami")],
-        &[
-            (Capability::BmcControl, "ami-megarac-bmc-control"),
-            (Capability::Bios, "ami-megarac-bios"),
-            (Capability::Lockdown, "lenovo-ami-lockdown"),
-            (Capability::Firmware, "ami-megarac-firmware"),
-            (Capability::Console, "lenovo-ami-console"),
-        ],
-    );
-    // The AMI firmware takes the standard lockout policy, not XCC's.
-    rules.push(SelectionRule::new(
-        "lenovo-ami-accounts",
-        Capability::Accounts,
-        vec![service_root_vendor("Lenovo"), service_root_oem_key("Ami")],
-        CapabilitySelection::Standard,
-    ));
-
-    family(
-        &mut rules,
-        "nvidia-gbx00",
-        vec![service_root_product(&["GB BMC", "GB200 NVL", "GB NVL"])],
-        &[
-            (Capability::Power, "nvidia-openbmc-power"),
-            (Capability::Bios, "nvidia-openbmc-bios"),
-            (Capability::BootOrder, "nvidia-openbmc-boot-order"),
-            (Capability::Firmware, "nvidia-openbmc-firmware"),
-            (Capability::Lockdown, "nvidia-openbmc-lockdown"),
-            (Capability::Accounts, "nvidia-openbmc-accounts"),
-            (Capability::Attestation, "nvidia-hgx-attestation"),
-        ],
-    );
-    family(
-        &mut rules,
-        "nvidia-vera",
-        vec![service_root_product(&["VR NVL72"])],
-        &[
-            (Capability::Power, "nvidia-openbmc-power"),
-            (Capability::Bios, "nvidia-openbmc-bios"),
-            (Capability::BootOrder, "nvidia-openbmc-boot-order"),
-            (Capability::Firmware, "nvidia-openbmc-firmware"),
-            (Capability::Lockdown, "nvidia-openbmc-lockdown"),
-            (Capability::Accounts, "nvidia-openbmc-accounts"),
-            (Capability::Attestation, "nvidia-hgx-attestation"),
-        ],
-    );
-    family(
-        &mut rules,
-        "nvidia-gh",
-        vec![service_root_product(&["P3809"])],
-        &[
-            (Capability::Power, "nvidia-openbmc-power"),
-            (Capability::Bios, "nvidia-openbmc-bios"),
-            (Capability::BootOrder, "nvidia-openbmc-boot-order"),
-            (Capability::Firmware, "nvidia-openbmc-firmware"),
-            (Capability::Lockdown, "nvidia-openbmc-lockdown"),
-            (Capability::Accounts, "nvidia-openbmc-accounts"),
-        ],
-    );
-    rules.push(SelectionRule::new(
-        "nvidia-gh-attestation",
-        Capability::Attestation,
-        vec![service_root_product(&["P3809"])],
-        CapabilitySelection::Unsupported,
-    ));
-    family(
-        &mut rules,
-        "bluefield",
-        vec![service_root_product(&[
-            "Nvidia-BMCMezz",
-            "BlueField-3 DPU",
-            "BlueField-4",
-            "B4240V",
-        ])],
-        &[
-            (Capability::Bios, "nvidia-bluefield-bios"),
-            (Capability::Accounts, "nvidia-bluefield-accounts"),
-            (Capability::Dpu, "nvidia-bluefield-dpu"),
-            (Capability::Console, "nvidia-bluefield-console"),
-        ],
-    );
-
-    // GB NVSwitch trays share the GH200 service root; only their chassis ids
-    // tell them apart. They have no BIOS, secure boot, lockdown, or attestation.
-    let nvswitch = || vec![contains(IdentityField::ChassisId, "NVSwitch")];
-    family(
-        &mut rules,
-        "nvidia-switch",
-        nvswitch(),
-        &[
-            (Capability::BootOrder, "nvidia-openbmc-boot-order"),
-            (Capability::Accounts, "nvidia-switch-accounts"),
-        ],
-    );
-    unsupported(
-        &mut rules,
-        "nvidia-switch",
-        nvswitch(),
-        &[
+fn built_ins() -> Vec<Rule> {
+    vec![
+        // ---- Vendor rules: ServiceRoot vendor or chassis manufacturer ----
+        Rule::new("dell", [vendor("Dell")]).drivers([
+            DellIdracPower,
+            DellIdracBmcControl,
+            DellIdracBios,
+            DellIdracBootOrder,
+            DellIdracLockdown,
+            DellIdracAccounts,
+            DellIdracFirmware,
+            DellIdracBossStorage,
+            DellIdracConsole,
+        ]),
+        Rule::new("hpe", [vendor("HPE")]).drivers([
+            HpeIloPower,
+            HpeIloBmcControl,
+            HpeIloBootOrder,
+            HpeIloLockdown,
+            HpeIloAccounts,
+            HpeIloConsole,
+        ]),
+        Rule::new("lenovo-xcc", [vendor("Lenovo")]).drivers([
+            LenovoXccPower,
+            LenovoXccBios,
+            LenovoXccLockdown,
+            LenovoXccAccounts,
+            LenovoXccConsole,
+        ]),
+        Rule::new("supermicro", [vendor("Supermicro")]).drivers([
+            SupermicroSmcPower,
+            SupermicroSmcBmcControl,
+            SupermicroX13BootOrder,
+            SupermicroSmcLockdown,
+            SupermicroBmcConsole,
+        ]),
+        // AMI MegaRAC requires `If-Match` but rejects the ETag it served.
+        Rule::new("ami-megarac", [vendor("AMI")])
+            .drivers([
+                AmiMegaRacBmcControl,
+                AmiMegaRacBios,
+                AmiMegaRacLockdown,
+                AmiMegaRacConsole,
+            ])
+            .etag(EtagMode::Wildcard),
+        // Lenovo HS350x-class trays run AMI firmware behind a Lenovo service
+        // root; the extra OEM-key matcher outranks the plain XCC vendor
+        // rule. The AMI firmware takes the standard lockout policy, not XCC's.
+        Rule::new("lenovo-ami", [vendor("Lenovo"), oem_key("Ami")])
+            .drivers([
+                AmiMegaRacBmcControl,
+                AmiMegaRacBios,
+                LenovoAmiLockdown,
+                AmiMegaRacFirmware,
+                LenovoAmiConsole,
+            ])
+            .standard([Capability::Accounts])
+            .etag(EtagMode::Wildcard),
+        // Power shelves have no ServiceRoot vendor; their chassis manufacturer
+        // identifies them.
+        Rule::new("delta-power-shelf", [chassis_manufacturer("Delta")])
+            .drivers([DeltaPowerShelfPower, DeltaPowerShelfAccounts])
+            .unsupported([
+                Capability::Bios,
+                Capability::BootOrder,
+                Capability::SecureBoot,
+                Capability::Attestation,
+            ]),
+        Rule::new("liteon-power-shelf", [chassis_manufacturer("Lite-On")])
+            .drivers([LiteOnPowerShelfPower, LiteOnPowerShelfAccounts])
+            .unsupported([
+                Capability::BootOrder,
+                Capability::SecureBoot,
+                Capability::Attestation,
+            ]),
+        // ---- Product rules: ServiceRoot product ----
+        Rule::new(
+            "nvidia-gbx00",
+            [product(&["GB BMC", "GB200 NVL", "GB NVL"])],
+        )
+        .drivers(OPENBMC_TRAY)
+        .drivers([NvidiaHgxAttestation]),
+        Rule::new("nvidia-vera", [product(&["VR NVL72"])])
+            .drivers(OPENBMC_TRAY)
+            .drivers([NvidiaHgxAttestation]),
+        Rule::new("nvidia-gh", [product(&["P3809"])])
+            .drivers(OPENBMC_TRAY)
+            .unsupported([Capability::Attestation]),
+        Rule::new(
+            "bluefield",
+            [product(&[
+                "Nvidia-BMCMezz",
+                "BlueField-3 DPU",
+                "BlueField-4",
+                "B4240V",
+            ])],
+        )
+        .drivers([
+            NvidiaBlueFieldBios,
+            NvidiaBlueFieldAccounts,
+            NvidiaBlueFieldDpu,
+            NvidiaBlueFieldConsole,
+        ]),
+        // ---- Model rules: exact system, chassis, or firmware evidence ----
+        // GB NVSwitch trays share the GH200 service root; only their chassis
+        // ids tell them apart. They have no BIOS, secure boot, lockdown, or
+        // attestation.
+        Rule::new(
+            "nvidia-switch",
+            [contains(IdentityField::ChassisId, "NVSwitch")],
+        )
+        .drivers([NvidiaOpenBmcBootOrder, NvidiaSwitchAccounts])
+        .unsupported([
             Capability::Bios,
             Capability::SecureBoot,
             Capability::Lockdown,
             Capability::Firmware,
             Capability::Attestation,
-        ],
-    );
-    let delta = || {
-        vec![contains_any_case(
-            IdentityField::ChassisManufacturer,
-            "Delta",
-        )]
-    };
-    family(
-        &mut rules,
-        "delta-power-shelf",
-        delta(),
-        &[
-            (Capability::Power, "delta-power-shelf-power"),
-            (Capability::Accounts, "delta-power-shelf-accounts"),
-        ],
-    );
-    unsupported(
-        &mut rules,
-        "delta-power-shelf",
-        delta(),
-        &[
-            Capability::Bios,
-            Capability::BootOrder,
-            Capability::SecureBoot,
-            Capability::Attestation,
-        ],
-    );
-    let liteon = || {
-        vec![contains_any_case(
-            IdentityField::ChassisManufacturer,
-            "Lite-On",
-        )]
-    };
-    family(
-        &mut rules,
-        "liteon-power-shelf",
-        liteon(),
-        &[
-            (Capability::Power, "liteon-power-shelf-power"),
-            (Capability::Accounts, "liteon-power-shelf-accounts"),
-        ],
-    );
-    unsupported(
-        &mut rules,
-        "liteon-power-shelf",
-        liteon(),
-        &[
-            Capability::BootOrder,
-            Capability::SecureBoot,
-            Capability::Attestation,
-        ],
-    );
-
-    // SR650 V4 cuts DPU power on a Redfish restart, so the host restarts over IPMI.
-    family(
-        &mut rules,
-        "lenovo-sr650-v4",
-        vec![
-            service_root_vendor("Lenovo"),
-            contains(IdentityField::SystemModel, "SR650 V4"),
-        ],
-        &[(Capability::Power, "lenovo-sr650-v4-power")],
-    );
-    // ARS-121L-DNR loses BMC reachability when its host interface is disabled.
-    family(
-        &mut rules,
-        "supermicro-ars121l",
-        vec![
-            service_root_vendor("Supermicro"),
-            contains(IdentityField::SystemModel, "ARS-121L-DNR"),
-        ],
-        &[(Capability::Lockdown, "supermicro-ars121l-lockdown")],
-    );
-    // BlueField-2 identifies itself only through its card chassis model.
-    family(
-        &mut rules,
-        "nvidia-bluefield2",
-        vec![contains_any_case(
-            IdentityField::ChassisModel,
-            "BlueField 2",
-        )],
-        &[(Capability::Dpu, "nvidia-bluefield2-dpu")],
-    );
-    family(
-        &mut rules,
-        "lenovo-gb300",
-        vec![
-            contains(IdentityField::SystemManufacturer, "Lenovo"),
-            contains(IdentityField::SystemModel, "GB300"),
-        ],
-        &[
-            (Capability::Bios, "ami-megarac-bios"),
-            (Capability::Lockdown, "lenovo-gb300-lockdown"),
-            (Capability::Console, "lenovo-gb300-console"),
-        ],
-    );
-    family(
-        &mut rules,
-        "nvidia-viking",
-        vec![exact_value(IdentityField::SystemId, "DGX")],
-        &[
-            (Capability::Power, "nvidia-viking-power"),
-            (Capability::BmcControl, "ami-megarac-bmc-control"),
-            (Capability::Bios, "nvidia-viking-bios"),
-            (Capability::Lockdown, "nvidia-viking-lockdown"),
-            (Capability::Accounts, "nvidia-viking-accounts"),
-            (Capability::Firmware, "nvidia-viking-firmware"),
-            (Capability::Console, "nvidia-viking-console"),
-        ],
-    );
-    family(
-        &mut rules,
-        "lenovo-sr675-v3-ovx",
-        vec![
-            exact_value(IdentityField::SystemSku, "7D9RCTOLWW"),
-            exact_value(IdentityField::ManagerFirmware, "9.10"),
-            exact_value(IdentityField::SystemBiosVersion, "7.10"),
-        ],
-        &[(Capability::Power, "lenovo-sr675-v3-ovx-power")],
-    );
-    rules
+        ]),
+        // SR650 V4 cuts DPU power on a Redfish restart, so the host restarts over IPMI.
+        Rule::new(
+            "lenovo-sr650-v4",
+            [
+                vendor("Lenovo"),
+                contains(IdentityField::SystemModel, "SR650 V4"),
+            ],
+        )
+        .drivers([LenovoSr650V4Power]),
+        // ARS-121L-DNR loses BMC reachability when its host interface is disabled.
+        Rule::new(
+            "supermicro-ars121l",
+            [
+                vendor("Supermicro"),
+                contains(IdentityField::SystemModel, "ARS-121L-DNR"),
+            ],
+        )
+        .drivers([SupermicroArs121lLockdown]),
+        // BlueField-2 identifies itself only through its card chassis model.
+        Rule::new(
+            "nvidia-bluefield2",
+            [contains_any_case(
+                IdentityField::ChassisModel,
+                "BlueField 2",
+            )],
+        )
+        .drivers([NvidiaBlueField2Dpu]),
+        Rule::new(
+            "lenovo-gb300",
+            [
+                contains(IdentityField::SystemManufacturer, "Lenovo"),
+                contains(IdentityField::SystemModel, "GB300"),
+            ],
+        )
+        .drivers([AmiMegaRacBios, LenovoGb300Lockdown, LenovoGb300Console]),
+        // DGX Viking runs AMI firmware and identifies itself by its system id.
+        Rule::new("nvidia-viking", [exact(IdentityField::SystemId, "DGX")])
+            .drivers([
+                NvidiaVikingPower,
+                AmiMegaRacBmcControl,
+                NvidiaVikingBios,
+                NvidiaVikingLockdown,
+                NvidiaVikingAccounts,
+                NvidiaVikingFirmware,
+                NvidiaVikingConsole,
+            ])
+            .etag(EtagMode::Wildcard),
+        // A standard ForceRestart can hang on this SKU at exactly this firmware pair.
+        Rule::new(
+            "lenovo-sr675-v3-ovx",
+            [
+                exact(IdentityField::SystemSku, "7D9RCTOLWW"),
+                exact(IdentityField::ManagerFirmware, "9.10"),
+                exact(IdentityField::SystemBiosVersion, "7.10"),
+            ],
+        )
+        .drivers([LenovoSr675V3OvxPower]),
+    ]
 }
 
-fn family(
-    rules: &mut Vec<SelectionRule>,
-    family: &str,
-    matchers: Vec<IdentityMatcher>,
-    selections: &[(Capability, &str)],
-) {
-    for (capability, driver) in selections {
-        rules.push(SelectionRule::new(
-            format!("{family}-{capability}"),
-            *capability,
-            matchers.clone(),
-            CapabilitySelection::Driver(driver.parse().expect("compiled driver id must be valid")),
-        ));
-    }
-}
+/// The drivers every NVIDIA OpenBMC compute tray shares.
+const OPENBMC_TRAY: [Driver; 6] = [
+    NvidiaOpenBmcPower,
+    NvidiaOpenBmcBios,
+    NvidiaOpenBmcBootOrder,
+    NvidiaOpenBmcFirmware,
+    NvidiaOpenBmcLockdown,
+    NvidiaOpenBmcAccounts,
+];
 
-/// Marks capabilities the hardware cannot provide so callers fail before any I/O.
-fn unsupported(
-    rules: &mut Vec<SelectionRule>,
-    family: &str,
-    matchers: Vec<IdentityMatcher>,
-    capabilities: &[Capability],
-) {
-    for capability in capabilities {
-        rules.push(SelectionRule::new(
-            format!("{family}-{capability}"),
-            *capability,
-            matchers.clone(),
-            CapabilitySelection::Unsupported,
-        ));
-    }
-}
-
-fn service_root_vendor(value: &str) -> IdentityMatcher {
+fn vendor(value: &str) -> IdentityMatcher {
     IdentityMatcher::new(
         IdentityField::ServiceRootVendor,
         MatchPattern::ExactAsciiCaseInsensitive(value.to_string()),
     )
 }
 
-fn service_root_oem_key(value: &str) -> IdentityMatcher {
+fn oem_key(value: &str) -> IdentityMatcher {
     IdentityMatcher::new(
         IdentityField::ServiceRootOemKey,
         MatchPattern::ExactAsciiCaseInsensitive(value.to_string()),
     )
 }
 
-fn service_root_product(values: &[&str]) -> IdentityMatcher {
+fn product(values: &[&str]) -> IdentityMatcher {
     IdentityMatcher::new(
         IdentityField::ServiceRootProduct,
         MatchPattern::OneOf(values.iter().map(|value| (*value).to_string()).collect()),
     )
 }
 
-fn exact_value(field: IdentityField, value: &str) -> IdentityMatcher {
+fn chassis_manufacturer(value: &str) -> IdentityMatcher {
+    contains_any_case(IdentityField::ChassisManufacturer, value)
+}
+
+fn exact(field: IdentityField, value: &str) -> IdentityMatcher {
     IdentityMatcher::new(field, MatchPattern::Exact(value.to_string()))
 }
 
@@ -395,12 +261,12 @@ fn contains_any_case(field: IdentityField, value: &str) -> IdentityMatcher {
 #[cfg(test)]
 mod tests {
     use bmc_platform::{
-        CapabilitySelection, ChassisIdentity, ManagerIdentity, PlatformIdentity,
-        ServiceRootIdentity, SystemIdentity,
+        ChassisIdentity, ManagerIdentity, PlatformIdentity, ServiceRootIdentity, SystemIdentity,
     };
-    use bmc_runtime::ResolvedSelection;
 
     use super::*;
+    use crate::drivers::Drivers;
+    use crate::selection::{CapabilitySelection, ResolvedSelection};
 
     fn identity(vendor: &str, product: Option<&str>) -> PlatformIdentity {
         PlatformIdentity {
@@ -422,20 +288,19 @@ mod tests {
         }
     }
 
-    fn driver(id: &str) -> CapabilitySelection {
-        CapabilitySelection::Driver(id.parse().expect("valid driver id"))
+    fn driver(driver: Driver) -> CapabilitySelection {
+        CapabilitySelection::Driver(driver)
     }
 
-    /// Resolves with the compiled table's defaults, as the runtime does.
-    fn resolve(rules: &RuleSet, identity: &PlatformIdentity) -> ResolvedSelection {
-        let table = crate::drivers::<bmc_mock::test_support::TestBmc>();
+    /// Resolves with the compiled catalogue's defaults, as the runtime does.
+    fn resolve(rules: &Rules, identity: &PlatformIdentity) -> ResolvedSelection {
         rules
-            .resolve(identity, &table.default_map())
+            .resolve(identity, &Drivers::default_map())
             .expect("rules resolve")
     }
 
     #[test]
-    fn every_supported_family_resolves_to_a_complete_compiled_map() {
+    fn every_supported_rule_resolves_to_a_complete_compiled_map() {
         let mut lenovo_gb300 = identity("AMI", Some("AMI Redfish Server"));
         lenovo_gb300.system = Some(SystemIdentity {
             id: "System_0".to_string(),
@@ -486,13 +351,11 @@ mod tests {
             viking,
         ];
         let rules = built_in_rules();
-        let drivers = crate::drivers::<bmc_mock::test_support::TestBmc>();
 
         for identity in identities {
             let resolved = resolve(&rules, &identity);
-            drivers
-                .validate_map(&resolved.drivers)
-                .expect("family map names only compiled capability drivers");
+            Drivers::validate_map(&resolved.drivers)
+                .expect("rule map names only compiled capability drivers");
         }
     }
 
@@ -501,13 +364,14 @@ mod tests {
         let rules = built_in_rules();
 
         let gb_platform = resolve(&rules, &identity("Supermicro", Some("GB NVL")));
+        assert_eq!(gb_platform.etag_mode, EtagMode::Resource);
         assert_eq!(
             gb_platform.drivers.get(Capability::Power),
-            &driver("nvidia-openbmc-power")
+            &driver(NvidiaOpenBmcPower)
         );
         assert_eq!(
             gb_platform.drivers.get(Capability::Lockdown),
-            &driver("nvidia-openbmc-lockdown")
+            &driver(NvidiaOpenBmcLockdown)
         );
 
         let mut viking = identity("AMI", None);
@@ -516,13 +380,14 @@ mod tests {
             ..SystemIdentity::default()
         });
         let viking = resolve(&rules, &viking);
+        assert_eq!(viking.etag_mode, EtagMode::Wildcard);
         assert_eq!(
             viking.drivers.get(Capability::Accounts),
-            &driver("nvidia-viking-accounts")
+            &driver(NvidiaVikingAccounts)
         );
         assert_eq!(
             viking.drivers.get(Capability::Bios),
-            &driver("nvidia-viking-bios")
+            &driver(NvidiaVikingBios)
         );
 
         let mut ars = identity("Supermicro", Some("Super Server"));
@@ -533,7 +398,7 @@ mod tests {
         });
         assert_eq!(
             resolve(&rules, &ars).drivers.get(Capability::Lockdown),
-            &driver("supermicro-ars121l-lockdown")
+            &driver(SupermicroArs121lLockdown)
         );
         let mut bluefield2 = identity("Nvidia", Some("Nvidia-BMCMezz"));
         bluefield2.chassis = vec![ChassisIdentity {
@@ -543,7 +408,7 @@ mod tests {
         }];
         assert_eq!(
             resolve(&rules, &bluefield2).drivers.get(Capability::Dpu),
-            &driver("nvidia-bluefield2-dpu")
+            &driver(NvidiaBlueField2Dpu)
         );
         let mut nvswitch = identity("NVIDIA", Some("P3809"));
         nvswitch.chassis = vec![ChassisIdentity {
@@ -553,7 +418,7 @@ mod tests {
         let nvswitch = resolve(&rules, &nvswitch);
         assert_eq!(
             nvswitch.drivers.get(Capability::Accounts),
-            &driver("nvidia-switch-accounts")
+            &driver(NvidiaSwitchAccounts)
         );
         assert_eq!(
             nvswitch.drivers.get(Capability::Bios),
@@ -561,15 +426,16 @@ mod tests {
         );
         assert_eq!(
             nvswitch.drivers.get(Capability::Power),
-            &driver("nvidia-openbmc-power")
+            &driver(NvidiaOpenBmcPower)
         );
 
         let mut lenovo_ami = identity("Lenovo", None);
         lenovo_ami.service_root.oem_keys = vec!["Ami".to_string()];
         let lenovo_ami = resolve(&rules, &lenovo_ami);
+        assert_eq!(lenovo_ami.etag_mode, EtagMode::Wildcard);
         assert_eq!(
             lenovo_ami.drivers.get(Capability::Lockdown),
-            &driver("lenovo-ami-lockdown")
+            &driver(LenovoAmiLockdown)
         );
         assert_eq!(
             lenovo_ami.drivers.get(Capability::Accounts),
@@ -579,7 +445,7 @@ mod tests {
             resolve(&rules, &identity("Lenovo", None))
                 .drivers
                 .get(Capability::Lockdown),
-            &driver("lenovo-xcc-lockdown")
+            &driver(LenovoXccLockdown)
         );
     }
 
@@ -600,7 +466,7 @@ mod tests {
         });
         assert_eq!(
             resolve(&rules, &platform).drivers.get(Capability::Power),
-            &driver("lenovo-sr675-v3-ovx-power")
+            &driver(LenovoSr675V3OvxPower)
         );
         platform
             .system
@@ -609,7 +475,7 @@ mod tests {
             .bios_version = Some("7.11".to_string());
         assert_eq!(
             resolve(&rules, &platform).drivers.get(Capability::Power),
-            &driver("lenovo-xcc-power")
+            &driver(LenovoXccPower)
         );
     }
 }

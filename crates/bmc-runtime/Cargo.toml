@@ -25,7 +25,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-blake3 = { workspace = true }
+bmc-drivers = { path = "../bmc-drivers" }
 bmc-platform = { path = "../bmc-platform" }
 carbide-ipmi = { path = "../ipmi" }
 carbide-redfish = { path = "../redfish" }
@@ -38,8 +38,6 @@ serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
-toml = { workspace = true }
-version-compare = { workspace = true }
 
 [dev-dependencies]
 bmc-mock = { path = "../bmc-mock" }

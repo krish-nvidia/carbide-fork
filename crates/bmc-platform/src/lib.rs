@@ -28,6 +28,7 @@
 mod capabilities;
 mod error;
 mod identity;
+mod matcher;
 mod operation;
 mod selection;
 mod transport;
@@ -44,11 +45,13 @@ pub use error::{AuthError, PlatformError};
 pub use identity::{
     ChassisIdentity, ManagerIdentity, PlatformIdentity, ServiceRootIdentity, SystemIdentity,
 };
+pub use matcher::{
+    FirmwareVersionRange, FirmwareVersionRangeError, IdentityField, IdentityMatcher, MatchPattern,
+    Precedence, derived_precedence,
+};
 pub use operation::{
     ControllerAction, DriverOutcome, ManualInterventionCode, ManualInterventionCodeError,
     OperationReference, VendorJobId, VendorJobIdError,
 };
-pub use selection::{
-    Capability, CapabilitySelection, DriverId, DriverIdError, DriverMap, UnknownCapability,
-};
+pub use selection::{Capability, UnknownCapability};
 pub use transport::{ClassifyBmcError, EtagMode, Fetched, IpmiOps, OpCx};

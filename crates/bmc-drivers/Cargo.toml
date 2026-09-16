@@ -14,8 +14,9 @@ repository.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 bmc-platform = { path = "../bmc-platform" }
-bmc-runtime = { path = "../bmc-runtime" }
+carbide-utils = { path = "../utils", default-features = false }
 hex = { workspace = true }
 nv-redfish = { features = [
     "accounts",
@@ -43,6 +44,7 @@ nv-redfish = { features = [
 serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 bmc-mock = { path = "../bmc-mock" }
