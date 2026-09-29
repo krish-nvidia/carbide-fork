@@ -76,7 +76,8 @@ fn built_ins() -> Vec<Rule> {
             .etag(EtagMode::Wildcard),
         // Lenovo HS350x-class trays run AMI firmware behind a Lenovo service
         // root; the extra OEM-key matcher outranks the plain XCC vendor
-        // rule. The AMI firmware takes the standard lockout policy, not XCC's.
+        // rule. The AMI firmware takes the standard lockout policy and
+        // standard resets, not XCC's, and has no XCC AC power cycle.
         Rule::new("lenovo-ami", [vendor("Lenovo"), oem_key("Ami")])
             .drivers([
                 AmiMegaRacBmcControl,
@@ -85,7 +86,7 @@ fn built_ins() -> Vec<Rule> {
                 AmiMegaRacFirmware,
                 LenovoAmiConsole,
             ])
-            .standard([Capability::Accounts])
+            .standard([Capability::Accounts, Capability::Power])
             .etag(EtagMode::Wildcard),
         // Power shelves have no ServiceRoot vendor; their chassis manufacturer
         // identifies them.
@@ -439,6 +440,10 @@ mod tests {
         );
         assert_eq!(
             lenovo_ami.drivers.get(Capability::Accounts),
+            &CapabilitySelection::Standard
+        );
+        assert_eq!(
+            lenovo_ami.drivers.get(Capability::Power),
             &CapabilitySelection::Standard
         );
         assert_eq!(

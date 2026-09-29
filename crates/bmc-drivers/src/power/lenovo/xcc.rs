@@ -5,24 +5,14 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::{Bmc, ODataId};
+use nv_redfish::core::Bmc;
 use nv_redfish::resource::ResetType;
-use serde_json::json;
 
+use crate::power::lenovo::ac_power_cycle;
 use crate::power::standard::StandardPower;
 
 /// Lenovo XClarity Controller power behavior.
 pub(crate) struct XccPower;
-
-/// Restores AC power through the XCC OEM system reset.
-async fn ac_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    let target = ODataId::from(format!(
-        "{}/Actions/Oem/LenovoComputerSystem.SystemReset",
-        cx.system()?.raw().odata_id
-    ));
-    cx.post(&target, &json!({"ResetType": "ACPowerCycle"}))
-        .await
-}
 
 #[async_trait]
 impl<B: Bmc> Power<B> for XccPower {

@@ -11,10 +11,11 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::ethernet_interface::{EthernetInterface, EthernetInterfaceUpdate};
 use nv_redfish::manager::Manager;
-use nv_redfish::oem::lenovo::computer_system::{FpMode, PortSwitchingTo};
-use nv_redfish::oem::lenovo::manager::{KcsState, LenovoManagerSchema};
+use nv_redfish::oem::lenovo::computer_system::{
+    FpMode, LenovoSystemPropertiesUpdate, PortSwitchingTo, UsbManagementPortAssignmentUpdate,
+};
+use nv_redfish::oem::lenovo::manager::KcsState;
 use nv_redfish::oem::lenovo::security_service::FwRollbackState;
-use serde_json::{Value, json};
 
 use crate::lockdown::{signal, state_from_signals, status};
 use crate::update;
@@ -51,32 +52,28 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
         .oem_lenovo()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    // Older XCC firmware models KCSEnabled as a boolean, newer as an enum string.
-    let kcs_enabled = match lenovo.raw().as_ref() {
-        LenovoManagerSchema::V0_1(_) => Value::Bool(!enabled),
-        LenovoManagerSchema::V1_0(_) => Value::from(if enabled { "Disabled" } else { "Enabled" }),
-    };
-    let raw = manager.raw();
-    let kcs = cx
-        .patch(
-            raw.as_ref(),
-            &json!({"Oem": {"Lenovo": {"KCSEnabled": kcs_enabled}}}),
-        )
-        .await?;
-
-    let security = match lenovo.raw().as_ref() {
-        LenovoManagerSchema::V0_1(data) => data.security.as_ref().map(|nav| nav.id().clone()),
-        LenovoManagerSchema::V1_0(data) => data.security.as_ref().map(|nav| nav.id().clone()),
-    }
-    .ok_or(PlatformError::Unsupported)?;
-    let rollback = cx
-        .patch_id(
-            &security,
-            None,
-            &json!({"Configurator": {"FWRollback": if enabled { "Disabled" } else { "Enabled" }}}),
-        )
+    let kcs = lenovo
+        .set_kcs_enabled(!enabled)
         .await
-        .map(DriverOutcome::from)?;
+        .map_err(|error| cx.map_redfish_error(error))?
+        .map(DriverOutcome::from)
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: "XCC manager does not report KCSEnabled".to_string(),
+        })?;
+
+    let rollback = lenovo
+        .security()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .set_fw_rollback(if enabled {
+            FwRollbackState::Disabled
+        } else {
+            FwRollbackState::Enabled
+        })
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))?;
 
     let to_host = host_interface(cx, manager)
         .await?
@@ -89,29 +86,38 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
         .map(|to_host| kcs.merge(rollback).merge(to_host))
 }
 
+/// Newer XCC renamed `FrontPanelUSB` to `USBManagementPortAssignment`;
+/// `FrontPanelUSB` is written whenever the system reports it.
 async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
-    let system = cx.system()?;
-    // Newer XCC renamed the front-panel object; write whichever this system exposes.
-    let front_panel_key = system
+    let lenovo = cx
+        .system()?
         .oem_lenovo()
         .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .raw()
-        .usb_management_port_assignment
-        .as_ref()
-        .and_then(Option::as_ref)
-        .map_or("FrontPanelUSB", |_| "USBManagementPortAssignment");
-    let raw = system.raw();
-    cx.patch(
-        raw.as_ref(),
-        &json!({
-            "Oem": {"Lenovo": {front_panel_key: {
-                "FPMode": if enabled { "Server" } else { "Shared" },
-                "PortSwitchingTo": "Server"
-            }}}
-        }),
-    )
-    .await
+        .ok_or(PlatformError::Unsupported)?;
+    let assignment = UsbManagementPortAssignmentUpdate::builder()
+        .with_fp_mode(if enabled {
+            FpMode::Server
+        } else {
+            FpMode::Shared
+        })
+        .with_port_switching_to(PortSwitchingTo::Server)
+        .build();
+    let raw = lenovo.raw();
+    let update = if raw.front_panel_usb.is_some() {
+        LenovoSystemPropertiesUpdate::builder().with_front_panel_usb(assignment)
+    } else if raw.usb_management_port_assignment.is_some() {
+        LenovoSystemPropertiesUpdate::builder().with_usb_management_port_assignment(assignment)
+    } else {
+        return Err(PlatformError::InvalidResponse {
+            message: "XCC system reports neither FrontPanelUSB nor USBManagementPortAssignment"
+                .to_string(),
+        });
+    };
+    lenovo
+        .update(&update.build())
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[async_trait]
