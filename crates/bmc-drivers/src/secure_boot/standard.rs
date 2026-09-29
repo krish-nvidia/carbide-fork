@@ -11,6 +11,8 @@ use nv_redfish::schema::secure_boot::SecureBootUpdate;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::update;
+
 const PLATFORM_KEY_DATABASE: &str = "PK";
 
 /// Standard Redfish Secure Boot state and platform-key operations.
@@ -96,7 +98,13 @@ async fn set_state<B: Bmc>(
     update: &SecureBootUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
     let secure_boot = secure_boot_resource(cx).await?;
-    cx.patch(secure_boot.raw().as_ref(), update).await
+    update::apply(
+        cx,
+        secure_boot.raw().as_ref(),
+        update,
+        secure_boot.update(update),
+    )
+    .await
 }
 
 async fn has_platform_key<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {

@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
-use serde_json::json;
 
 use crate::accounts::standard::{StandardAccounts, apply_policy};
 
@@ -23,13 +23,13 @@ impl<B: Bmc> Accounts<B> for VikingAccounts {
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         apply_policy(
             cx,
-            &json!({
-                "AccountLockoutThreshold": 4,
-                "AccountLockoutDuration": 20,
-                "AccountLockoutCounterResetAfter": 20,
-                "AccountLockoutCounterResetEnabled": true,
-                "AuthFailureLoggingThreshold": 2
-            }),
+            AccountServiceUpdate::builder()
+                .with_account_lockout_threshold(4)
+                .with_account_lockout_duration(20)
+                .with_account_lockout_counter_reset_after(20)
+                .with_account_lockout_counter_reset_enabled(true)
+                .with_auth_failure_logging_threshold(2)
+                .build(),
         )
         .await
     }

@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
-use serde_json::json;
 
 use crate::accounts::standard::{StandardAccounts, apply_policy};
 
@@ -23,10 +23,10 @@ impl<B: Bmc> Accounts<B> for OpenBmcAccounts {
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         apply_policy(
             cx,
-            &json!({
-                "AccountLockoutThreshold": 4,
-                "AccountLockoutDuration": 600
-            }),
+            AccountServiceUpdate::builder()
+                .with_account_lockout_threshold(4)
+                .with_account_lockout_duration(600)
+                .build(),
         )
         .await
     }

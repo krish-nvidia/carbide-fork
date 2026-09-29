@@ -44,7 +44,7 @@ pub trait Accounts<B: Bmc>: Send + Sync {
     async fn create(
         &self,
         cx: &OpCx<'_, B>,
-        request: &ManagerAccountCreate,
+        request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
         self.standard().create(cx, request).await
     }

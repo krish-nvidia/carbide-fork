@@ -5,8 +5,9 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
-use serde_json::json;
+use nv_redfish::oem::hpe::{HpeAccountServiceUpdate, HpeAccountServiceUpdateExt};
 
 use crate::accounts::standard::{StandardAccounts, apply_policy};
 
@@ -20,19 +21,19 @@ impl<B: Bmc> Accounts<B> for IloAccounts {
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        apply_policy(
-            cx,
-            &json!({
-                "Oem": {
-                    "Hpe": {
-                        "AuthFailureDelayTimeSeconds": 2,
-                        "AuthFailureLoggingThreshold": 0,
-                        "AuthFailuresBeforeDelay": 0,
-                        "EnforcePasswordComplexity": false
-                    }
-                }
-            }),
-        )
-        .await
+        let policy = AccountServiceUpdate::builder()
+            .build()
+            .with_oem_hpe(
+                HpeAccountServiceUpdate::builder()
+                    .with_auth_failure_delay_time_seconds(2)
+                    .with_auth_failure_logging_threshold(0)
+                    .with_auth_failures_before_delay(0)
+                    .with_enforce_password_complexity(false)
+                    .build(),
+            )
+            .map_err(|error| PlatformError::InvalidResponse {
+                message: format!("failed to build the HPE account policy: {error}"),
+            })?;
+        apply_policy(cx, policy).await
     }
 }

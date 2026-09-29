@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::account::{Account, ManagerAccountCreate};
+use nv_redfish::account::{Account, AccountServiceConfig, ManagerAccountCreate};
 use nv_redfish::core::{Bmc, EntityTypeRef};
 use serde_json::Value;
 
@@ -30,10 +30,10 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
     async fn create(
         &self,
         cx: &OpCx<'_, B>,
-        request: &ManagerAccountCreate,
+        request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
         let slot = |account: &Account<B>| account.raw().id.parse::<u8>().ok();
-        let account = standard::account_collection(cx)
+        let account = standard::accounts_with(cx, AccountServiceConfig::standard())
             .await?
             .all_accounts_data()
             .await
@@ -47,7 +47,7 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
             .ok_or(PlatformError::TooManyUsers)?;
         let raw = account.raw();
         let mut payload =
-            serde_json::to_value(request).map_err(|error| PlatformError::InvalidResponse {
+            serde_json::to_value(&request).map_err(|error| PlatformError::InvalidResponse {
                 message: format!("failed to serialize account request: {error}"),
             })?;
         payload["Enabled"] = Value::Bool(true);

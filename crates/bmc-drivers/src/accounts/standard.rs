@@ -9,10 +9,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::account::{Account, AccountCollection, AccountServiceConfig, ManagerAccountCreate};
+use nv_redfish::account::{
+    Account, AccountCollection, AccountService, AccountServiceConfig, AccountServiceUpdate,
+    ManagerAccountCreate, ManagerAccountUpdate,
+};
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::manager_account::ManagerAccount;
-use serde_json::{Value, json};
+
+use crate::update;
 
 /// Redfish-standard account operations.
 pub(crate) struct StandardAccounts;
@@ -35,10 +39,14 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
     async fn create(
         &self,
         cx: &OpCx<'_, B>,
-        request: &ManagerAccountCreate,
+        request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let collection = account_collection(cx).await?;
-        cx.post(collection.odata_id(), request).await
+        account_collection(cx)
+            .await?
+            .create_account(request)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn delete(
@@ -60,7 +68,17 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        update_account(cx, username, json!({ "Password": password })).await
+        let account = account_by_username(cx, username).await?;
+        let body = ManagerAccountUpdate::builder()
+            .with_password(password.to_string())
+            .build();
+        update::apply(
+            cx,
+            account.raw().as_ref(),
+            &body,
+            account.update_password(password.to_string()),
+        )
+        .await
     }
 
     async fn change_username(
@@ -69,50 +87,72 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         old_username: &str,
         new_username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        update_account(cx, old_username, json!({ "UserName": new_username })).await
+        let account = account_by_username(cx, old_username).await?;
+        let body = ManagerAccountUpdate::builder()
+            .with_user_name(new_username.to_string())
+            .build();
+        update::apply(
+            cx,
+            account.raw().as_ref(),
+            &body,
+            account.update_user_name(new_username.to_string()),
+        )
+        .await
     }
 
     /// Disables account lockout so NICo cannot lock itself out during automation.
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         apply_policy(
             cx,
-            &json!({
-                "AccountLockoutThreshold": 0,
-                "AccountLockoutDuration": 0,
-                "AccountLockoutCounterResetAfter": 0
-            }),
+            AccountServiceUpdate::builder()
+                .with_account_lockout_threshold(0)
+                .with_account_lockout_duration(0)
+                .with_account_lockout_counter_reset_after(0)
+                .build(),
         )
         .await
     }
 }
 
-/// The account service's account collection.
-pub(super) async fn account_collection<B: Bmc>(
+async fn account_service<B: Bmc>(
     cx: &OpCx<'_, B>,
-) -> Result<AccountCollection<B>, PlatformError> {
+    config: AccountServiceConfig,
+) -> Result<AccountService<B>, PlatformError> {
     cx.service_root()
-        .account_service(AccountServiceConfig::standard())
+        .account_service(config)
         .await
         .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
+        .ok_or(PlatformError::Unsupported)
+}
+
+/// The account collection, with accounts created, listed, and deleted as
+/// `config` prescribes.
+pub(super) async fn accounts_with<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    config: AccountServiceConfig,
+) -> Result<AccountCollection<B>, PlatformError> {
+    account_service(cx, config)
+        .await?
         .accounts()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)
 }
 
-/// Patches account-service properties, typically a lockout policy.
+/// The account service's account collection.
+async fn account_collection<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<AccountCollection<B>, PlatformError> {
+    accounts_with(cx, AccountServiceConfig::standard()).await
+}
+
+/// Updates account-service properties, typically a lockout policy.
 pub(super) async fn apply_policy<B: Bmc>(
     cx: &OpCx<'_, B>,
-    payload: &Value,
+    body: AccountServiceUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    let service = cx
-        .service_root()
-        .account_service(AccountServiceConfig::standard())
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?;
-    cx.patch(service.raw().as_ref(), payload).await
+    let service = account_service(cx, AccountServiceConfig::standard()).await?;
+    update::apply(cx, service.raw().as_ref(), &body, service.update(&body)).await
 }
 
 async fn account_by_username<B: Bmc>(
@@ -129,14 +169,4 @@ async fn account_by_username<B: Bmc>(
         .ok_or_else(|| PlatformError::UserNotFound {
             identifier: username.to_string(),
         })
-}
-
-async fn update_account<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    username: &str,
-    payload: Value,
-) -> Result<DriverOutcome, PlatformError> {
-    let account = account_by_username(cx, username).await?;
-    let raw = account.raw();
-    cx.patch(raw.as_ref(), &payload).await
 }

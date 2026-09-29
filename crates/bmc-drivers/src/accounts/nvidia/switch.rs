@@ -20,6 +20,6 @@ impl<B: Bmc> Accounts<B> for SwitchAccounts {
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        apply_policy(cx, &openbmc_minimum_lockout_policy()).await
+        apply_policy(cx, openbmc_minimum_lockout_policy()).await
     }
 }

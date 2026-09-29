@@ -14,7 +14,7 @@ use nv_redfish::manager::Manager;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
 use serde_json::json;
 
-use crate::lockdown::{signal, state_from_signals, status};
+use crate::lockdown::{set_host_interface, signal, state_from_signals, status};
 
 /// Supermicro lockdown driver.
 ///
@@ -150,15 +150,7 @@ async fn set_host_interfaces<B: Bmc>(
 ) -> Result<DriverOutcome, PlatformError> {
     let mut outcome = DriverOutcome::complete();
     for interface in host_interfaces(cx, manager).await? {
-        outcome = outcome.merge(
-            cx.patch_id(
-                &interface.raw().odata_id,
-                None,
-                &json!({"InterfaceEnabled": enabled}),
-            )
-            .await
-            .map(DriverOutcome::from)?,
-        );
+        outcome = outcome.merge(set_host_interface(cx, &interface, enabled).await?);
     }
     Ok(outcome)
 }

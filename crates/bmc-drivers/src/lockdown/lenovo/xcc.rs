@@ -9,7 +9,7 @@ use bmc_platform::{
     PlatformError,
 };
 use nv_redfish::core::Bmc;
-use nv_redfish::ethernet_interface::EthernetInterface;
+use nv_redfish::ethernet_interface::{EthernetInterface, EthernetInterfaceUpdate};
 use nv_redfish::manager::Manager;
 use nv_redfish::oem::lenovo::computer_system::{FpMode, PortSwitchingTo};
 use nv_redfish::oem::lenovo::manager::{KcsState, LenovoManagerSchema};
@@ -17,6 +17,7 @@ use nv_redfish::oem::lenovo::security_service::FwRollbackState;
 use serde_json::{Value, json};
 
 use crate::lockdown::{signal, state_from_signals, status};
+use crate::update;
 
 /// The manager Ethernet interface XCC exposes to the host OS.
 const HOST_INTERFACE_ID: &str = "ToHost";
@@ -80,14 +81,12 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
     let to_host = host_interface(cx, manager)
         .await?
         .ok_or(PlatformError::Unsupported)?;
-    cx.patch_id(
-        &to_host.raw().odata_id,
-        None,
-        &json!({"InterfaceEnabled": !enabled}),
-    )
-    .await
-    .map(DriverOutcome::from)
-    .map(|to_host| kcs.merge(rollback).merge(to_host))
+    let body = EthernetInterfaceUpdate::builder()
+        .with_interface_enabled(!enabled)
+        .build();
+    update::apply(cx, to_host.raw().as_ref(), &body, to_host.update(&body))
+        .await
+        .map(|to_host| kcs.merge(rollback).merge(to_host))
 }
 
 async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {

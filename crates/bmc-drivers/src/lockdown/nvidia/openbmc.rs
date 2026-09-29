@@ -9,9 +9,8 @@ use bmc_platform::{
     PlatformError,
 };
 use nv_redfish::core::Bmc;
-use serde_json::json;
 
-use crate::lockdown::{host_interfaces, signal, state_from_signals, status};
+use crate::lockdown::{host_interfaces, set_host_interface, signal, state_from_signals, status};
 
 /// NVIDIA OpenBMC lockdown driver; every host interface is the single control.
 pub(crate) struct OpenBmcLockdown;
@@ -47,15 +46,8 @@ impl<B: Bmc> Lockdown<B> for OpenBmcLockdown {
         }
         let interface_enabled = desired == LockdownDesiredState::Disabled;
         let mut outcome = DriverOutcome::complete();
-        for interface in interfaces {
-            let raw = interface.raw();
-            outcome = outcome.merge(
-                cx.patch(
-                    raw.as_ref(),
-                    &json!({"InterfaceEnabled": interface_enabled}),
-                )
-                .await?,
-            );
+        for interface in &interfaces {
+            outcome = outcome.merge(set_host_interface(cx, interface, interface_enabled).await?);
         }
         Ok(outcome)
     }

@@ -7,8 +7,9 @@
 
 use bmc_platform::{DriverOutcome, LockdownState, LockdownStatus, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
-use nv_redfish::host_interface::HostInterface;
-use serde_json::json;
+use nv_redfish::host_interface::{HostInterface, HostInterfaceUpdate};
+
+use crate::update;
 
 mod ami;
 mod dell;
@@ -55,9 +56,19 @@ async fn set_first_host_interface<B: Bmc>(
         .into_iter()
         .next()
         .ok_or(PlatformError::NoContent)?;
-    let raw = interface.raw();
-    cx.patch(raw.as_ref(), &json!({"InterfaceEnabled": enabled}))
-        .await
+    set_host_interface(cx, &interface, enabled).await
+}
+
+/// Enables or disables one host interface.
+async fn set_host_interface<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    interface: &HostInterface<B>,
+    enabled: bool,
+) -> Result<DriverOutcome, PlatformError> {
+    let body = HostInterfaceUpdate::builder()
+        .with_interface_enabled(enabled)
+        .build();
+    update::apply(cx, interface.raw().as_ref(), &body, interface.update(&body)).await
 }
 
 /// One control's observation: `(locked, unlocked)`, both false when unknown.

@@ -5,8 +5,11 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
-use serde_json::json;
+use nv_redfish::oem::lenovo::account_service::{
+    LenovoAccountServiceUpdate, LenovoAccountServiceUpdateExt,
+};
 
 use crate::accounts::standard::{StandardAccounts, apply_policy};
 
@@ -21,22 +24,22 @@ impl<B: Bmc> Accounts<B> for XccAccounts {
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        apply_policy(
-            cx,
-            &json!({
-                "AccountLockoutThreshold": 0,
-                "AccountLockoutDuration": 60,
-                "Oem": {
-                    "Lenovo": {
-                        "PasswordExpirationPeriodDays": 0,
-                        "PasswordChangeOnFirstAccess": false,
-                        "MinimumPasswordChangeIntervalHours": 0,
-                        "MinimumPasswordReuseCycle": 0,
-                        "PasswordExpirationWarningPeriod": 0
-                    }
-                }
-            }),
-        )
-        .await
+        let policy = AccountServiceUpdate::builder()
+            .with_account_lockout_threshold(0)
+            .with_account_lockout_duration(60)
+            .build()
+            .with_oem_lenovo(
+                LenovoAccountServiceUpdate::builder()
+                    .with_password_expiration_period_days(0.0)
+                    .with_password_change_on_first_access(false)
+                    .with_minimum_password_change_interval_hours(0.0)
+                    .with_minimum_password_reuse_cycle(0.0)
+                    .with_password_expiration_warning_period(0.0)
+                    .build(),
+            )
+            .map_err(|error| PlatformError::InvalidResponse {
+                message: format!("failed to build the Lenovo account policy: {error}"),
+            })?;
+        apply_policy(cx, policy).await
     }
 }

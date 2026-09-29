@@ -9,13 +9,12 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosDiff, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, EntityTypeRef, ModificationResponse};
+use nv_redfish::core::Bmc;
 use nv_redfish::schema::ActionAnnotations;
-use nv_redfish::schema::bios::{Bios as BiosSchema, BiosChangePasswordAction, BiosResetBiosAction};
-use serde::Serialize;
+use nv_redfish::schema::bios::{BiosChangePasswordAction, BiosResetBiosAction};
 use serde_json::Value;
 
-use crate::resources::{bios_attributes, bios_settings, selected_bios};
+use crate::resources::{bios_attributes, bios_settings, selected_bios, update_settings};
 
 /// DMTF names the UEFI administrator password `AdministratorPassword`.
 const UEFI_PASSWORD_NAME: &str = "AdministratorPassword";
@@ -90,7 +89,7 @@ async fn pending<B: Bmc>(cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError
     let bios = selected_bios(cx).await?;
     let settings = bios_settings(cx, &bios).await?;
     Ok(BiosSettings {
-        attributes: bios_attributes(&settings),
+        attributes: bios_attributes(&settings.raw()),
     })
 }
 
@@ -103,20 +102,12 @@ async fn apply<B: Bmc>(
     let bios = selected_bios(cx).await?;
     let settings = bios_settings(cx, &bios).await?;
     let pending = BiosSettings {
-        attributes: bios_attributes(&settings),
+        attributes: bios_attributes(&settings.raw()),
     };
     if differences(&pending, expected).is_empty() {
         return Ok(DriverOutcome::complete());
     }
-    patch_settings(
-        cx,
-        &settings,
-        &AttributesPayload {
-            attributes: &expected.attributes,
-        },
-    )
-    .await
-    .map(DriverOutcome::from)
+    update_settings(cx, &settings, &expected.attributes).await
 }
 
 /// Restores BIOS defaults through the advertised `Bios.ResetBios` action.
@@ -142,7 +133,7 @@ async fn clear_pending<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platfo
     let bios = selected_bios(cx).await?;
     let current = bios_attributes(&bios.raw());
     let settings = bios_settings(cx, &bios).await?;
-    let reverted: BTreeMap<String, Value> = bios_attributes(&settings)
+    let reverted: BTreeMap<String, Value> = bios_attributes(&settings.raw())
         .into_iter()
         .filter_map(|(key, pending)| {
             let current = current.get(&key)?;
@@ -152,15 +143,7 @@ async fn clear_pending<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platfo
     if reverted.is_empty() {
         return Ok(DriverOutcome::complete());
     }
-    patch_settings(
-        cx,
-        &settings,
-        &AttributesPayload {
-            attributes: &reverted,
-        },
-    )
-    .await
-    .map(DriverOutcome::from)
+    update_settings(cx, &settings, &reverted).await
 }
 
 /// Changes the UEFI password named `password_name` through the advertised
@@ -187,26 +170,6 @@ pub(super) async fn change_password<B: Bmc>(
         },
     )
     .await
-}
-
-/// Writes `payload` to an already fetched pending-settings resource with its ETag.
-async fn patch_settings<B, T>(
-    cx: &OpCx<'_, B>,
-    settings: &BiosSchema,
-    payload: &T,
-) -> Result<ModificationResponse<Value>, PlatformError>
-where
-    B: Bmc,
-    T: Serialize + Send + Sync,
-{
-    cx.patch_id(settings.odata_id(), settings.etag(), payload)
-        .await
-}
-
-#[derive(Serialize)]
-struct AttributesPayload<'a> {
-    #[serde(rename = "Attributes")]
-    attributes: &'a BTreeMap<String, Value>,
 }
 
 fn differences(actual: &BiosSettings, expected: &BiosSettings) -> Vec<BiosDiff> {

@@ -8,13 +8,15 @@
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
+use nv_redfish::manager::ManagerNetworkProtocolUpdate;
 use nv_redfish::resource::ResetType;
 use nv_redfish::schema::ActionAnnotations;
 use nv_redfish::schema::manager::{
     ManagerResetAction, ManagerResetToDefaultsAction, ResetToDefaultsType,
 };
-use serde::Serialize;
-use serde_json::json;
+use nv_redfish::schema::manager_network_protocol::{NtpProtocolUpdate, ProtocolUpdate};
+
+use crate::update;
 
 /// DMTF manager control.
 pub(crate) struct StandardBmcControl;
@@ -36,14 +38,25 @@ impl<B: Bmc> BmcControl<B> for StandardBmcControl {
         reset_to_factory_defaults(cx).await
     }
 
+    /// An empty list leaves the NTP configuration unchanged.
     async fn set_ntp_servers(
         &self,
         cx: &OpCx<'_, B>,
         servers: &[String],
     ) -> Result<DriverOutcome, PlatformError> {
+        if servers.is_empty() {
+            return Ok(DriverOutcome::complete());
+        }
         update_network_protocol(
             cx,
-            &json!({"NTP": {"ProtocolEnabled": !servers.is_empty(), "NTPServers": servers}}),
+            ManagerNetworkProtocolUpdate::builder()
+                .with_ntp(
+                    NtpProtocolUpdate::builder()
+                        .with_ntp_servers(servers.to_vec())
+                        .with_protocol_enabled(true)
+                        .build(),
+                )
+                .build(),
         )
         .await
     }
@@ -72,7 +85,17 @@ impl<B: Bmc> BmcControl<B> for StandardBmcControl {
         cx: &OpCx<'_, B>,
         enabled: bool,
     ) -> Result<DriverOutcome, PlatformError> {
-        update_network_protocol(cx, &json!({"IPMI": {"ProtocolEnabled": enabled}})).await
+        update_network_protocol(
+            cx,
+            ManagerNetworkProtocolUpdate::builder()
+                .with_ipmi(
+                    ProtocolUpdate::builder()
+                        .with_protocol_enabled(enabled)
+                        .build(),
+                )
+                .build(),
+        )
+        .await
     }
 }
 
@@ -130,19 +153,15 @@ async fn reset_to_factory_defaults<B: Bmc>(
 }
 
 /// Writes to the manager's advertised `NetworkProtocol` resource.
-async fn update_network_protocol<B, T>(
+async fn update_network_protocol<B: Bmc>(
     cx: &OpCx<'_, B>,
-    payload: &T,
-) -> Result<DriverOutcome, PlatformError>
-where
-    B: Bmc,
-    T: Serialize + Send + Sync,
-{
+    body: ManagerNetworkProtocolUpdate,
+) -> Result<DriverOutcome, PlatformError> {
     let protocol = cx
         .manager()?
         .network_protocol()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    cx.patch(protocol.raw().as_ref(), payload).await
+    update::apply(cx, protocol.raw().as_ref(), &body, protocol.update(&body)).await
 }

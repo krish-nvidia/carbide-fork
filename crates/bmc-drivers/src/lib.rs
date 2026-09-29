@@ -22,6 +22,9 @@ mod rules;
 mod secure_boot;
 mod selection;
 mod storage;
+#[cfg(test)]
+mod test_support;
+mod update;
 
 pub use drivers::{Catalog, CatalogError, Driver, Drivers, PluginId, PluginIdError};
 pub use rules::{built_in_rules, rules_with_overrides};

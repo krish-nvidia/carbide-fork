@@ -9,11 +9,13 @@ use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
 };
-use nv_redfish::computer_system::{BootOptionReference, ComputerSystem};
-use nv_redfish::core::{Bmc, EntityTypeRef, ModificationResponse, ODataId};
-use nv_redfish::schema::boot_option::BootOption as BootOptionSchema;
+use nv_redfish::computer_system::{
+    BootOption, BootOptionReference, BootOptionUpdate, ComputerSystem, ComputerSystemUpdate,
+};
+use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
-use serde::Serialize;
+
+use crate::update;
 
 /// Standard boot-option and boot-order policy using advertised BootOptions.
 pub(crate) struct StandardBootOrder;
@@ -29,7 +31,7 @@ impl<B: Bmc> BootOrder<B> for StandardBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
-        let (_, order, options) = state(cx).await?;
+        let (_, order, options, _) = state(cx).await?;
         Ok(boot_order_status(&order, &options, selector))
     }
 
@@ -56,23 +58,23 @@ async fn set_override<B: Bmc>(
     cx: &OpCx<'_, B>,
     override_setting: &BootUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    #[derive(Serialize)]
-    struct BootPayload<'a> {
-        #[serde(rename = "Boot")]
-        boot: &'a BootUpdate,
-    }
-
     let system = cx.system()?;
-    let raw = system.raw();
-    cx.patch_id(
-        raw.odata_id(),
-        raw.etag(),
-        &BootPayload {
-            boot: override_setting,
-        },
-    )
-    .await
-    .map(DriverOutcome::from)
+    let body = ComputerSystemUpdate::builder()
+        .with_boot(boot_source_override(override_setting))
+        .build();
+    update::apply(cx, system.raw().as_ref(), &body, system.update(&body)).await
+}
+
+/// The boot-source override fields of `setting`: target, enablement, mode,
+/// and HTTP boot URI.
+fn boot_source_override(setting: &BootUpdate) -> BootUpdate {
+    BootUpdate {
+        boot_source_override_target: setting.boot_source_override_target,
+        boot_source_override_enabled: setting.boot_source_override_enabled,
+        boot_source_override_mode: setting.boot_source_override_mode,
+        http_boot_uri: setting.http_boot_uri.clone(),
+        ..BootUpdate::default()
+    }
 }
 
 /// Promotes the selected interface's boot option, disables the other network
@@ -81,12 +83,12 @@ async fn configure<B: Bmc>(
     cx: &OpCx<'_, B>,
     selector: &BootInterfaceSelector,
 ) -> Result<DriverOutcome, PlatformError> {
-    let (system, order, options) = state(cx).await?;
+    let (system, order, options, resources) = state(cx).await?;
     if boot_order_status(&order, &options, selector).is_configured() {
         return Ok(DriverOutcome::complete());
     }
     let (configured, selected) = configured_order(&order, &options, selector)?;
-    for option in &options {
+    for (option, resource) in options.iter().zip(&resources) {
         let desired = if option.reference == selected.reference {
             true
         } else if is_network(option) {
@@ -95,7 +97,7 @@ async fn configure<B: Bmc>(
             option.enabled.unwrap_or(true)
         };
         if option.enabled != Some(desired) {
-            set_option_enabled(cx, system, option, desired).await?;
+            set_option_enabled(cx, resource, desired).await?;
         }
     }
     system
@@ -227,9 +229,16 @@ fn configured_order<'a>(
     Ok((configured, target))
 }
 
-async fn state<'c, B: Bmc>(
-    cx: &'c OpCx<'_, B>,
-) -> Result<(&'c ComputerSystem<B>, Vec<String>, Vec<BootOptionInfo>), PlatformError> {
+/// The selected system, its boot order, and every boot option both as the
+/// text policy reads and as the resource it writes, in the same order.
+type BootState<'c, B> = (
+    &'c ComputerSystem<B>,
+    Vec<String>,
+    Vec<BootOptionInfo>,
+    Vec<BootOption<B>>,
+);
+
+async fn state<'c, B: Bmc>(cx: &'c OpCx<'_, B>) -> Result<BootState<'c, B>, PlatformError> {
     let system = cx.system()?;
     let order = system
         .boot_order()
@@ -242,11 +251,12 @@ async fn state<'c, B: Bmc>(
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let options = collection
+    let resources = collection
         .members()
         .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .into_iter()
+        .map_err(|error| cx.map_redfish_error(error))?;
+    let options = resources
+        .iter()
         .map(|option| BootOptionInfo {
             reference: option.boot_reference().inner().to_string(),
             display_name: option.display_name().map(|value| value.inner().to_string()),
@@ -256,41 +266,22 @@ async fn state<'c, B: Bmc>(
             enabled: option.enabled(),
         })
         .collect();
-    Ok((system, order, options))
-}
-
-#[derive(Serialize)]
-struct BootOptionEnabled {
-    #[serde(rename = "BootOptionEnabled")]
-    enabled: bool,
+    Ok((system, order, options, resources))
 }
 
 async fn set_option_enabled<B: Bmc>(
     cx: &OpCx<'_, B>,
-    system: &ComputerSystem<B>,
-    option: &BootOptionInfo,
+    option: &BootOption<B>,
     enabled: bool,
 ) -> Result<(), PlatformError> {
-    let id = if option.reference.starts_with('/') {
-        ODataId::from(option.reference.clone())
-    } else {
-        ODataId::from(format!(
-            "{}/BootOptions/{}",
-            system.raw().odata_id().to_string().trim_end_matches('/'),
-            option.reference
-        ))
-    };
-    let resource = cx
-        .bmc()
-        .get::<BootOptionSchema>(&id)
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?;
-    match cx
-        .patch_id(&id, resource.etag(), &BootOptionEnabled { enabled })
-        .await?
-    {
-        ModificationResponse::Task(_) => Err(PlatformError::Unsupported),
-        ModificationResponse::Entity(_) | ModificationResponse::Empty => Ok(()),
+    let body = BootOptionUpdate::builder()
+        .with_boot_option_enabled(enabled)
+        .build();
+    match update::apply(cx, option.raw().as_ref(), &body, option.update(&body)).await? {
+        DriverOutcome::Complete { .. } => Ok(()),
+        DriverOutcome::Accepted { .. } | DriverOutcome::Blocked { .. } => {
+            Err(PlatformError::Unsupported)
+        }
     }
 }
 
