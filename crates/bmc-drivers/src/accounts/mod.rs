@@ -19,5 +19,7 @@ pub(crate) use delta::DeltaPowerShelfAccounts;
 pub(crate) use hpe::IloAccounts;
 pub(crate) use lenovo::XccAccounts;
 pub(crate) use liteon::LiteOnPowerShelfAccounts;
-pub(crate) use nvidia::{BlueFieldAccounts, OpenBmcAccounts, SwitchAccounts, VikingAccounts};
+pub(crate) use nvidia::{
+    BlueFieldAccounts, Gh200Accounts, OpenBmcAccounts, SwitchAccounts, VikingAccounts,
+};
 pub(crate) use standard::StandardAccounts;

@@ -111,12 +111,13 @@ fn built_ins() -> Vec<Rule> {
             [product(&["GB BMC", "GB200 NVL", "GB NVL"])],
         )
         .drivers(OPENBMC_TRAY)
-        .drivers([NvidiaHgxAttestation]),
+        .drivers([NvidiaOpenBmcAccounts, NvidiaHgxAttestation]),
         Rule::new("nvidia-vera", [product(&["VR NVL72"])])
             .drivers(OPENBMC_TRAY)
-            .drivers([NvidiaHgxAttestation]),
+            .drivers([NvidiaOpenBmcAccounts, NvidiaHgxAttestation]),
         Rule::new("nvidia-gh", [product(&["P3809"])])
             .drivers(OPENBMC_TRAY)
+            .drivers([NvidiaGh200Accounts])
             .unsupported([Capability::Attestation]),
         Rule::new(
             "bluefield",
@@ -218,13 +219,12 @@ fn built_ins() -> Vec<Rule> {
 }
 
 /// The drivers every NVIDIA OpenBMC compute tray shares.
-const OPENBMC_TRAY: [Driver; 6] = [
+const OPENBMC_TRAY: [Driver; 5] = [
     NvidiaOpenBmcPower,
     NvidiaOpenBmcBios,
     NvidiaOpenBmcBootOrder,
     NvidiaOpenBmcFirmware,
     NvidiaOpenBmcLockdown,
-    NvidiaOpenBmcAccounts,
 ];
 
 fn vendor(value: &str) -> IdentityMatcher {
@@ -437,6 +437,12 @@ mod tests {
         assert_eq!(
             nvswitch.drivers.get(Capability::Accounts),
             &driver(NvidiaSwitchAccounts)
+        );
+        assert_eq!(
+            resolve(&rules, &identity("NVIDIA", Some("P3809")))
+                .drivers
+                .get(Capability::Accounts),
+            &driver(NvidiaGh200Accounts)
         );
         assert_eq!(
             nvswitch.drivers.get(Capability::Bios),

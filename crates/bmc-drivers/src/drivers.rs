@@ -200,6 +200,7 @@ drivers! {
         LenovoXccAccounts = "lenovo-xcc-accounts" => accounts::XccAccounts,
         LiteOnPowerShelfAccounts = "liteon-power-shelf-accounts" => accounts::LiteOnPowerShelfAccounts,
         NvidiaBlueFieldAccounts = "nvidia-bluefield-accounts" => accounts::BlueFieldAccounts,
+        NvidiaGh200Accounts = "nvidia-gh200-accounts" => accounts::Gh200Accounts,
         NvidiaOpenBmcAccounts = "nvidia-openbmc-accounts" => accounts::OpenBmcAccounts,
         NvidiaSwitchAccounts = "nvidia-switch-accounts" => accounts::SwitchAccounts,
         NvidiaVikingAccounts = "nvidia-viking-accounts" => accounts::VikingAccounts,
