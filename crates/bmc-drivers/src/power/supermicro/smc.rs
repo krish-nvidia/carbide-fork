@@ -5,9 +5,11 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::{Bmc, ODataId};
+use nv_redfish::core::Bmc;
+use nv_redfish::oem::supermicro::SupermicroSystemResetType;
+use nv_redfish::oem::supermicro::schema::ActionAnnotations;
+use nv_redfish::oem::supermicro::schema::oem_system_extensions::ComputerSystemResetAction;
 use nv_redfish::resource::ResetType;
-use serde_json::json;
 
 use crate::power::standard::StandardPower;
 
@@ -16,11 +18,21 @@ pub(crate) struct SmcPower;
 
 /// Restores AC power through the Supermicro OEM system reset.
 async fn ac_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    let target = ODataId::from(format!(
-        "{}/Actions/Oem/OemSystemExtensions.Reset",
-        cx.system()?.raw().odata_id
-    ));
-    cx.post(&target, &json!({"ResetType": "ACCycle"})).await
+    let actions = cx
+        .system()?
+        .oem_supermicro_actions()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .raw();
+    let action = actions.reset.as_ref().ok_or(PlatformError::Unsupported)?;
+    cx.action(
+        action,
+        &ComputerSystemResetAction {
+            redfish_annotations: ActionAnnotations::default(),
+            reset_type: SupermicroSystemResetType::AcCycle,
+        },
+    )
+    .await
 }
 
 #[async_trait]

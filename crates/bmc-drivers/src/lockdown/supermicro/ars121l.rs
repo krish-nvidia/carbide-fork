@@ -12,7 +12,6 @@ use nv_redfish::core::Bmc;
 use nv_redfish::host_interface::HostInterface;
 use nv_redfish::manager::Manager;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
-use serde_json::json;
 
 use crate::lockdown::{set_host_interface, signal, state_from_signals, status};
 
@@ -108,9 +107,11 @@ async fn set_sys_lockdown<B: Bmc>(
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let raw = lockdown.raw();
-    cx.patch(raw.as_ref(), &json!({"SysLockdownEnabled": enabled}))
+    lockdown
+        .set_enabled(enabled)
         .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 async fn set_kcs_privilege<B: Bmc>(
@@ -126,12 +127,14 @@ async fn set_kcs_privilege<B: Bmc>(
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let raw = kcs.raw();
-    cx.patch(
-        raw.as_ref(),
-        &json!({"Privilege": if enabled { "Callback" } else { "Administrator" }}),
-    )
+    kcs.set_privilege(if enabled {
+        Privilege::Callback
+    } else {
+        Privilege::Administrator
+    })
     .await
+    .map(DriverOutcome::from)
+    .map_err(|error| cx.map_redfish_error(error))
 }
 
 async fn host_interfaces<B: Bmc>(

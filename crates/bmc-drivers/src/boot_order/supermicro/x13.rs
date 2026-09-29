@@ -5,16 +5,17 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    BootInterfaceSelector, BootOrder, BootOrderStatus, ControllerAction, DriverOutcome, Fetched,
-    OpCx, PlatformError,
+    BootInterfaceSelector, BootOrder, BootOrderStatus, ControllerAction, DriverOutcome, OpCx,
+    PlatformError,
 };
-use nv_redfish::core::{Bmc, ModificationResponse, ODataId};
+use nv_redfish::core::Bmc;
+use nv_redfish::oem::supermicro::SmcFixedBootOrder;
+use nv_redfish::oem::supermicro::fixed_boot_order::SmcFixedBootOrderUpdate;
 use nv_redfish::resource::ResetType;
-use serde::Deserialize;
 use serde_json::json;
 
 use crate::boot_order::standard::{StandardBootOrder, selector_matches};
-use crate::resources::{patch_bios_settings, selected_bios};
+use crate::resources::{patch_bios_attributes, selected_bios};
 
 /// Supermicro X13 boot behavior.
 ///
@@ -28,13 +29,9 @@ pub(crate) struct X13BootOrder;
 const NETWORK: &str = "UEFI Network";
 const HARD_DISK: &str = "UEFI Hard Disk";
 
-/// The Supermicro `FixedBootOrder` OEM resource body.
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+/// The device-class and UEFI network orders of the `FixedBootOrder` resource.
 struct FixedBootOrder {
-    #[serde(default)]
     fixed_boot_order: Vec<String>,
-    #[serde(rename = "UEFINetwork", default)]
     uefi_network: Vec<String>,
 }
 
@@ -52,17 +49,21 @@ fn boot_order_unavailable(error: &PlatformError) -> bool {
 
 async fn fixed_boot_order<B: Bmc>(
     cx: &OpCx<'_, B>,
-) -> Result<(ODataId, FixedBootOrder), PlatformError> {
-    let target = ODataId::from(format!(
-        "{}/Oem/Supermicro/FixedBootOrder",
-        cx.system()?.raw().odata_id
-    ));
-    let fetched = cx
-        .bmc()
-        .get::<Fetched<FixedBootOrder>>(&target)
+) -> Result<(SmcFixedBootOrder<B>, FixedBootOrder), PlatformError> {
+    let resource = cx
+        .system()?
+        .oem_supermicro()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .fixed_boot_order()
         .await
-        .map_err(|error| cx.map_bmc_error(error))?;
-    Ok((target, FixedBootOrder::clone(&fetched)))
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?;
+    let orders = FixedBootOrder {
+        fixed_boot_order: resource.fixed_boot_order().unwrap_or_default().to_vec(),
+        uefi_network: resource.uefi_network().unwrap_or_default().to_vec(),
+    };
+    Ok((resource, orders))
 }
 
 fn fixed_status(fbo: &FixedBootOrder, selector: &BootInterfaceSelector) -> BootOrderStatus {
@@ -90,7 +91,7 @@ async fn configure_fixed<B: Bmc>(
     cx: &OpCx<'_, B>,
     selector: &BootInterfaceSelector,
 ) -> Result<DriverOutcome, PlatformError> {
-    let (target, mut fbo) = fixed_boot_order(cx).await?;
+    let (resource, mut fbo) = fixed_boot_order(cx).await?;
     if fixed_status(&fbo, selector).is_configured() {
         return Ok(DriverOutcome::complete());
     }
@@ -115,13 +116,16 @@ async fn configure_fixed<B: Bmc>(
     let mut order = vec!["Disabled".to_string(); fbo.fixed_boot_order.len().max(2)];
     order[0] = class_entry(NETWORK);
     order[1] = class_entry(HARD_DISK);
-    cx.patch_id(
-        &target,
-        None,
-        &json!({"FixedBootOrder": order, "UEFINetwork": fbo.uefi_network}),
-    )
-    .await
-    .map(DriverOutcome::from)
+    resource
+        .update(
+            &SmcFixedBootOrderUpdate::builder()
+                .with_fixed_boot_order(order)
+                .with_uefi_network(fbo.uefi_network)
+                .build(),
+        )
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 async fn enable_http_boot<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -138,11 +142,11 @@ async fn enable_http_boot<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Pla
                 .cloned()
         })
         .ok_or(PlatformError::Unsupported)?;
-    match patch_bios_settings(cx, &json!({"Attributes": {attribute: "Enabled"}})).await? {
-        task @ ModificationResponse::Task(_) => Ok(DriverOutcome::from(task)),
-        ModificationResponse::Entity(_) | ModificationResponse::Empty => Ok(
-            DriverOutcome::blocked(ControllerAction::Power(ResetType::GracefulRestart)),
-        ),
+    match patch_bios_attributes(cx, json!({attribute: "Enabled"})).await? {
+        DriverOutcome::Complete { .. } => Ok(DriverOutcome::blocked(ControllerAction::Power(
+            ResetType::GracefulRestart,
+        ))),
+        accepted_or_blocked => Ok(accepted_or_blocked),
     }
 }
 

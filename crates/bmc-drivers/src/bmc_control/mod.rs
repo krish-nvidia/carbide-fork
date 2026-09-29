@@ -10,7 +10,6 @@ mod dell;
 mod hpe;
 mod standard;
 mod supermicro;
-mod support;
 
 pub(crate) use ami::MegaRacBmcControl;
 pub(crate) use dell::IdracBmcControl;
