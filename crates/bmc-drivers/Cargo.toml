@@ -34,6 +34,7 @@ nv-redfish = { features = [
     "oem-dell-attributes",
     "oem-hpe",
     "oem-lenovo",
+    "oem-liteon",
     "oem-nvidia",
     "oem-supermicro",
     "power-equipment",

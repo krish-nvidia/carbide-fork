@@ -5,8 +5,9 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, EntityTypeRef, ODataId};
-use serde_json::json;
+use nv_redfish::core::{Bmc, EntityTypeRef};
+use nv_redfish::oem::nvidia::schema::ActionAnnotations;
+use nv_redfish::oem::nvidia::schema::nvidia_update_service::NvidiaUpdateServiceClearNVRAMAction;
 
 use crate::bios::standard::{self, StandardBios};
 
@@ -25,13 +26,24 @@ async fn clear_nvram<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platform
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let raw = service.raw();
-    let target = ODataId::from(format!(
-        "{}/Actions/Oem/NvidiaUpdateService.ClearNVRAM",
-        raw.odata_id()
-    ));
-    let host_bios = format!("{}/FirmwareInventory/HostBIOS_0", raw.odata_id());
-    cx.post(&target, &json!({"Targets": [host_bios]})).await
+    let host_bios = format!("{}/FirmwareInventory/HostBIOS_0", service.raw().odata_id());
+    let actions = service
+        .oem_nvidia_actions()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .raw();
+    let action = actions
+        .clear_nvram
+        .as_ref()
+        .ok_or(PlatformError::Unsupported)?;
+    cx.action(
+        action,
+        &NvidiaUpdateServiceClearNVRAMAction {
+            redfish_annotations: ActionAnnotations::default(),
+            targets: vec![host_bios],
+        },
+    )
+    .await
 }
 
 #[async_trait]

@@ -8,12 +8,11 @@ use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
     PlatformError,
 };
-use nv_redfish::core::{Bmc, EntityTypeRef};
+use nv_redfish::core::Bmc;
 use nv_redfish::oem::ami::config_bmc::{
-    LockdownBiosSettingsChangeState, LockdownBiosUpgradeDowngradeState,
+    ConfigBmcUpdate, LockdownBiosSettingsChangeState, LockdownBiosUpgradeDowngradeState,
     LockoutBiosVariableWriteMode, LockoutHostControlState,
 };
-use serde_json::json;
 
 use crate::lockdown::{signal, state_from_signals, status};
 
@@ -84,20 +83,23 @@ impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
             .await
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?;
-        let value = if desired == LockdownDesiredState::Enabled {
-            "Enable"
+        let update = if desired == LockdownDesiredState::Enabled {
+            ConfigBmcUpdate::builder()
+                .with_lockout_host_control(LockoutHostControlState::Enable)
+                .with_lockout_bios_variable_write_mode(LockoutBiosVariableWriteMode::Enable)
+                .with_lockdown_bios_settings_change(LockdownBiosSettingsChangeState::Enable)
+                .with_lockdown_bios_upgrade_downgrade(LockdownBiosUpgradeDowngradeState::Enable)
         } else {
-            "Disable"
+            ConfigBmcUpdate::builder()
+                .with_lockout_host_control(LockoutHostControlState::Disable)
+                .with_lockout_bios_variable_write_mode(LockoutBiosVariableWriteMode::Disable)
+                .with_lockdown_bios_settings_change(LockdownBiosSettingsChangeState::Disable)
+                .with_lockdown_bios_upgrade_downgrade(LockdownBiosUpgradeDowngradeState::Disable)
         };
-        cx.post(
-            config.raw().odata_id(),
-            &json!({
-                "LockoutHostControl": value,
-                "LockoutBiosVariableWriteMode": value,
-                "LockdownBiosSettingsChange": value,
-                "LockdownBiosUpgradeDowngrade": value
-            }),
-        )
-        .await
+        config
+            .apply(&update.build())
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 }

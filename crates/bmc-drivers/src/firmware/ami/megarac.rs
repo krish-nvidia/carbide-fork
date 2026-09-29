@@ -5,18 +5,26 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
-use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService};
-use serde_json::json;
+use nv_redfish::core::{Bmc, OemMultipartPart};
+use nv_redfish::oem::ami::update_service::{
+    AmiUpdateServiceUpdate, AmiUpdateServiceUpdateExt, ImageType, OemParametersUpdate,
+    PreserveConfigurationUpdate, oem_parameters_part,
+};
+use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService, UpdateServiceUpdate};
 
 use crate::firmware::standard::{StandardFirmware, UploadRequest, update_service, upload};
 use crate::firmware::support::upload_uri;
+use crate::update;
+
+/// The multipart part AMI reads the image type from.
+const OEM_PARAMETERS_PART: &str = "OemParameters";
 
 /// AMI MegaRAC firmware behavior for Lenovo HS350x-class BMCs.
 ///
-/// The BMC accepts only its BIOS or BMC image targets with `OemParameters`,
-/// uploads through `upload` when `MultipartUpload` is not advertised, and a
-/// BMC image wipes configuration unless preservation is requested first.
+/// The BMC accepts only its BIOS or BMC image targets, with `OemParameters`
+/// naming the image, uploads through `upload` when `MultipartUpload` is not
+/// advertised, and a BMC image wipes configuration unless preservation is
+/// requested first.
 pub(crate) struct MegaRacFirmware;
 
 const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/upload";
@@ -41,17 +49,53 @@ fn image(parameters: &MultipartUpdateParameters) -> Result<Image, PlatformError>
     }
 }
 
+/// The `OemParameters` part naming `image`; a BIOS image keeps its NVRAM.
+fn oem_parameters(image: Image) -> Result<OemMultipartPart, PlatformError> {
+    let parameters = match image {
+        Image::Bmc => OemParametersUpdate::builder()
+            .with_image_type(ImageType::Bmc)
+            .build(),
+        Image::Bios => OemParametersUpdate::builder()
+            .with_image_type(ImageType::Bios)
+            .with_preserve_bios("true".to_string())
+            .build(),
+    };
+    oem_parameters_part(&parameters).map_err(|error| PlatformError::InvalidResponse {
+        message: format!("failed to serialize AMI OemParameters: {error}"),
+    })
+}
+
 async fn preserve_bmc_configuration<B: Bmc>(
     cx: &OpCx<'_, B>,
     service: &UpdateService<B>,
 ) -> Result<(), PlatformError> {
-    let preserve = json!({"Oem": {"AMIUpdateService": {"PreserveConfiguration": {
-        "Authentication": true, "EXTLOG": true, "FRU": true, "IPMI": true,
-        "KVM": true, "NTP": true, "Network": true, "REDFISH": true,
-        "SDR": true, "SEL": true, "SNMP": true, "SSH": true,
-        "Syslog": true, "WEB": true
-    }}}});
-    match cx.patch(service.raw().as_ref(), &preserve).await? {
+    let preserve = PreserveConfigurationUpdate::builder()
+        .with_authentication(true)
+        .with_extlog(true)
+        .with_fru(true)
+        .with_ipmi(true)
+        .with_kvm(true)
+        .with_ntp(true)
+        .with_network(true)
+        .with_redfish(true)
+        .with_sdr(true)
+        .with_sel(true)
+        .with_snmp(true)
+        .with_ssh(true)
+        .with_syslog(true)
+        .with_web(true)
+        .build();
+    let body = UpdateServiceUpdate::builder()
+        .build()
+        .with_oem_ami(
+            AmiUpdateServiceUpdate::builder()
+                .with_preserve_configuration(preserve)
+                .build(),
+        )
+        .map_err(|error| PlatformError::InvalidResponse {
+            message: format!("failed to build the AMI preserve-configuration update: {error}"),
+        })?;
+    match update::apply(cx, service.raw().as_ref(), &body, service.update(&body)).await? {
         DriverOutcome::Complete { .. } => Ok(()),
         DriverOutcome::Accepted { .. } | DriverOutcome::Blocked { .. } => {
             Err(PlatformError::Unsupported)
@@ -68,16 +112,13 @@ impl<B: Bmc> Firmware<B> for MegaRacFirmware {
     async fn multipart_update(
         &self,
         cx: &OpCx<'_, B>,
-        request: UploadRequest<'_>,
+        mut request: UploadRequest<'_>,
     ) -> Result<DriverOutcome, PlatformError> {
         let image = image(request.update_parameters)?;
-        if !request
+        request
             .oem_parts
-            .iter()
-            .any(|part| part.name == "OemParameters")
-        {
-            return Err(PlatformError::Unsupported);
-        }
+            .retain(|part| part.name != OEM_PARAMETERS_PART);
+        request.oem_parts.push(oem_parameters(image)?);
         if image == Image::Bmc {
             let service = update_service(cx).await?;
             preserve_bmc_configuration(cx, &service).await?;

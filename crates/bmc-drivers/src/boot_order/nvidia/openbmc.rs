@@ -5,9 +5,8 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BootOrder, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, RedfishSettings};
-use nv_redfish::schema::computer_system::{BootUpdate, ComputerSystem as ComputerSystemSchema};
-use serde_json::json;
+use nv_redfish::core::Bmc;
+use nv_redfish::schema::computer_system::BootUpdate;
 
 use crate::boot_order::standard::StandardBootOrder;
 
@@ -26,15 +25,19 @@ impl<B: Bmc> BootOrder<B> for OpenBmcBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let system = cx.system()?;
-        let settings = system
-            .raw()
-            .settings_object()
-            .ok_or(PlatformError::Unsupported)?
-            .get(cx.bmc())
+        cx.system()?
+            .set_boot_source_override(
+                override_setting
+                    .boot_source_override_target
+                    .ok_or(PlatformError::Unsupported)?,
+                override_setting
+                    .boot_source_override_enabled
+                    .ok_or(PlatformError::Unsupported)?,
+                override_setting.boot_source_override_mode,
+                override_setting.http_boot_uri.clone(),
+            )
             .await
-            .map_err(|error| cx.map_bmc_error(error))?;
-        let settings: &ComputerSystemSchema = &settings;
-        cx.patch(settings, &json!({"Boot": override_setting})).await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 }

@@ -4,26 +4,18 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Fetched, OpCx, PlatformError, Power};
-use nv_redfish::core::{Bmc, EntityTypeRef};
+use bmc_platform::{OpCx, PlatformError, Power};
+use nv_redfish::core::Bmc;
 use nv_redfish::resource::PowerState;
-use serde::Deserialize;
 
 use crate::power::standard::StandardPower;
-use crate::power::support::{power_state_from_supplies, power_supplies};
+use crate::power::support::power_state_from_supplies;
 
 /// Lite-On power-shelf power behavior.
 ///
 /// The shelf's ComputerSystem accepts standard resets, but its power state
 /// is only meaningful as the aggregate of the supplies' OEM `PowerState`.
 pub(crate) struct LiteOnPowerShelfPower;
-
-/// Lite-On reports each supply's state as a top-level boolean `PowerState`.
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct SupplyPowerState {
-    power_state: Option<bool>,
-}
 
 #[async_trait]
 impl<B: Bmc> Power<B> for LiteOnPowerShelfPower {
@@ -32,15 +24,55 @@ impl<B: Bmc> Power<B> for LiteOnPowerShelfPower {
     }
 
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
+        let chassis = cx
+            .service_root()
+            .chassis()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .members()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
         let mut states = Vec::new();
-        for supply in power_supplies(cx).await? {
-            let supply = cx
-                .bmc()
-                .get::<Fetched<SupplyPowerState>>(supply.raw().odata_id())
+        for chassis in &chassis {
+            let Some(supplies) = chassis
+                .oem_liteon_power_supply_links()
                 .await
-                .map_err(|error| cx.map_bmc_error(error))?;
-            states.push(supply.power_state);
+                .map_err(|error| cx.map_redfish_error(error))?
+            else {
+                continue;
+            };
+            for supply in supplies {
+                let supply = supply
+                    .fetch()
+                    .await
+                    .map_err(|error| cx.map_redfish_error(error))?;
+                states.push(supply.power_state);
+            }
         }
         power_state_from_supplies(&states)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bmc_platform::{EtagMode, PlatformIdentity};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn state_reads_the_liteon_supply_power_states() {
+        let bmc = bmc_mock::test_support::liteon_powershelf_bmc().await;
+        let identity = PlatformIdentity::default();
+        let cx = OpCx::new(
+            bmc.bmc.as_ref(),
+            bmc.service_root.as_ref(),
+            &identity,
+            EtagMode::default(),
+        )
+        .await
+        .expect("power shelf context resolves");
+
+        assert_eq!(LiteOnPowerShelfPower.state(&cx).await, Ok(PowerState::On));
     }
 }
