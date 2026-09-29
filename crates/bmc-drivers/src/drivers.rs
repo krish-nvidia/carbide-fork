@@ -175,6 +175,7 @@ drivers! {
     BootOrder as boot_order: BootOrder = boot_order::StandardBootOrder {
         DellIdracBootOrder = "dell-idrac-boot-order" => boot_order::IdracBootOrder,
         HpeIloBootOrder = "hpe-ilo-boot-order" => boot_order::IloBootOrder,
+        NvidiaBlueFieldBootOrder = "nvidia-bluefield-boot-order" => boot_order::BlueFieldBootOrder,
         NvidiaOpenBmcBootOrder = "nvidia-openbmc-boot-order" => boot_order::OpenBmcBootOrder,
         SupermicroX13BootOrder = "supermicro-x13-boot-order" => boot_order::X13BootOrder,
     }
@@ -215,6 +216,7 @@ drivers! {
     Dpu as dpu: Dpu {
         NvidiaBlueField2Dpu = "nvidia-bluefield2-dpu" => dpu::BlueField2Dpu,
         NvidiaBlueFieldDpu = "nvidia-bluefield-dpu" => dpu::BlueField3Dpu,
+        NvidiaBlueField4Dpu = "nvidia-bluefield4-dpu" => dpu::BlueField4Dpu,
     }
     Attestation as attestation: Attestation = attestation::StandardAttestation {
         NvidiaHgxAttestation = "nvidia-hgx-attestation" => attestation::HgxAttestation,

@@ -110,6 +110,18 @@ impl Fixture {
         self
     }
 
+    pub(crate) fn respond(
+        mut self,
+        method: Method,
+        path: &str,
+        status: StatusCode,
+        body: Option<Value>,
+    ) -> Self {
+        self.responses
+            .insert((method, path.to_string()), (status, body));
+        self
+    }
+
     pub(crate) async fn build(self) -> FixtureBmc {
         let router = Router::new()
             .fallback(respond)
@@ -156,6 +168,14 @@ impl FixtureBmc {
 /// The JSON body of `request`.
 pub(crate) fn body(request: &RecordedRequest) -> Value {
     serde_json::from_slice(&request.body).expect("request body is JSON")
+}
+
+/// The request path, without scheme and host.
+pub(crate) fn path(request: &RecordedRequest) -> &str {
+    request
+        .uri
+        .strip_prefix("https://bmc.test")
+        .unwrap_or(&request.uri)
 }
 
 async fn respond(State(responses): State<Responses>, method: Method, uri: Uri) -> Response {

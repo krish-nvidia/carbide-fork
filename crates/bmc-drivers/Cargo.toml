@@ -29,6 +29,7 @@ nv-redfish = { features = [
     "job-service",
     "manager-network-protocol",
     "managers",
+    "network-adapters",
     "oem-ami",
     "oem-delta",
     "oem-dell-attributes",
@@ -47,6 +48,7 @@ serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+version-compare = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }

@@ -5,4 +5,4 @@
 
 mod nvidia;
 
-pub(crate) use nvidia::{BlueField2Dpu, BlueField3Dpu};
+pub(crate) use nvidia::{BlueField2Dpu, BlueField3Dpu, BlueField4Dpu};

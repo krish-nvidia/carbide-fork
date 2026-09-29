@@ -11,19 +11,24 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    bios_nic_mode, enable_bmc_rshim, nic_mode_value, no_dpu, require_nic_mode_firmware,
-    set_host_privilege_level,
+    bios_nic_mode, enable_bmc_rshim, nic_mode_firmware, nic_mode_value, no_dpu,
+    require_nic_mode_firmware, set_bios_host_privilege_level,
 };
 use crate::resources::patch_bios_attributes;
 
-/// BlueField-2: no host RShim control; NIC mode is a BIOS attribute.
+/// BlueField-2: NIC mode is a BIOS attribute and there is no host rshim control.
 pub(crate) struct BlueField2Dpu;
 
 #[async_trait]
 impl<B: Bmc> Dpu<B> for BlueField2Dpu {
+    /// The mode is unknown on BMC firmware that predates NIC-mode support.
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
+        let nic_mode = match nic_mode_firmware(cx).await? {
+            Some(firmware) => Some(bios_nic_mode(cx, &firmware).await?),
+            None => None,
+        };
         Ok(DpuStatus {
-            nic_mode: bios_nic_mode(cx).await?,
+            nic_mode,
             host_rshim: None,
         })
     }
@@ -39,16 +44,13 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
             .map_err(no_dpu)
     }
 
+    /// There is nothing to change, so every requested state is complete.
     async fn set_host_rshim(
         &self,
         _cx: &OpCx<'_, B>,
-        state: RshimState,
+        _state: RshimState,
     ) -> Result<DriverOutcome, PlatformError> {
-        // BlueField-2 exposes no host RShim control, so it is never enabled.
-        match state {
-            RshimState::Disabled => Ok(DriverOutcome::complete()),
-            RshimState::Enabled => Err(PlatformError::Unsupported),
-        }
+        Ok(DriverOutcome::complete())
     }
 
     async fn enable_bmc_rshim(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -60,6 +62,6 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
         cx: &OpCx<'_, B>,
         level: HostPrivilegeLevel,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_host_privilege_level(cx, level).await
+        set_bios_host_privilege_level(cx, level).await
     }
 }

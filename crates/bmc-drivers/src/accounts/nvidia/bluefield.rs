@@ -9,7 +9,8 @@ use nv_redfish::core::Bmc;
 
 use crate::accounts::standard::StandardAccounts;
 
-/// NVIDIA BlueField: the DPU BMC exposes its lockout policy read-only.
+/// NVIDIA BlueField: the DPU BMC exposes its lockout policy read-only, so
+/// there is nothing to apply.
 pub(crate) struct BlueFieldAccounts;
 
 #[async_trait]
@@ -22,6 +23,6 @@ impl<B: Bmc> Accounts<B> for BlueFieldAccounts {
         &self,
         _cx: &OpCx<'_, B>,
     ) -> Result<DriverOutcome, PlatformError> {
-        Err(PlatformError::Unsupported)
+        Ok(DriverOutcome::complete())
     }
 }

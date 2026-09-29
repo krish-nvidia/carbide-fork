@@ -129,10 +129,18 @@ fn built_ins() -> Vec<Rule> {
         )
         .drivers([
             NvidiaBlueFieldBios,
+            NvidiaBlueFieldBootOrder,
             NvidiaBlueFieldAccounts,
             NvidiaBlueFieldDpu,
             NvidiaBlueFieldConsole,
         ]),
+        // BlueField-4 keeps its DPU mode and host privileges on the network
+        // adapter rather than the system and BIOS.
+        Rule::new(
+            "nvidia-bluefield4",
+            [vendor("Nvidia"), product(&["BlueField-4", "B4240V"])],
+        )
+        .drivers([NvidiaBlueField4Dpu]),
         // ---- Model rules: exact system, chassis, or firmware evidence ----
         // GB NVSwitch trays share the GH200 service root; only their chassis
         // ids tell them apart. They have no BIOS, secure boot, lockdown, or
@@ -410,6 +418,15 @@ mod tests {
         assert_eq!(
             resolve(&rules, &bluefield2).drivers.get(Capability::Dpu),
             &driver(NvidiaBlueField2Dpu)
+        );
+        let bluefield4 = resolve(&rules, &identity("Nvidia", Some("BlueField-4")));
+        assert_eq!(
+            bluefield4.drivers.get(Capability::Dpu),
+            &driver(NvidiaBlueField4Dpu)
+        );
+        assert_eq!(
+            bluefield4.drivers.get(Capability::BootOrder),
+            &driver(NvidiaBlueFieldBootOrder)
         );
         let mut nvswitch = identity("NVIDIA", Some("P3809"));
         nvswitch.chassis = vec![ChassisIdentity {

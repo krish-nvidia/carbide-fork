@@ -172,7 +172,7 @@ pub(super) async fn change_password<B: Bmc>(
     .await
 }
 
-fn differences(actual: &BiosSettings, expected: &BiosSettings) -> Vec<BiosDiff> {
+pub(super) fn differences(actual: &BiosSettings, expected: &BiosSettings) -> Vec<BiosDiff> {
     expected
         .attributes
         .iter()

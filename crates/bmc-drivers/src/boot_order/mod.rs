@@ -13,6 +13,6 @@ mod supermicro;
 
 pub(crate) use dell::IdracBootOrder;
 pub(crate) use hpe::IloBootOrder;
-pub(crate) use nvidia::OpenBmcBootOrder;
+pub(crate) use nvidia::{BlueFieldBootOrder, OpenBmcBootOrder};
 pub(crate) use standard::StandardBootOrder;
 pub(crate) use supermicro::X13BootOrder;

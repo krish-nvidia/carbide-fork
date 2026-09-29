@@ -5,58 +5,33 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    Dpu, DpuStatus, DriverOutcome, Fetched, HostPrivilegeLevel, NicMode, OpCx, PlatformError,
-    RshimState,
+    Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, RshimState,
 };
-use nv_redfish::core::{Bmc, ODataId};
-use nv_redfish::oem::nvidia::computer_system::Mode;
-use serde::Deserialize;
+use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    bios_nic_mode, enable_bmc_rshim, nic_mode_value, no_dpu, oem_action, require_nic_mode_firmware,
-    set_host_privilege_level,
+    enable_bmc_rshim, host_rshim_state, nic_mode_firmware, nic_mode_value, oem_action,
+    require_nic_mode_firmware, set_bios_host_privilege_level, system_nic_mode, system_oem,
 };
 
-/// BlueField-3 and later: NIC mode and host RShim are `Oem.Nvidia` actions.
+/// BlueField-3: mode and host rshim are the system `Oem.Nvidia` properties
+/// and actions; host privilege is a BIOS attribute.
 pub(crate) struct BlueField3Dpu;
-
-/// The `Oem/Nvidia` system resource fields nv-redfish does not model.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct HostRshim {
-    host_rshim: Option<String>,
-}
 
 #[async_trait]
 impl<B: Bmc> Dpu<B> for BlueField3Dpu {
+    /// The mode is unknown on BMC firmware that predates NIC-mode support.
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
-        let system = cx.system().map_err(no_dpu)?;
-        let oem = system
-            .oem_nvidia()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?;
-        let nic_mode = match oem.as_ref().and_then(|oem| oem.mode()) {
-            Some(Mode::NicMode) => Some(NicMode::Nic),
-            Some(Mode::DpuMode) => Some(NicMode::Dpu),
-            Some(Mode::UnsupportedValue) | None => bios_nic_mode(cx).await?,
+        let firmware = nic_mode_firmware(cx).await?;
+        let oem = system_oem(cx).await?;
+        let nic_mode = match firmware {
+            Some(firmware) => Some(system_nic_mode(cx, &firmware, &oem).await?),
+            None => None,
         };
-        let target = ODataId::from(format!("{}/Oem/Nvidia", system.raw().odata_id));
-        let host_rshim = cx
-            .bmc()
-            .get::<Fetched<HostRshim>>(&target)
-            .await
-            .map_err(|error| cx.map_bmc_error(error))?
-            .host_rshim
-            .as_deref()
-            .and_then(|value| match value {
-                "Enabled" => Some(RshimState::Enabled),
-                "Disabled" => Some(RshimState::Disabled),
-                _ => None,
-            });
         Ok(DpuStatus {
             nic_mode,
-            host_rshim,
+            host_rshim: host_rshim_state(&oem),
         })
     }
 
@@ -66,14 +41,7 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
         require_nic_mode_firmware(cx).await?;
-        let system = cx.system().map_err(no_dpu)?;
-        oem_action(
-            cx,
-            system,
-            "Mode.Set",
-            &json!({"Mode": nic_mode_value(mode)}),
-        )
-        .await
+        oem_action(cx, "Mode.Set", &json!({"Mode": nic_mode_value(mode)})).await
     }
 
     async fn set_host_rshim(
@@ -81,18 +49,11 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
         cx: &OpCx<'_, B>,
         state: RshimState,
     ) -> Result<DriverOutcome, PlatformError> {
-        let system = cx.system().map_err(no_dpu)?;
         let host_rshim = match state {
             RshimState::Enabled => "Enabled",
             RshimState::Disabled => "Disabled",
         };
-        oem_action(
-            cx,
-            system,
-            "HostRshim.Set",
-            &json!({"HostRshim": host_rshim}),
-        )
-        .await
+        oem_action(cx, "HostRshim.Set", &json!({"HostRshim": host_rshim})).await
     }
 
     async fn enable_bmc_rshim(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -104,6 +65,6 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
         cx: &OpCx<'_, B>,
         level: HostPrivilegeLevel,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_host_privilege_level(cx, level).await
+        set_bios_host_privilege_level(cx, level).await
     }
 }
