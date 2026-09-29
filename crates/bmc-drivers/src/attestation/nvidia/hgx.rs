@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bmc_platform::{Attestation, OpCx, PlatformError};
-use nv_redfish::Resource;
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::software_inventory::SoftwareInventory;
 
@@ -46,7 +45,7 @@ impl<B: Bmc> Attestation<B> for HgxAttestation {
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?
             .into_iter()
-            .find(|inventory| inventory.id().into_inner() == inventory_id)
+            .find(|inventory| inventory.raw().id == inventory_id)
             .map(|inventory| inventory.raw())
             .ok_or_else(|| PlatformError::InvalidResponse {
                 message: format!("firmware inventory {inventory_id} was not found"),

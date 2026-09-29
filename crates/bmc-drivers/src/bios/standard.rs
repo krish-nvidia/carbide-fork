@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosDiff, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{Bmc, EntityTypeRef, ModificationResponse};
+use nv_redfish::schema::ActionAnnotations;
 use nv_redfish::schema::bios::{Bios as BiosSchema, BiosChangePasswordAction, BiosResetBiosAction};
 use serde::Serialize;
 use serde_json::Value;
@@ -126,7 +127,13 @@ async fn reset<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
         .as_ref()
         .and_then(|actions| actions.reset_bios.as_ref())
         .ok_or(PlatformError::Unsupported)?;
-    cx.action(action, &BiosResetBiosAction {}).await
+    cx.action(
+        action,
+        &BiosResetBiosAction {
+            redfish_annotations: ActionAnnotations::default(),
+        },
+    )
+    .await
 }
 
 /// Reverts only the staged attributes that differ, since re-sending every
@@ -173,6 +180,7 @@ pub(super) async fn change_password<B: Bmc>(
     cx.action(
         action,
         &BiosChangePasswordAction {
+            redfish_annotations: ActionAnnotations::default(),
             password_name: password_name.to_string(),
             old_password: Some(current_password.to_string()),
             new_password: new_password.to_string(),

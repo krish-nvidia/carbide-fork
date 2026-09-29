@@ -7,10 +7,10 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::Resource;
 use nv_redfish::chassis::Chassis;
 use nv_redfish::core::Bmc;
 use nv_redfish::resource::{PowerState, ResetType};
+use nv_redfish::schema::ActionAnnotations;
 use nv_redfish::schema::chassis::ChassisResetAction;
 use nv_redfish::schema::computer_system::ComputerSystemResetAction;
 
@@ -70,6 +70,7 @@ async fn reset<B: Bmc>(
         cx.action(
             action,
             &ComputerSystemResetAction {
+                redfish_annotations: ActionAnnotations::default(),
                 reset_type: Some(reset_type),
             },
         )
@@ -93,6 +94,7 @@ async fn chassis_reset<B: Bmc>(
         cx.action(
             action,
             &ChassisResetAction {
+                redfish_annotations: ActionAnnotations::default(),
                 reset_type: Some(reset_type),
             },
         )
@@ -114,7 +116,7 @@ pub(super) async fn chassis<B: Bmc>(
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .into_iter()
-        .find(|chassis| chassis.id().into_inner() == chassis_id)
+        .find(|chassis| chassis.raw().id == chassis_id)
         .ok_or(PlatformError::Unsupported)
 }
 

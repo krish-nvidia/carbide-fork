@@ -6,7 +6,6 @@
 //! Dell iDRAC mechanics shared by several capabilities.
 
 use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ModificationResponse, ODataId, RedfishSettings};
 use serde_json::{Value, json};
 
@@ -48,7 +47,7 @@ pub(crate) async fn clear_job_queue<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), Plat
     let manager = cx.manager()?;
     let target = ODataId::from(format!(
         "{}/Oem/Dell/DellJobService/Actions/DellJobService.DeleteJobQueue",
-        manager.odata_id()
+        manager.raw().odata_id
     ));
     cx.post(&target, &json!({"JobID": "JID_CLEARALL"}))
         .await
@@ -65,7 +64,7 @@ pub(crate) async fn create_bios_config_job<B: Bmc>(
         .settings_object()
         .ok_or(PlatformError::Unsupported)?;
     let manager = cx.manager()?;
-    let jobs = ODataId::from(format!("{}/Oem/Dell/Jobs", manager.odata_id()));
+    let jobs = ODataId::from(format!("{}/Oem/Dell/Jobs", manager.raw().odata_id));
     cx.post_response(
         &jobs,
         &json!({"TargetSettingsURI": settings.id().to_string()}),
@@ -103,8 +102,8 @@ pub(crate) async fn patch_manager_attributes<B: Bmc>(
     let manager = cx.manager()?;
     let id = ODataId::from(format!(
         "{}/Oem/Dell/DellAttributes/{}",
-        manager.odata_id(),
-        manager.id()
+        manager.raw().odata_id,
+        manager.raw().id
     ));
     cx.patch_id(&id, None, &json!({"Attributes": attributes}))
         .await

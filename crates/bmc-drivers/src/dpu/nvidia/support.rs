@@ -6,7 +6,6 @@
 //! BlueField DPU mechanics shared by the card generations.
 
 use bmc_platform::{DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError};
-use nv_redfish::Resource;
 use nv_redfish::computer_system::ComputerSystem;
 use nv_redfish::core::{Bmc, ODataId};
 use serde_json::{Value, json};
@@ -58,7 +57,13 @@ async fn bmc_firmware_version<B: Bmc>(cx: &OpCx<'_, B>) -> Result<String, Platfo
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::NoContent)?
         .into_iter()
-        .find(|inventory| inventory.odata_id().to_string().contains("BMC_Firmware"))
+        .find(|inventory| {
+            inventory
+                .raw()
+                .odata_id
+                .to_string()
+                .contains("BMC_Firmware")
+        })
         .ok_or_else(|| PlatformError::InvalidResponse {
             message: "BlueField BMC firmware inventory was not found".to_string(),
         })?
@@ -101,7 +106,10 @@ pub(super) async fn oem_action<B: Bmc>(
     action: &str,
     payload: &Value,
 ) -> Result<DriverOutcome, PlatformError> {
-    let target = ODataId::from(format!("{}/Oem/Nvidia/Actions/{action}", system.odata_id()));
+    let target = ODataId::from(format!(
+        "{}/Oem/Nvidia/Actions/{action}",
+        system.raw().odata_id
+    ));
     cx.post(&target, payload).await
 }
 
@@ -126,7 +134,7 @@ pub(super) async fn set_host_privilege_level<B: Bmc>(
 pub(super) async fn enable_bmc_rshim<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<DriverOutcome, PlatformError> {
-    let target = ODataId::from(format!("{}/Oem/Nvidia", cx.manager()?.odata_id()));
+    let target = ODataId::from(format!("{}/Oem/Nvidia", cx.manager()?.raw().odata_id));
     cx.patch_id(
         &target,
         None,

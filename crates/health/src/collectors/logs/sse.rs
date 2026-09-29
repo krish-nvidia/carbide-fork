@@ -288,7 +288,7 @@ fn record_to_log(
         (Cow::Borrowed("message_id"), record.message_id.clone()),
         (
             Cow::Borrowed("event_record_id"),
-            record.base.odata_id().to_string(),
+            record.odata_id.to_string(),
         ),
     ];
 
@@ -299,7 +299,7 @@ fn record_to_log(
         &mut attributes,
         log_type,
         severity,
-        nvidia_error_id(record.base.base.oem.as_ref()),
+        nvidia_error_id(record.oem.as_ref()),
     );
     if let Some(event_id) = &record.event_id {
         attributes.push((Cow::Borrowed("event_id"), event_id.clone()));
@@ -338,7 +338,7 @@ fn record_to_log(
     if let Some(resolution) = &record.resolution {
         attributes.push((Cow::Borrowed("resolution"), resolution.clone()));
     }
-    if let Some(oem) = &record.base.base.oem {
+    if let Some(oem) = &record.oem {
         attributes.push((
             Cow::Borrowed("redfish.oem"),
             oem.additional_properties.to_string(),

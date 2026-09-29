@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::resource::ResetType;
 use serde_json::json;
@@ -23,7 +22,7 @@ async fn aux_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Plat
     let chassis = standard::chassis(cx, BMC_CHASSIS_ID).await?;
     let target = ODataId::from(format!(
         "{}/Actions/Oem/NvidiaChassis.AuxPowerReset",
-        chassis.odata_id()
+        chassis.raw().odata_id
     ));
     cx.post(&target, &json!({"ResetType": "AuxPowerCycle"}))
         .await

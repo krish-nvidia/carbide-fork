@@ -32,7 +32,7 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
         cx: &OpCx<'_, B>,
         request: &ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let slot = |account: &Account<B>| account.raw().base.id.parse::<u8>().ok();
+        let slot = |account: &Account<B>| account.raw().id.parse::<u8>().ok();
         let account = standard::account_collection(cx)
             .await?
             .all_accounts_data()

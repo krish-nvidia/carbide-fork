@@ -8,7 +8,6 @@ use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, ControllerAction, DriverOutcome, Fetched,
     OpCx, PlatformError,
 };
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ModificationResponse, ODataId};
 use nv_redfish::resource::ResetType;
 use serde::Deserialize;
@@ -56,7 +55,7 @@ async fn fixed_boot_order<B: Bmc>(
 ) -> Result<(ODataId, FixedBootOrder), PlatformError> {
     let target = ODataId::from(format!(
         "{}/Oem/Supermicro/FixedBootOrder",
-        cx.system()?.odata_id()
+        cx.system()?.raw().odata_id
     ));
     let fetched = cx
         .bmc()

@@ -7710,9 +7710,8 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd53359449215e5fd66dbb08367cf90723fccdfd51cde05c051bbf2c59f2e508"
+version = "0.1.0"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=110f816322a1dff83e3ae735da4433247e47c73a#110f816322a1dff83e3ae735da4433247e47c73a"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -7727,9 +7726,8 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-bmc-http"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb30c7a1d8521e09438e30343576cca771cde33e63cf79bcdccdfa58087c4c62"
+version = "0.1.0"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=110f816322a1dff83e3ae735da4433247e47c73a#110f816322a1dff83e3ae735da4433247e47c73a"
 dependencies = [
  "bytes",
  "futures-core",
@@ -7752,9 +7750,8 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-core"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d81553c63af702491245392ff1f2744a4131d9ca11a0e8ce6675168e0ba0191"
+version = "0.1.0"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=110f816322a1dff83e3ae735da4433247e47c73a#110f816322a1dff83e3ae735da4433247e47c73a"
 dependencies = [
  "futures-core",
  "futures-io",
@@ -7767,9 +7764,8 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-csdl-compiler"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9a5b1093f797f5368407da487d831118db6183f27d1153b89004238b38a64cd"
+version = "0.1.0"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=110f816322a1dff83e3ae735da4433247e47c73a#110f816322a1dff83e3ae735da4433247e47c73a"
 dependencies = [
  "clap",
  "clap_derive",
@@ -7785,9 +7781,8 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-dispatcher"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21371db0296b0bf51860700b84be9731fc54c05d611f782028e4d1aa044b61b0"
+version = "0.1.0"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=110f816322a1dff83e3ae735da4433247e47c73a#110f816322a1dff83e3ae735da4433247e47c73a"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -7795,9 +7790,8 @@ dependencies = [
 
 [[package]]
 name = "nv-redfish-schema"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7db2747e8150d1e5878c3a62450d8e9a044f8c164713d62fe21261d040ddf15c"
+version = "0.1.0"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=110f816322a1dff83e3ae735da4433247e47c73a#110f816322a1dff83e3ae735da4433247e47c73a"
 dependencies = [
  "glob",
 ]

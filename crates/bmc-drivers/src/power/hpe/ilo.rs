@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::resource::{PowerState, ResetType};
 use serde_json::json;
@@ -22,7 +21,7 @@ pub(crate) struct IloPower;
 async fn aux_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
     let target = ODataId::from(format!(
         "{}/Actions/Oem/Hpe/HpeComputerSystemExt.SystemReset",
-        cx.system()?.odata_id()
+        cx.system()?.raw().odata_id
     ));
     cx.post(&target, &json!({"ResetType": "AuxCycle"})).await
 }

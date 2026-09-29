@@ -8,7 +8,6 @@ use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
     PlatformError,
 };
-use nv_redfish::Resource;
 use nv_redfish::core::Bmc;
 use nv_redfish::ethernet_interface::EthernetInterface;
 use nv_redfish::manager::Manager;
@@ -42,7 +41,7 @@ async fn host_interface<B: Bmc>(
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .into_iter()
-        .find(|interface| interface.id().into_inner() == HOST_INTERFACE_ID))
+        .find(|interface| interface.raw().id == HOST_INTERFACE_ID))
 }
 
 async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
@@ -64,13 +63,11 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
         )
         .await?;
 
-    let security = lenovo
-        .base()
-        .security
-        .as_ref()
-        .ok_or(PlatformError::Unsupported)?
-        .id()
-        .clone();
+    let security = match lenovo.raw().as_ref() {
+        LenovoManagerSchema::V0_1(data) => data.security.as_ref().map(|nav| nav.id().clone()),
+        LenovoManagerSchema::V1_0(data) => data.security.as_ref().map(|nav| nav.id().clone()),
+    }
+    .ok_or(PlatformError::Unsupported)?;
     let rollback = cx
         .patch_id(
             &security,
@@ -84,7 +81,7 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
         .await?
         .ok_or(PlatformError::Unsupported)?;
     cx.patch_id(
-        to_host.odata_id(),
+        &to_host.raw().odata_id,
         None,
         &json!({"InterfaceEnabled": !enabled}),
     )

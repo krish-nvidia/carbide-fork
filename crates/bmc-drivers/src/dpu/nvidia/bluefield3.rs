@@ -8,7 +8,6 @@ use bmc_platform::{
     Dpu, DpuStatus, DriverOutcome, Fetched, HostPrivilegeLevel, NicMode, OpCx, PlatformError,
     RshimState,
 };
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::oem::nvidia::computer_system::Mode;
 use serde::Deserialize;
@@ -42,7 +41,7 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
             Some(Mode::DpuMode) => Some(NicMode::Dpu),
             Some(Mode::UnsupportedValue) | None => bios_nic_mode(cx).await?,
         };
-        let target = ODataId::from(format!("{}/Oem/Nvidia", system.odata_id()));
+        let target = ODataId::from(format!("{}/Oem/Nvidia", system.raw().odata_id));
         let host_rshim = cx
             .bmc()
             .get::<Fetched<HostRshim>>(&target)

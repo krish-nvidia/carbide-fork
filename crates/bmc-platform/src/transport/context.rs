@@ -18,7 +18,7 @@
 use nv_redfish::computer_system::ComputerSystem;
 use nv_redfish::core::{Action, EntityTypeRef, ModificationResponse, ODataETag, ODataId};
 use nv_redfish::manager::Manager;
-use nv_redfish::{Bmc, Error as RedfishError, Resource, ServiceRoot};
+use nv_redfish::{Bmc, Error as RedfishError, ServiceRoot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -75,7 +75,12 @@ impl<'a, B: Bmc> OpCx<'a, B> {
                 .members()
                 .await
                 .map_err(|error| context.map_redfish_error(error))?;
-            context.system = Some(find_selected(systems, &system.id, "ComputerSystem")?);
+            context.system = Some(find_selected(
+                systems,
+                |member| member.raw().id.clone(),
+                &system.id,
+                "ComputerSystem",
+            )?);
         }
         if let Some(manager) = &identity.manager {
             let managers = service_root
@@ -86,7 +91,12 @@ impl<'a, B: Bmc> OpCx<'a, B> {
                 .members()
                 .await
                 .map_err(|error| context.map_redfish_error(error))?;
-            context.manager = Some(find_selected(managers, &manager.id, "Manager")?);
+            context.manager = Some(find_selected(
+                managers,
+                |member| member.raw().id.clone(),
+                &manager.id,
+                "Manager",
+            )?);
         }
         Ok(context)
     }
@@ -227,7 +237,12 @@ impl<'a, B: Bmc> OpCx<'a, B> {
     }
 }
 
-fn find_selected<R: Resource>(members: Vec<R>, id: &str, kind: &str) -> Result<R, PlatformError> {
+fn find_selected<R>(
+    members: Vec<R>,
+    member_id: impl Fn(&R) -> String,
+    id: &str,
+    kind: &str,
+) -> Result<R, PlatformError> {
     if id.is_empty() {
         return Err(PlatformError::InvalidResponse {
             message: format!("platform identity names an empty {kind} id"),
@@ -235,7 +250,7 @@ fn find_selected<R: Resource>(members: Vec<R>, id: &str, kind: &str) -> Result<R
     }
     members
         .into_iter()
-        .find(|member| member.id().into_inner() == id)
+        .find(|member| member_id(member) == id)
         .ok_or_else(|| PlatformError::InvalidResponse {
             message: format!("exploration-selected {kind} {id} is no longer available"),
         })

@@ -6,7 +6,6 @@
 //! Manager-control mechanics shared by several vendor drivers.
 
 use bmc_platform::{DriverOutcome, OpCx, PlatformError};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId};
 use serde_json::Value;
 
@@ -16,6 +15,9 @@ pub(super) async fn manager_oem_action<B: Bmc>(
     action: &str,
     payload: &Value,
 ) -> Result<DriverOutcome, PlatformError> {
-    let target = ODataId::from(format!("{}/Actions/Oem/{action}", cx.manager()?.odata_id()));
+    let target = ODataId::from(format!(
+        "{}/Actions/Oem/{action}",
+        cx.manager()?.raw().odata_id
+    ));
     cx.post(&target, payload).await
 }

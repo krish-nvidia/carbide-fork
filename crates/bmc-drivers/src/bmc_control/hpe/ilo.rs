@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId};
 use serde_json::json;
 
@@ -43,7 +42,7 @@ impl<B: Bmc> BmcControl<B> for IloBmcControl {
         cx: &OpCx<'_, B>,
         servers: &[String],
     ) -> Result<DriverOutcome, PlatformError> {
-        let id = ODataId::from(format!("{}/DateTime", cx.manager()?.odata_id()));
+        let id = ODataId::from(format!("{}/DateTime", cx.manager()?.raw().odata_id));
         let servers = &servers[..servers.len().min(MAX_NTP_SERVERS)];
         cx.patch_id(&id, None, &json!({"StaticNTPServers": servers}))
             .await

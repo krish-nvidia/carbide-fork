@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwapOption;
-use nv_redfish::Resource;
 use nv_redfish::chassis::{Chassis, PowerSupply};
 use nv_redfish::computer_system::{ComputerSystem, Drive, Memory, Processor, Storage};
 use nv_redfish::core::{Bmc, ToSnakeCase};
@@ -96,12 +95,12 @@ impl<B: Bmc> DiscoveredEntity<B> {
     pub(crate) fn base_attributes(&self) -> Vec<MetricLabel> {
         match self {
             DiscoveredEntity::Processor { entity, system, .. } => vec![
-                (Cow::Borrowed("processor_id"), entity.raw().base.id.clone()),
-                (Cow::Borrowed("system_id"), system.raw().base.id.clone()),
+                (Cow::Borrowed("processor_id"), entity.raw().id.clone()),
+                (Cow::Borrowed("system_id"), system.raw().id.clone()),
             ],
             DiscoveredEntity::Memory { entity, system, .. } => vec![
-                (Cow::Borrowed("memory_id"), entity.raw().base.id.clone()),
-                (Cow::Borrowed("system_id"), system.raw().base.id.clone()),
+                (Cow::Borrowed("memory_id"), entity.raw().id.clone()),
+                (Cow::Borrowed("system_id"), system.raw().id.clone()),
             ],
             DiscoveredEntity::Drive {
                 entity,
@@ -109,21 +108,18 @@ impl<B: Bmc> DiscoveredEntity<B> {
                 storage,
                 ..
             } => vec![
-                (Cow::Borrowed("drive_id"), entity.raw().base.id.clone()),
-                (Cow::Borrowed("storage_id"), storage.raw().base.id.clone()),
-                (Cow::Borrowed("system_id"), system.raw().base.id.clone()),
+                (Cow::Borrowed("drive_id"), entity.raw().id.clone()),
+                (Cow::Borrowed("storage_id"), storage.raw().id.clone()),
+                (Cow::Borrowed("system_id"), system.raw().id.clone()),
             ],
             DiscoveredEntity::PowerSupply {
                 entity, chassis, ..
             } => vec![
-                (
-                    Cow::Borrowed("powersupply_id"),
-                    entity.raw().base.id.clone(),
-                ),
-                (Cow::Borrowed("chassis_id"), chassis.raw().base.id.clone()),
+                (Cow::Borrowed("powersupply_id"), entity.raw().id.clone()),
+                (Cow::Borrowed("chassis_id"), chassis.raw().id.clone()),
             ],
             DiscoveredEntity::Chassis { entity, .. } => {
-                vec![(Cow::Borrowed("chassis_id"), entity.raw().base.id.clone())]
+                vec![(Cow::Borrowed("chassis_id"), entity.raw().id.clone())]
             }
         }
     }
@@ -174,11 +170,11 @@ impl<B: Bmc> DiscoveredEntity<B> {
 
     pub(crate) fn key(&self) -> String {
         match self {
-            DiscoveredEntity::Processor { entity, .. } => entity.odata_id().to_string(),
-            DiscoveredEntity::Memory { entity, .. } => entity.odata_id().to_string(),
-            DiscoveredEntity::Drive { entity, .. } => entity.odata_id().to_string(),
-            DiscoveredEntity::PowerSupply { entity, .. } => entity.odata_id().to_string(),
-            DiscoveredEntity::Chassis { entity, .. } => entity.odata_id().to_string(),
+            DiscoveredEntity::Processor { entity, .. } => entity.raw().odata_id.to_string(),
+            DiscoveredEntity::Memory { entity, .. } => entity.raw().odata_id.to_string(),
+            DiscoveredEntity::Drive { entity, .. } => entity.raw().odata_id.to_string(),
+            DiscoveredEntity::PowerSupply { entity, .. } => entity.raw().odata_id.to_string(),
+            DiscoveredEntity::Chassis { entity, .. } => entity.raw().odata_id.to_string(),
         }
     }
 

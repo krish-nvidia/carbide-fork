@@ -8,7 +8,6 @@ use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
     PlatformError,
 };
-use nv_redfish::Resource;
 use nv_redfish::core::Bmc;
 use nv_redfish::host_interface::HostInterface;
 use nv_redfish::manager::Manager;
@@ -158,7 +157,7 @@ async fn set_host_interfaces<B: Bmc>(
     for interface in host_interfaces(cx, manager).await? {
         outcome = outcome.merge(
             cx.patch_id(
-                interface.odata_id(),
+                &interface.raw().odata_id,
                 None,
                 &json!({"InterfaceEnabled": enabled}),
             )

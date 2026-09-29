@@ -29,8 +29,8 @@ use nv_redfish::bmc_http::{
 };
 use nv_redfish::core::upload::{MultipartUpdateRequest, UploadReader};
 use nv_redfish::core::{
-    ActionError, AsyncTask, BoxTryStream, ModificationResponse, ODataETag, ODataId,
-    SessionCreateResponse,
+    ActionError, AsyncTask, BmcError, BmcErrorClass, BoxTryStream, ModificationResponse, ODataETag,
+    ODataId, SessionCreateResponse,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -83,6 +83,18 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl BmcError for Error {
+    fn error_class(&self) -> BmcErrorClass {
+        match self {
+            Self::InvalidResponse { status, .. } => BmcErrorClass::HttpResponse {
+                status: status.as_u16(),
+            },
+            Self::Json(_) => BmcErrorClass::ResponseParse,
+            _ => BmcErrorClass::Other,
+        }
+    }
+}
 
 impl ActionError for Error {
     fn not_supported() -> Self {

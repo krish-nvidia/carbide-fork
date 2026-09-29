@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 use nv_redfish::resource::ResetType;
+use nv_redfish::schema::ActionAnnotations;
 use nv_redfish::schema::manager::{
     ManagerResetAction, ManagerResetToDefaultsAction, ResetToDefaultsType,
 };
@@ -91,6 +92,7 @@ pub(super) async fn reset<B: Bmc>(
             cx.action(
                 action,
                 &ManagerResetAction {
+                    redfish_annotations: ActionAnnotations::default(),
                     reset_type: Some(reset_type),
                 },
             )
@@ -120,6 +122,7 @@ async fn reset_to_factory_defaults<B: Bmc>(
     cx.action(
         action,
         &ManagerResetToDefaultsAction {
+            redfish_annotations: ActionAnnotations::default(),
             reset_type: ResetToDefaultsType::ResetAll,
         },
     )

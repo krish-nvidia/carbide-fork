@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::resource::ResetType;
 use serde_json::json;
@@ -19,7 +18,7 @@ pub(crate) struct SmcPower;
 async fn ac_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
     let target = ODataId::from(format!(
         "{}/Actions/Oem/OemSystemExtensions.Reset",
-        cx.system()?.odata_id()
+        cx.system()?.raw().odata_id
     ));
     cx.post(&target, &json!({"ResetType": "ACCycle"})).await
 }

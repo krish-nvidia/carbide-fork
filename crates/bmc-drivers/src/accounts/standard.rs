@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::account::{Account, AccountCollection, ManagerAccountCreate};
+use nv_redfish::account::{Account, AccountCollection, AccountServiceConfig, ManagerAccountCreate};
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::manager_account::ManagerAccount;
 use serde_json::{Value, json};
@@ -91,7 +91,7 @@ pub(super) async fn account_collection<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<AccountCollection<B>, PlatformError> {
     cx.service_root()
-        .account_service()
+        .account_service(AccountServiceConfig::standard())
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
@@ -108,7 +108,7 @@ pub(super) async fn apply_policy<B: Bmc>(
 ) -> Result<DriverOutcome, PlatformError> {
     let service = cx
         .service_root()
-        .account_service()
+        .account_service(AccountServiceConfig::standard())
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;

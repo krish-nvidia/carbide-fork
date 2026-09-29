@@ -7,7 +7,6 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Storage};
-use nv_redfish::Resource;
 use nv_redfish::core::{Bmc, ODataId, Reference};
 use serde::Serialize;
 
@@ -59,7 +58,7 @@ async fn find_controller<B: Bmc>(
         .unwrap_or_default();
     if let Some(controller) = controllers
         .into_iter()
-        .find(|controller| controller.odata_id().last_segment() == Some(controller_id))
+        .find(|controller| controller.raw().odata_id.last_segment() == Some(controller_id))
     {
         return Ok(controller);
     }
@@ -79,7 +78,8 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
             .map_err(|error| cx.map_redfish_error(error))?
             .unwrap_or_default();
         for controller in controllers {
-            let id = controller.odata_id();
+            let raw = controller.raw();
+            let id = &raw.odata_id;
             if id.to_string().contains("BOSS") {
                 return id
                     .last_segment()
@@ -102,7 +102,7 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
         let controller = find_controller(cx, controller_id).await?;
         let target = ODataId::from(format!(
             "{}/Actions/Oem/DellStorage.ControllerDrivesDecommission",
-            controller.odata_id()
+            controller.raw().odata_id
         ));
         let response = cx
             .post_response(
@@ -142,7 +142,7 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
                 drives: drive_refs.iter().map(Reference::from).collect(),
             },
         };
-        let target = ODataId::from(format!("{}/Volumes", controller.odata_id()));
+        let target = ODataId::from(format!("{}/Volumes", raw.odata_id));
         let response = cx.post_response(&target, &request).await?;
         Ok(job_outcome(response))
     }
