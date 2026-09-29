@@ -79,15 +79,15 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
         cx: &OpCx<'_, B>,
         controller_id: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        find_controller(cx, controller_id)
+        let response = find_controller(cx, controller_id)
             .await?
             .oem_dell_actions()
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?
             .decommission_controller_drives(Some(OperationApplyTime::Immediate))
             .await
-            .map(job_outcome)
-            .map_err(|error| cx.map_redfish_error(error))
+            .map_err(|error| cx.map_redfish_error(error))?;
+        job_outcome(cx, response)
     }
 
     async fn create_volume(
@@ -119,13 +119,13 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
                     .build(),
             )
             .build();
-        controller
+        let response = controller
             .volumes()
             .ok_or(PlatformError::Unsupported)?
             .create(&request)
             .await
-            .map(job_outcome)
-            .map_err(|error| cx.map_redfish_error(error))
+            .map_err(|error| cx.map_redfish_error(error))?;
+        job_outcome(cx, response)
     }
 }
 

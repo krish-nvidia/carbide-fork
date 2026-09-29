@@ -5,7 +5,7 @@
 
 //! Dell iDRAC mechanics shared by several capabilities.
 
-use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError};
+use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError, VendorJobId};
 use nv_redfish::core::{Bmc, ModificationResponse, RedfishSettings};
 use nv_redfish::oem::dell::DellManager;
 use nv_redfish::oem::dell::attributes::{AttributesUpdate, DellAttributes, DellAttributesUpdate};
@@ -18,32 +18,36 @@ use crate::resources::{dynamic_properties, patch_bios_settings, selected_bios};
 /// The iDRAC attribute that blocks configuration changes while enabled.
 const SYSTEM_LOCKDOWN: &str = "Lockdown.1.SystemLockdown";
 
-/// Maps a mutation response, reporting iDRAC job-queue locations as vendor jobs.
-pub(crate) fn job_outcome<T>(response: ModificationResponse<T>) -> DriverOutcome {
-    match response {
-        ModificationResponse::Task(task)
-            if task.location.0.to_string().contains("/Oem/Dell/Jobs/") =>
-        {
-            let retry_after_seconds = task.retry_after.map(|duration| duration.as_secs());
-            match task
-                .location
-                .0
-                .last_segment()
-                .and_then(|job_id| job_id.parse().ok())
-            {
-                Some(job_id) => DriverOutcome::accepted(OperationReference::VendorJob {
-                    uri: task.location.0,
-                    job_id,
-                    retry_after_seconds,
-                }),
-                None => DriverOutcome::accepted(OperationReference::RedfishTask {
-                    uri: task.location.0,
-                    retry_after_seconds,
-                }),
-            }
-        }
-        other => DriverOutcome::from(other),
-    }
+/// Maps a mutation response, reporting iDRAC jobs as vendor jobs.
+///
+/// iDRAC may locate a new job under the manager's `Jobs`, its `Oem/Dell/Jobs`
+/// or the TaskService, but only the selected manager's `Oem/Dell/Jobs/{id}`
+/// reports the Dell `JobState`, so jobs are polled there.
+pub(crate) fn job_outcome<B: Bmc, T>(
+    cx: &OpCx<'_, B>,
+    response: ModificationResponse<T>,
+) -> Result<DriverOutcome, PlatformError> {
+    let task = match response {
+        ModificationResponse::Task(task) => task,
+        other => return Ok(DriverOutcome::from(other)),
+    };
+    let retry_after_seconds = task.retry_after.map(|duration| duration.as_secs());
+    let location = task.location.0;
+    let job_id = location
+        .last_segment()
+        .filter(|id| id.starts_with("JID_") || location.to_string().contains("/Oem/Dell/Jobs/"))
+        .and_then(|id| id.parse::<VendorJobId>().ok());
+    Ok(DriverOutcome::accepted(match job_id {
+        Some(job_id) => OperationReference::VendorJob {
+            uri: format!("{}/Oem/Dell/Jobs/{job_id}", cx.manager()?.raw().odata_id).into(),
+            job_id,
+            retry_after_seconds,
+        },
+        None => OperationReference::RedfishTask {
+            uri: location,
+            retry_after_seconds,
+        },
+    }))
 }
 
 /// The Dell resources the selected Manager advertises.
@@ -111,13 +115,13 @@ pub(crate) async fn create_bios_config_job<B: Bmc>(
         .raw()
         .settings_object()
         .ok_or(PlatformError::Unsupported)?;
-    dell_manager(cx)?
+    let response = dell_manager(cx)?
         .configuration_jobs()
         .ok_or(PlatformError::Unsupported)?
         .create_configuration_job(settings.id())
         .await
-        .map(job_outcome)
-        .map_err(|error| cx.map_redfish_error(error))
+        .map_err(|error| cx.map_redfish_error(error))?;
+    job_outcome(cx, response)
 }
 
 /// Stages BIOS attributes as an iDRAC configuration job applied on the next reset.
@@ -134,7 +138,7 @@ pub(crate) async fn stage_bios_attributes<B: Bmc>(
         }),
     )
     .await
-    .map(job_outcome)
+    .and_then(|response| job_outcome(cx, response))
 }
 
 /// Writes iDRAC manager attributes, given as a JSON object.
@@ -154,19 +158,19 @@ pub(crate) async fn patch_manager_attributes<B: Bmc>(
                 .build(),
         )
         .build();
-    manager_attributes(cx)
+    let response = manager_attributes(cx)
         .await?
         .update(&body)
         .await
-        .map(job_outcome)
-        .map_err(|error| cx.map_redfish_error(error))
+        .map_err(|error| cx.map_redfish_error(error))?;
+    job_outcome(cx, response)
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use bmc_platform::{EtagMode, VendorJobId};
+    use bmc_platform::EtagMode;
     use nv_redfish::core::{AsyncTask, AsyncTaskLocation};
 
     use super::*;
@@ -179,26 +183,37 @@ mod tests {
         })
     }
 
-    #[test]
-    fn only_job_queue_locations_become_vendor_jobs() {
+    #[tokio::test]
+    async fn job_ids_are_polled_in_the_managers_dell_job_queue() {
+        let bmc = Fixture::new(
+            "Dell",
+            "Integrated Dell Remote Access Controller",
+            "System.Embedded.1",
+            "iDRAC.Embedded.1",
+        )
+        .build()
+        .await;
+        let cx = bmc.cx(EtagMode::Resource).await;
+
         assert_eq!(
-            job_outcome(task(
-                "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/JID_42"
-            )),
-            DriverOutcome::accepted(OperationReference::VendorJob {
+            job_outcome(
+                &cx,
+                task("/redfish/v1/Managers/iDRAC.Embedded.1/Jobs/JID_42")
+            ),
+            Ok(DriverOutcome::accepted(OperationReference::VendorJob {
                 uri: "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/JID_42"
                     .to_string()
                     .into(),
                 job_id: VendorJobId::new("JID_42".to_string()).expect("nonempty"),
                 retry_after_seconds: Some(7),
-            })
+            }))
         );
         assert_eq!(
-            job_outcome(task("/redfish/v1/TaskService/Tasks/42")),
-            DriverOutcome::accepted(OperationReference::RedfishTask {
+            job_outcome(&cx, task("/redfish/v1/TaskService/Tasks/42")),
+            Ok(DriverOutcome::accepted(OperationReference::RedfishTask {
                 uri: "/redfish/v1/TaskService/Tasks/42".to_string().into(),
                 retry_after_seconds: Some(7),
-            })
+            }))
         );
     }
 

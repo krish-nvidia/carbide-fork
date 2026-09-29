@@ -227,21 +227,25 @@ fn task_and_job_states_classify_completion_and_failure() {
         task_state(Some(TaskState::Exception)),
         WorkState::Failed(state) if state == "Exception"
     ));
-    let job = |body: &str| {
-        serde_json::from_str::<VendorJob>(body)
-            .expect("job body")
-            .job_state
-    };
+    let job = |body: &str| serde_json::from_str::<VendorJob>(body).expect("job body");
     assert!(matches!(
-        job_state(job(r#"{"JobState":"Completed"}"#)),
+        job_state(&job(r#"{"JobState":"Completed"}"#)),
         WorkState::Done
     ));
     assert!(matches!(
-        job_state(job(r#"{"JobState":"Scheduled"}"#)),
+        job_state(&job(
+            r#"{"JobState":"Scheduled","Message":"Task successfully scheduled."}"#
+        )),
         WorkState::Running
     ));
     assert!(matches!(
-        job_state(job(r#"{"JobState":"RebootFailed"}"#)),
+        job_state(&job(
+            r#"{"JobState":"Scheduled","Message":"Job processing initialization failure."}"#
+        )),
+        WorkState::Failed(state) if state == "ScheduledWithErrors"
+    ));
+    assert!(matches!(
+        job_state(&job(r#"{"JobState":"RebootFailed"}"#)),
         WorkState::Failed(_)
     ));
 }

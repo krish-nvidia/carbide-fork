@@ -89,6 +89,7 @@ pub struct Executor<'a, B: Bmc + 'static> {
 #[serde(rename_all = "PascalCase")]
 struct VendorJob {
     job_state: JobState,
+    message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -97,9 +98,13 @@ enum JobState {
     Failed,
     CompletedWithErrors,
     RebootFailed,
+    Scheduled,
     #[serde(other)]
     Running,
 }
+
+/// The message of a `Scheduled` iDRAC job that will never start.
+const JOB_INITIALIZATION_FAILURE: &str = "Job processing initialization failure.";
 
 enum WorkState {
     Running,
@@ -120,10 +125,13 @@ fn task_state(state: Option<TaskState>) -> WorkState {
     }
 }
 
-fn job_state(state: JobState) -> WorkState {
-    match state {
+fn job_state(job: &VendorJob) -> WorkState {
+    match job.job_state {
         JobState::Completed => WorkState::Done,
-        JobState::Running => WorkState::Running,
+        JobState::Scheduled if job.message.as_deref() == Some(JOB_INITIALIZATION_FAILURE) => {
+            WorkState::Failed("ScheduledWithErrors".to_string())
+        }
+        JobState::Scheduled | JobState::Running => WorkState::Running,
         failed => WorkState::Failed(format!("{failed:?}")),
     }
 }
@@ -219,7 +227,8 @@ where
                     task_state(self.get::<Task>(uri).await?.task_state)
                 }
                 OperationReference::VendorJob { uri, .. } => {
-                    job_state(self.get::<VendorJob>(uri).await?.job_state)
+                    let job = self.get::<VendorJob>(uri).await?;
+                    job_state(&job)
                 }
             };
             match state {

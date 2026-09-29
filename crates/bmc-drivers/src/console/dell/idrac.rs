@@ -89,7 +89,7 @@ impl<B: Bmc> Console<B> for IdracConsole {
         }
         let bios_outcome = patch_bios_settings(cx, &json!({"Attributes": payload}))
             .await
-            .map(dell::job_outcome)?;
+            .and_then(|response| dell::job_outcome(cx, response))?;
         let manager_outcome = dell::patch_manager_attributes(
             cx,
             json!({
