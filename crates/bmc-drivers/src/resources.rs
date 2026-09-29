@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 
 use bmc_platform::{DriverOutcome, OpCx, PlatformError};
 use nv_redfish::computer_system::{AttributesUpdate, Bios, BiosUpdate};
-use nv_redfish::core::{Bmc, EdmPrimitiveType, EntityTypeRef, ModificationResponse};
+use nv_redfish::core::{
+    Bmc, DynamicProperties, EdmPrimitiveType, EntityTypeRef, ModificationResponse,
+};
 use nv_redfish::schema::bios::Bios as BiosSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -107,7 +109,17 @@ pub(crate) fn bios_attributes(bios: &BiosSchema) -> BTreeMap<String, Value> {
 fn attributes_update(
     attributes: &BTreeMap<String, Value>,
 ) -> Result<AttributesUpdate, PlatformError> {
-    let values = attributes
+    Ok(AttributesUpdate::builder()
+        .with_dynamic_properties(dynamic_properties(attributes)?)
+        .build())
+}
+
+/// Converts plain JSON attribute values into dynamic attribute properties;
+/// attribute registries allow only primitive values.
+pub(crate) fn dynamic_properties(
+    attributes: &BTreeMap<String, Value>,
+) -> Result<DynamicProperties<EdmPrimitiveType>, PlatformError> {
+    attributes
         .iter()
         .map(|(key, value)| {
             let value = match value {
@@ -131,10 +143,7 @@ fn attributes_update(
             };
             Ok((key.clone(), value))
         })
-        .collect::<Result<_, _>>()?;
-    Ok(AttributesUpdate::builder()
-        .with_dynamic_properties(values)
-        .build())
+        .collect()
 }
 
 #[cfg(test)]

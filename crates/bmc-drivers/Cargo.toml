@@ -26,6 +26,7 @@ nv-redfish = { features = [
     "computer-systems",
     "ethernet-interfaces",
     "host-interfaces",
+    "job-service",
     "manager-network-protocol",
     "managers",
     "oem-ami",

@@ -7,39 +7,19 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Storage};
-use nv_redfish::core::{Bmc, ODataId, Reference};
-use serde::Serialize;
+use nv_redfish::core::{Bmc, Reference};
+use nv_redfish::oem::dell::OperationApplyTime;
+use nv_redfish::schema::volume::{LinksCreate, RaidType, VolumeCreate};
 
 use crate::dell::job_outcome;
 
 /// Dell iDRAC boot-storage driver.
 pub(crate) struct IdracBossStorage;
 
-#[derive(Serialize)]
-struct DecommissionRequest {
-    #[serde(rename = "@Redfish.OperationApplyTime")]
-    operation_apply_time: &'static str,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
-struct VolumeLinks {
-    drives: Vec<Reference>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
-struct CreateVolumeRequest<'a> {
-    name: &'a str,
-    #[serde(rename = "RAIDType")]
-    raid_type: &'static str,
-    links: VolumeLinks,
-}
-
-fn raid_type(drive_count: usize) -> Result<&'static str, PlatformError> {
+fn raid_type(drive_count: usize) -> Result<RaidType, PlatformError> {
     match drive_count {
-        1 => Ok("RAID0"),
-        2 => Ok("RAID1"),
+        1 => Ok(RaidType::Raid0),
+        2 => Ok(RaidType::Raid1),
         count => Err(PlatformError::InvalidResponse {
             message: format!("Dell BOSS requires one or two drives, found {count}"),
         }),
@@ -99,20 +79,15 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
         cx: &OpCx<'_, B>,
         controller_id: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        let controller = find_controller(cx, controller_id).await?;
-        let target = ODataId::from(format!(
-            "{}/Actions/Oem/DellStorage.ControllerDrivesDecommission",
-            controller.raw().odata_id
-        ));
-        let response = cx
-            .post_response(
-                &target,
-                &DecommissionRequest {
-                    operation_apply_time: "Immediate",
-                },
-            )
-            .await?;
-        Ok(job_outcome(response))
+        find_controller(cx, controller_id)
+            .await?
+            .oem_dell_actions()
+            .map_err(|error| cx.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .decommission_controller_drives(Some(OperationApplyTime::Immediate))
+            .await
+            .map(job_outcome)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn create_volume(
@@ -135,16 +110,22 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
             .ok_or_else(|| PlatformError::InvalidResponse {
                 message: format!("controller {controller_id} does not report its drives"),
             })?;
-        let request = CreateVolumeRequest {
-            name: volume_name,
-            raid_type: raid_type(drive_refs.len())?,
-            links: VolumeLinks {
-                drives: drive_refs.iter().map(Reference::from).collect(),
-            },
-        };
-        let target = ODataId::from(format!("{}/Volumes", raw.odata_id));
-        let response = cx.post_response(&target, &request).await?;
-        Ok(job_outcome(response))
+        let request = VolumeCreate::builder()
+            .with_name(volume_name.to_string())
+            .with_raid_type(raid_type(drive_refs.len())?)
+            .with_links(
+                LinksCreate::builder()
+                    .with_drives(drive_refs.iter().map(Reference::from).collect())
+                    .build(),
+            )
+            .build();
+        controller
+            .volumes()
+            .ok_or(PlatformError::Unsupported)?
+            .create(&request)
+            .await
+            .map(job_outcome)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 }
 
@@ -154,8 +135,8 @@ mod tests {
 
     #[test]
     fn maps_drive_count_to_boss_raid_level() {
-        assert_eq!(raid_type(1), Ok("RAID0"));
-        assert_eq!(raid_type(2), Ok("RAID1"));
+        assert_eq!(raid_type(1), Ok(RaidType::Raid0));
+        assert_eq!(raid_type(2), Ok(RaidType::Raid1));
         assert!(raid_type(0).is_err());
         assert!(raid_type(3).is_err());
     }
