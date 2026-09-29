@@ -13,6 +13,7 @@ use nv_redfish::host_interface::HostInterface;
 use nv_redfish::manager::Manager;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
 
+use super::{kcs_privilege, kcs_signal, set_kcs_privilege};
 use crate::lockdown::{set_host_interface, signal, state_from_signals, status};
 
 /// Supermicro ARS-121L-DNR lockdown driver.
@@ -37,21 +38,13 @@ impl<B: Bmc> Lockdown<B> for Ars121lLockdown {
             .await
             .map_err(|error| cx.map_redfish_error(error))?
             .and_then(|value| value.sys_lockdown_enabled());
-        let privilege = smc
-            .kcs_interface()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .and_then(|value| value.privilege());
+        let privilege = kcs_privilege(cx).await?;
         let host_interface = host_interfaces(cx, manager)
             .await?
             .first()
             .and_then(|value| value.interface_enabled());
 
-        let host = state_from_signals(&[signal(
-            privilege,
-            Privilege::Callback,
-            Privilege::Administrator,
-        )]);
+        let host = state_from_signals(&[kcs_signal(privilege)]);
         let bmc = state_from_signals(&[signal(lockdown, true, false)]);
         Ok(status(
             host,
@@ -75,7 +68,12 @@ impl<B: Bmc> Lockdown<B> for Ars121lLockdown {
             outcome = outcome.merge(set_sys_lockdown(cx, manager, false).await?);
         }
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
-            outcome = outcome.merge(set_kcs_privilege(cx, manager, enabled).await?);
+            let privilege = if enabled {
+                Privilege::Callback
+            } else {
+                Privilege::Administrator
+            };
+            outcome = outcome.merge(set_kcs_privilege(cx, privilege).await?);
             if !enabled {
                 outcome = outcome.merge(set_host_interfaces(cx, manager, true).await?);
             }
@@ -112,29 +110,6 @@ async fn set_sys_lockdown<B: Bmc>(
         .await
         .map(DriverOutcome::from)
         .map_err(|error| cx.map_redfish_error(error))
-}
-
-async fn set_kcs_privilege<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    manager: &Manager<B>,
-    enabled: bool,
-) -> Result<DriverOutcome, PlatformError> {
-    let kcs = manager
-        .oem_supermicro()
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .kcs_interface()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?;
-    kcs.set_privilege(if enabled {
-        Privilege::Callback
-    } else {
-        Privilege::Administrator
-    })
-    .await
-    .map(DriverOutcome::from)
-    .map_err(|error| cx.map_redfish_error(error))
 }
 
 async fn host_interfaces<B: Bmc>(
