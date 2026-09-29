@@ -14,25 +14,69 @@ use serde_json::json;
 use crate::lockdown::{signal, state_from_signals, status};
 use crate::resources::{patch_bios_attributes, selected_bios};
 
-/// HPE iLO lockdown driver: USB boot for the host, the virtual NIC for the BMC.
+/// HPE iLO lockdown driver: KCS and USB boot for the host, the virtual NIC
+/// for the BMC.
+///
+/// KCS is written only from iLO 6 firmware 1.40 onward, and is disabled in
+/// both directions: unlocking leaves host KCS access off.
 pub(crate) struct IloLockdown;
 
+/// Whether the manager firmware, reported as `iLO <major> v<minor>`, accepts
+/// the KCS setting. The minor version is compared as a decimal number.
+fn kcs_writable(firmware: Option<&str>) -> bool {
+    let parts: Vec<&str> = firmware.unwrap_or_default().split_whitespace().collect();
+    let major: i32 = parts
+        .get(1)
+        .and_then(|major| major.parse().ok())
+        .unwrap_or_default();
+    let minor: f32 = parts
+        .get(2)
+        .and_then(|minor| minor.get(1..))
+        .and_then(|minor| minor.parse().ok())
+        .unwrap_or(0.0);
+    major >= 6 && minor >= 1.40
+}
+
+async fn disable_kcs<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+    let manager = cx.manager()?;
+    let firmware = manager.raw().firmware_version.clone().flatten();
+    if !kcs_writable(firmware.as_deref()) {
+        return Ok(DriverOutcome::complete());
+    }
+    let written = manager
+        .network_protocol()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .oem_hpe()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .set_kcs_enabled(false)
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?;
+    Ok(written.map_or_else(DriverOutcome::complete, DriverOutcome::from))
+}
+
 async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
-    patch_bios_attributes(
+    let kcs = disable_kcs(cx).await?;
+    let usb_boot = patch_bios_attributes(
         cx,
         json!({"UsbBoot": if enabled { "Disabled" } else { "Enabled" }}),
     )
-    .await
+    .await?;
+    Ok(kcs.merge(usb_boot))
 }
 
 async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
-    let manager = cx.manager()?;
-    let raw = manager.raw();
-    cx.patch(
-        raw.as_ref(),
-        &json!({"Oem": {"Hpe": {"VirtualNICEnabled": !enabled}}}),
-    )
-    .await
+    cx.manager()?
+        .oem_hpe()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .set_virtual_nic_enabled(!enabled)
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .map(DriverOutcome::from)
+        .ok_or(PlatformError::Unsupported)
 }
 
 #[async_trait]
@@ -73,5 +117,29 @@ impl<B: Bmc> Lockdown<B> for IloLockdown {
                 Ok(host.merge(set_bmc(cx, enabled).await?))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use carbide_test_support::value_scenarios;
+
+    use super::*;
+
+    #[test]
+    fn kcs_is_written_from_ilo6_firmware_1_40() {
+        value_scenarios!(kcs_writable:
+            "supported" {
+                Some("iLO 6 v1.40") => true,
+                Some("iLO 6 v1.58") => true,
+            }
+            "unsupported or unparseable" {
+                Some("iLO 6 v1.30") => false,
+                Some("iLO 5 v2.72") => false,
+                Some("iLO 7 v1.10") => false,
+                Some("iLO") => false,
+                None => false,
+            }
+        );
     }
 }

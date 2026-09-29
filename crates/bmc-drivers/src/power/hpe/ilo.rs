@@ -5,9 +5,11 @@
 
 use async_trait::async_trait;
 use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::{Bmc, ODataId};
+use nv_redfish::core::Bmc;
+use nv_redfish::oem::hpe::HpeSystemResetType;
+use nv_redfish::oem::hpe::schema::ActionAnnotations;
+use nv_redfish::oem::hpe::schema::hpe_computer_system_ext::HpeComputerSystemExtSystemResetAction;
 use nv_redfish::resource::{PowerState, ResetType};
-use serde_json::json;
 
 use crate::power::standard::{self, StandardPower};
 
@@ -19,11 +21,23 @@ pub(crate) struct IloPower;
 
 /// Posts the iLO auxiliary power cycle, which the BMC accepts only while the host is off.
 async fn aux_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    let target = ODataId::from(format!(
-        "{}/Actions/Oem/Hpe/HpeComputerSystemExt.SystemReset",
-        cx.system()?.raw().odata_id
-    ));
-    cx.post(&target, &json!({"ResetType": "AuxCycle"})).await
+    let actions = cx
+        .system()?
+        .oem_hpe_actions()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?;
+    let action = actions
+        .raw()
+        .and_then(|actions| actions.system_reset.as_ref())
+        .ok_or(PlatformError::Unsupported)?;
+    cx.action(
+        action,
+        &HpeComputerSystemExtSystemResetAction {
+            redfish_annotations: ActionAnnotations::default(),
+            reset_type: HpeSystemResetType::AuxCycle,
+        },
+    )
+    .await
 }
 
 #[async_trait]
