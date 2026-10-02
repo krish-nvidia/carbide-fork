@@ -5,8 +5,5 @@
 
 //! Hardware attestation capability drivers.
 
-mod nvidia;
-mod standard;
-
-pub(crate) use nvidia::HgxAttestation;
-pub(crate) use standard::StandardAttestation;
+pub(crate) mod nvidia;
+pub(crate) mod standard;

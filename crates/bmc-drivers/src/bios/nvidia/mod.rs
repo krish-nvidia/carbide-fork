@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod bluefield;
-mod openbmc;
-mod switch;
-mod viking;
-
-pub(crate) use bluefield::BlueFieldBios;
-pub(crate) use openbmc::OpenBmcBios;
-pub(crate) use switch::SwitchBios;
-pub(crate) use viking::VikingBios;
+pub(crate) mod bluefield;
+pub(crate) mod openbmc;
+pub(crate) mod switch;
+pub(crate) mod viking;

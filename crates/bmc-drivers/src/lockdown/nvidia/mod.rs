@@ -3,8 +3,5 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod openbmc;
-mod viking;
-
-pub(crate) use openbmc::OpenBmcLockdown;
-pub(crate) use viking::VikingLockdown;
+pub(crate) mod openbmc;
+pub(crate) mod viking;

@@ -12,7 +12,7 @@ use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
 use crate::dell::{self, ManagerApplyTime};
-use crate::lockdown::{signal, state_from_signals};
+use crate::lockdown::support::{signal, state_from_signals};
 use crate::resources::{bios_update, selected_bios, update_bios_settings};
 
 /// Dell iDRAC lockdown driver.

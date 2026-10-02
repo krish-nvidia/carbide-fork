@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bmc_platform::{Console, ConsoleSpec, ConsoleStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 
-use crate::console::ami::MEGARAC_ATTRS;
+use crate::console::ami::megarac::ATTRS as MEGARAC_ATTRS;
 use crate::console::support::{SSH_PORT, attr_status, bios_attributes, setup_bios_attributes};
 
 /// Lenovo AMI: the AMI BIOS serial redirection attributes, with SSH login

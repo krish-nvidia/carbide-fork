@@ -5,17 +5,10 @@
 
 //! Serial-console capability drivers.
 
-mod ami;
-mod dell;
-mod hpe;
-mod lenovo;
-mod nvidia;
-mod supermicro;
+pub(crate) mod ami;
+pub(crate) mod dell;
+pub(crate) mod hpe;
+pub(crate) mod lenovo;
+pub(crate) mod nvidia;
+pub(crate) mod supermicro;
 mod support;
-
-pub(crate) use ami::MegaRacConsole;
-pub(crate) use dell::IdracConsole;
-pub(crate) use hpe::IloConsole;
-pub(crate) use lenovo::{Gb300Console, LenovoAmiConsole, XccConsole};
-pub(crate) use nvidia::{BlueFieldConsole, VikingConsole};
-pub(crate) use supermicro::SupermicroBmcConsole;

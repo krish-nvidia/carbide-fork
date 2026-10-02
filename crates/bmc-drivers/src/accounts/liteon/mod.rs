@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod power_shelf;
-
-pub(crate) use power_shelf::LiteOnPowerShelfAccounts;
+pub(crate) mod power_shelf;

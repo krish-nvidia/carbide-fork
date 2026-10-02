@@ -11,7 +11,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::{Map, Value};
 
-use crate::lockdown::{
+use crate::lockdown::support::{
     host_interface_state, set_first_host_interface, signal, state_from_signals, status,
 };
 use crate::resources::{patch_bios_attributes, selected_bios};

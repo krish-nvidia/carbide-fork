@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod hgx;
-
-pub(crate) use hgx::HgxAttestation;
+pub(crate) mod hgx;

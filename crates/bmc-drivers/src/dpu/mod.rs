@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod nvidia;
-
-pub(crate) use nvidia::{BlueField2Dpu, BlueField3Dpu, BlueField4Dpu};
+pub(crate) mod nvidia;

@@ -1,3 +1,1 @@
-mod power_shelf;
-
-pub(crate) use power_shelf::LiteOnPowerShelfPower;
+pub(crate) mod power_shelf;

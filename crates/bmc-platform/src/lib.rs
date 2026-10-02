@@ -54,5 +54,5 @@ pub use operation::{
     ControllerAction, DriverOutcome, ManualInterventionCode, ManualInterventionCodeError,
     OperationReference, VendorJobId, VendorJobIdError,
 };
-pub use selection::{Capability, UnknownCapability};
+pub use selection::Capability;
 pub use transport::{ClassifyBmcError, Fetched, IpmiOps, OpCx};

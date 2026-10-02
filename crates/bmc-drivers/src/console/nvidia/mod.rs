@@ -3,8 +3,5 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod bluefield;
-mod viking;
-
-pub(crate) use bluefield::BlueFieldConsole;
-pub(crate) use viking::VikingConsole;
+pub(crate) mod bluefield;
+pub(crate) mod viking;

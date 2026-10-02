@@ -3,10 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod bluefield;
-mod openbmc;
-mod viking;
-
-pub(crate) use bluefield::BlueFieldBootOrder;
-pub(crate) use openbmc::OpenBmcBootOrder;
-pub(crate) use viking::VikingBootOrder;
+pub(crate) mod bluefield;
+pub(crate) mod openbmc;
+pub(crate) mod viking;

@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod xcc;
-
-pub(crate) use xcc::XccAccounts;
+pub(crate) mod xcc;

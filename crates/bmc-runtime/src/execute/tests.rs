@@ -18,9 +18,7 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use bmc_drivers::{
-    CapabilitySelection, Catalog, CatalogError, DriverMap, ResolvedSelection, Rules,
-};
+use bmc_drivers::{CapabilitySelection, DriverMap, ResolvedSelection, Rules, SelectedDrivers};
 use bmc_mock::test_support::{TestBmc, dell_poweredge_r750_bmc};
 use bmc_platform::{
     Capability, ControllerAction, DriverOutcome, ManualInterventionCode, OpCx, OperationReference,
@@ -81,22 +79,12 @@ impl Power<TestBmc> for ScriptedPower {
     }
 }
 
-/// A catalogue that serves the scripted power driver for every power selection.
-struct ScriptedCatalog(&'static ScriptedPower);
-
-impl Catalog<TestBmc> for ScriptedCatalog {
-    fn power(&self, _selection: &CapabilitySelection) -> Result<&dyn Power<TestBmc>, CatalogError> {
-        Ok(self.0)
-    }
-}
-
 async fn harness(outcomes: Vec<DriverOutcome>) -> (ConnectedBmc<TestBmc>, &'static ScriptedPower) {
     let bmc = dell_poweredge_r750_bmc().await;
     let power: &'static ScriptedPower = Box::leak(Box::new(ScriptedPower {
         outcomes: Mutex::new(outcomes),
         calls: Mutex::new(Vec::new()),
     }));
-    let catalog: &'static ScriptedCatalog = Box::leak(Box::new(ScriptedCatalog(power)));
     let endpoint = BmcRef::new(
         "192.0.2.10:443".parse().expect("socket address"),
         CredentialKey::BmcCredentials {
@@ -121,8 +109,8 @@ async fn harness(outcomes: Vec<DriverOutcome>) -> (ConnectedBmc<TestBmc>, &'stat
         },
     )
     .expect("endpoint");
-    let connected =
-        ConnectedBmc::new(endpoint, bmc.bmc.clone(), bmc.service_root, None).with_catalog(catalog);
+    let connected = ConnectedBmc::new(endpoint, bmc.bmc.clone(), bmc.service_root, None)
+        .with_drivers(SelectedDrivers::unsupported().with_power(power));
     (connected, power)
 }
 

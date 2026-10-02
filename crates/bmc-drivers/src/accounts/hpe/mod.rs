@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod ilo;
-
-pub(crate) use ilo::IloAccounts;
+pub(crate) mod ilo;

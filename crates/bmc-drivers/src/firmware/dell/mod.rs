@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod idrac;
-
-pub(crate) use idrac::IdracFirmware;
+pub(crate) mod idrac;

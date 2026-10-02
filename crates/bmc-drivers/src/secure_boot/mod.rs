@@ -5,6 +5,4 @@
 
 //! Secure Boot capability drivers.
 
-mod standard;
-
-pub(crate) use standard::StandardSecureBoot;
+pub(crate) mod standard;

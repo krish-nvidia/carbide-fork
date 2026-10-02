@@ -19,6 +19,7 @@ use carbide_utils::has_duplicates;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use strum::{EnumCount, IntoEnumIterator};
 use thiserror::Error;
 
 use crate::drivers::Driver;
@@ -58,9 +59,9 @@ impl<'de> Deserialize<'de> for CapabilitySelection {
 /// The complete per-capability driver selection persisted for one BMC.
 ///
 /// Serializes as an object with one key per capability, in
-/// [`Capability::ALL`] order; deserialization requires every key.
+/// [`Capability`] declaration order; deserialization requires every key.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DriverMap([CapabilitySelection; 12]);
+pub struct DriverMap([CapabilitySelection; Capability::COUNT]);
 
 impl DriverMap {
     /// A map that selects `selection` for every capability.
@@ -84,9 +85,9 @@ impl DriverMap {
         self
     }
 
-    /// Iterates selections in [`Capability::ALL`] order.
+    /// Iterates selections in [`Capability`] declaration order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (Capability, &CapabilitySelection)> {
-        Capability::ALL.into_iter().zip(&self.0)
+        Capability::iter().zip(&self.0)
     }
 }
 
@@ -112,7 +113,8 @@ impl<'de> Deserialize<'de> for DriverMap {
             }
 
             fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
-                let mut slots: [Option<CapabilitySelection>; 12] = Default::default();
+                let mut slots: [Option<CapabilitySelection>; Capability::COUNT] =
+                    Default::default();
                 while let Some((capability, selection)) =
                     access.next_entry::<Capability, CapabilitySelection>()?
                 {
@@ -121,7 +123,7 @@ impl<'de> Deserialize<'de> for DriverMap {
                     }
                 }
                 let mut selections = Vec::with_capacity(slots.len());
-                for (capability, slot) in Capability::ALL.into_iter().zip(slots) {
+                for (capability, slot) in Capability::iter().zip(slots) {
                     selections.push(
                         slot.ok_or_else(|| serde::de::Error::missing_field(capability.as_str()))?,
                     );
@@ -372,7 +374,7 @@ impl Rules {
 
         let mut drivers = defaults.clone();
         let mut matched_rules = Vec::new();
-        for capability in Capability::ALL {
+        for capability in Capability::iter() {
             let Some(winner) = best(
                 matching
                     .iter()

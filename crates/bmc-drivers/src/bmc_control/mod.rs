@@ -5,14 +5,8 @@
 
 //! BMC manager-control capability drivers.
 
-mod ami;
-mod dell;
-mod hpe;
-mod standard;
-mod supermicro;
-
-pub(crate) use ami::MegaRacBmcControl;
-pub(crate) use dell::IdracBmcControl;
-pub(crate) use hpe::IloBmcControl;
-pub(crate) use standard::StandardBmcControl;
-pub(crate) use supermicro::SmcBmcControl;
+pub(crate) mod ami;
+pub(crate) mod dell;
+pub(crate) mod hpe;
+pub(crate) mod standard;
+pub(crate) mod supermicro;

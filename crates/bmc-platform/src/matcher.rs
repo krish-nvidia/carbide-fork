@@ -193,6 +193,53 @@ impl IdentityMatcher {
         Self { field, pattern }
     }
 
+    /// The ServiceRoot vendor, ignoring ASCII case.
+    pub fn vendor(value: &str) -> Self {
+        Self::new(
+            IdentityField::ServiceRootVendor,
+            MatchPattern::ExactAsciiCaseInsensitive(value.to_string()),
+        )
+    }
+
+    /// Any ServiceRoot OEM key, ignoring ASCII case.
+    pub fn oem_key(value: &str) -> Self {
+        Self::new(
+            IdentityField::ServiceRootOemKey,
+            MatchPattern::ExactAsciiCaseInsensitive(value.to_string()),
+        )
+    }
+
+    /// The ServiceRoot product is exactly one of `values`.
+    pub fn product(values: &[&str]) -> Self {
+        Self::new(
+            IdentityField::ServiceRootProduct,
+            MatchPattern::OneOf(values.iter().map(|value| (*value).to_string()).collect()),
+        )
+    }
+
+    /// Any chassis manufacturer contains `value`, ignoring ASCII case.
+    pub fn chassis_manufacturer(value: &str) -> Self {
+        Self::contains_any_case(IdentityField::ChassisManufacturer, value)
+    }
+
+    /// `field` is exactly `value`.
+    pub fn exact(field: IdentityField, value: &str) -> Self {
+        Self::new(field, MatchPattern::Exact(value.to_string()))
+    }
+
+    /// `field` contains `value`.
+    pub fn contains(field: IdentityField, value: &str) -> Self {
+        Self::new(field, MatchPattern::Contains(value.to_string()))
+    }
+
+    /// `field` contains `value`, ignoring ASCII case.
+    pub fn contains_any_case(field: IdentityField, value: &str) -> Self {
+        Self::new(
+            field,
+            MatchPattern::ContainsAsciiCaseInsensitive(value.to_string()),
+        )
+    }
+
     /// Reports whether any value of this field satisfies the matcher.
     pub fn matches(&self, identity: &PlatformIdentity) -> bool {
         field_values(identity, self.field)

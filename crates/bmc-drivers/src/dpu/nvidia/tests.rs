@@ -14,7 +14,8 @@ use bmc_platform::{
 };
 use serde_json::{Value, json};
 
-use super::{BlueField3Dpu, BlueField4Dpu};
+use super::bluefield3::BlueField3Dpu;
+use super::bluefield4::BlueField4Dpu;
 use crate::test_support::{Fixture, body, path};
 
 const BF3_SYSTEM: &str = "/redfish/v1/Systems/Bluefield";

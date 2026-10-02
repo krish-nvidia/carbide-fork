@@ -340,13 +340,13 @@ where
                     return Ok(Progress::Complete);
                 }
                 ControllerAction::Power(reset_type) => {
-                    self.bmc.power()?.set(cx, reset_type).await?
+                    self.bmc.drivers().power()?.set(cx, reset_type).await?
                 }
-                ControllerAction::BmcReset => self.bmc.bmc_control()?.reset(cx).await?,
+                ControllerAction::BmcReset => self.bmc.drivers().bmc_control()?.reset(cx).await?,
                 ControllerAction::SetLockdown { scope, state } => {
-                    self.bmc.lockdown()?.set(cx, scope, state).await?
+                    self.bmc.drivers().lockdown()?.set(cx, scope, state).await?
                 }
-                ControllerAction::ClearNvram => self.bmc.bios()?.reset(cx).await?,
+                ControllerAction::ClearNvram => self.bmc.drivers().bios()?.reset(cx).await?,
                 ControllerAction::RefreshExploration
                 | ControllerAction::ManualIntervention { .. } => unreachable!("deferred above"),
             };

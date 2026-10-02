@@ -10,7 +10,7 @@ use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 
-use crate::power::lenovo::ac_power_cycle;
+use crate::power::lenovo::support::ac_power_cycle;
 use crate::power::standard::{self, StandardPower};
 
 /// Lenovo ThinkSystem SR675 V3 OVX power workaround.

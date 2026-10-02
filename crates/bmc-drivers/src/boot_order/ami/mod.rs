@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod megarac;
-
-pub(crate) use megarac::MegaRacBootOrder;
+pub(crate) mod megarac;

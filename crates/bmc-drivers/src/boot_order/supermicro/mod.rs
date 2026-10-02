@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod x13;
-
-pub(crate) use x13::X13BootOrder;
+pub(crate) mod x13;

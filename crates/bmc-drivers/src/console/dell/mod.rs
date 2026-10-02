@@ -1,3 +1,1 @@
-mod idrac;
-
-pub(crate) use idrac::IdracConsole;
+pub(crate) mod idrac;

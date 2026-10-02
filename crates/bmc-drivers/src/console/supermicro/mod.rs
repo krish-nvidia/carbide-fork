@@ -1,3 +1,1 @@
-mod bmc;
-
-pub(crate) use bmc::SupermicroBmcConsole;
+pub(crate) mod bmc;

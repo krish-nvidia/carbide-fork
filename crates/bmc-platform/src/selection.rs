@@ -15,14 +15,31 @@
  * limitations under the License.
  */
 
-use std::fmt;
-use std::str::FromStr;
-
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use thiserror::Error;
+use serde::{Deserialize, Serialize};
+use strum_macros::{Display, EnumCount, EnumIter, EnumString, IntoStaticStr};
 
 /// A BMC capability with its own driver trait and driver-map slot.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+///
+/// Declaration order is the stable wire order and the driver-map slot order.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    EnumCount,
+    EnumIter,
+    EnumString,
+    Eq,
+    Hash,
+    IntoStaticStr,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum Capability {
     Power,
     BmcControl,
@@ -39,89 +56,29 @@ pub enum Capability {
 }
 
 impl Capability {
-    /// Every capability in stable wire order; also the driver-map slot order.
-    pub const ALL: [Self; 12] = [
-        Self::Power,
-        Self::BmcControl,
-        Self::Bios,
-        Self::BootOrder,
-        Self::SecureBoot,
-        Self::Lockdown,
-        Self::Accounts,
-        Self::Firmware,
-        Self::Storage,
-        Self::Dpu,
-        Self::Attestation,
-        Self::Console,
-    ];
-
-    /// The single source of each capability's wire name.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Power => "power",
-            Self::BmcControl => "bmc_control",
-            Self::Bios => "bios",
-            Self::BootOrder => "boot_order",
-            Self::SecureBoot => "secure_boot",
-            Self::Lockdown => "lockdown",
-            Self::Accounts => "accounts",
-            Self::Firmware => "firmware",
-            Self::Storage => "storage",
-            Self::Dpu => "dpu",
-            Self::Attestation => "attestation",
-            Self::Console => "console",
-        }
-    }
-}
-
-impl fmt::Display for Capability {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for Capability {
-    type Err = UnknownCapability;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|capability| capability.as_str() == value)
-            .ok_or_else(|| UnknownCapability(value.to_owned()))
-    }
-}
-
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("unknown capability {0:?}")]
-pub struct UnknownCapability(String);
-
-impl Serialize for Capability {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Capability {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(serde::de::Error::custom)
+    /// The capability's wire name.
+    pub fn as_str(self) -> &'static str {
+        self.into()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use strum::IntoEnumIterator;
+
     use super::*;
 
     #[test]
     fn capabilities_round_trip_through_their_wire_names() {
-        for capability in Capability::ALL {
+        for capability in Capability::iter() {
             let encoded = serde_json::to_string(&capability).expect("capability serializes");
+            assert_eq!(encoded, format!("\"{capability}\""));
             let decoded: Capability =
                 serde_json::from_str(&encoded).expect("capability deserializes");
             assert_eq!(decoded, capability);
             assert_eq!(capability.as_str().parse::<Capability>(), Ok(capability));
         }
+        assert_eq!(Capability::BmcControl.as_str(), "bmc_control");
         assert!("nope".parse::<Capability>().is_err());
     }
 }

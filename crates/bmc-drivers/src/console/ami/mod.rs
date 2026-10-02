@@ -3,7 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod megarac;
-
-pub(in crate::console) use megarac::ATTRS as MEGARAC_ATTRS;
-pub(crate) use megarac::MegaRacConsole;
+pub(crate) mod megarac;

@@ -8,7 +8,7 @@ use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::ResetType;
 
-use crate::power::lenovo::ac_power_cycle;
+use crate::power::lenovo::support::ac_power_cycle;
 use crate::power::standard::StandardPower;
 use crate::power::support::ipmi_restart;
 

@@ -3,10 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod ami;
-mod gb300;
-mod xcc;
-
-pub(crate) use ami::LenovoAmiLockdown;
-pub(crate) use gb300::Gb300Lockdown;
-pub(crate) use xcc::XccLockdown;
+pub(crate) mod ami;
+pub(crate) mod gb300;
+pub(crate) mod xcc;

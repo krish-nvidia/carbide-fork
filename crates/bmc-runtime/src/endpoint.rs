@@ -18,13 +18,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bmc_drivers::{
-    Catalog, CatalogError, DriverMap, Drivers, ResolvedSelection, Rules, SelectionHash,
-};
-use bmc_platform::{
-    Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, ClassifyBmcError, Console, Dpu,
-    Firmware, IpmiOps, Lockdown, OpCx, PlatformIdentity, Power, SecureBoot, Storage,
-};
+use bmc_drivers::{DriverMap, ResolvedSelection, Rules, SelectedDrivers, SelectionHash};
+use bmc_platform::{ClassifyBmcError, IpmiOps, OpCx, PlatformIdentity};
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use carbide_utils::redfish::{BmcAccessInfo, parse_uri_host_ip};
 use mac_address::MacAddress;
@@ -179,15 +174,15 @@ pub enum BmcRefError {
 
 /// A live Redfish endpoint using the driver map persisted during exploration.
 ///
-/// The capability accessors ([`ConnectedBmc::power`] and friends) resolve
-/// the persisted selection through the compiled catalogue, so a controller
-/// writes `bmc.power()?.set(&cx, reset_type)` and never sees driver ids.
+/// The persisted selection is resolved through the compiled catalogue once, on
+/// connect, so a controller writes `bmc.drivers().power()?.set(&cx, reset_type)`
+/// and never sees driver ids.
 pub struct ConnectedBmc<B: Bmc + 'static> {
     endpoint: BmcRef,
     bmc: Arc<B>,
     service_root: Arc<ServiceRoot<B>>,
     ipmi: Option<Arc<dyn IpmiOps>>,
-    catalog: &'static dyn Catalog<B>,
+    drivers: SelectedDrivers<B>,
 }
 
 impl<B: Bmc + 'static> ConnectedBmc<B>
@@ -201,91 +196,25 @@ where
         service_root: Arc<ServiceRoot<B>>,
         ipmi: Option<Arc<dyn IpmiOps>>,
     ) -> Self {
+        let drivers = SelectedDrivers::resolve(endpoint.driver_map());
         Self {
             endpoint,
             bmc,
             service_root,
             ipmi,
-            catalog: &Drivers,
+            drivers,
         }
     }
 
-    /// Replaces the compiled catalogue, for tests that script driver behavior.
-    pub fn with_catalog(mut self, catalog: &'static dyn Catalog<B>) -> Self {
-        self.catalog = catalog;
+    /// Replaces the resolved drivers, for tests that script driver behavior.
+    pub fn with_drivers(mut self, drivers: SelectedDrivers<B>) -> Self {
+        self.drivers = drivers;
         self
     }
 
-    /// The power driver selected for this BMC.
-    pub fn power(&self) -> Result<&dyn Power<B>, CatalogError> {
-        self.catalog
-            .power(self.endpoint.driver_map().get(Capability::Power))
-    }
-
-    /// The manager-control driver selected for this BMC.
-    pub fn bmc_control(&self) -> Result<&dyn BmcControl<B>, CatalogError> {
-        self.catalog
-            .bmc_control(self.endpoint.driver_map().get(Capability::BmcControl))
-    }
-
-    /// The BIOS driver selected for this BMC.
-    pub fn bios(&self) -> Result<&dyn Bios<B>, CatalogError> {
-        self.catalog
-            .bios(self.endpoint.driver_map().get(Capability::Bios))
-    }
-
-    /// The boot-order driver selected for this BMC.
-    pub fn boot_order(&self) -> Result<&dyn BootOrder<B>, CatalogError> {
-        self.catalog
-            .boot_order(self.endpoint.driver_map().get(Capability::BootOrder))
-    }
-
-    /// The Secure Boot driver selected for this BMC.
-    pub fn secure_boot(&self) -> Result<&dyn SecureBoot<B>, CatalogError> {
-        self.catalog
-            .secure_boot(self.endpoint.driver_map().get(Capability::SecureBoot))
-    }
-
-    /// The lockdown driver selected for this BMC.
-    pub fn lockdown(&self) -> Result<&dyn Lockdown<B>, CatalogError> {
-        self.catalog
-            .lockdown(self.endpoint.driver_map().get(Capability::Lockdown))
-    }
-
-    /// The accounts driver selected for this BMC.
-    pub fn accounts(&self) -> Result<&dyn Accounts<B>, CatalogError> {
-        self.catalog
-            .accounts(self.endpoint.driver_map().get(Capability::Accounts))
-    }
-
-    /// The firmware driver selected for this BMC.
-    pub fn firmware(&self) -> Result<&dyn Firmware<B>, CatalogError> {
-        self.catalog
-            .firmware(self.endpoint.driver_map().get(Capability::Firmware))
-    }
-
-    /// The storage driver selected for this BMC.
-    pub fn storage(&self) -> Result<&dyn Storage<B>, CatalogError> {
-        self.catalog
-            .storage(self.endpoint.driver_map().get(Capability::Storage))
-    }
-
-    /// The DPU driver selected for this BMC.
-    pub fn dpu(&self) -> Result<&dyn Dpu<B>, CatalogError> {
-        self.catalog
-            .dpu(self.endpoint.driver_map().get(Capability::Dpu))
-    }
-
-    /// The attestation driver selected for this BMC.
-    pub fn attestation(&self) -> Result<&dyn Attestation<B>, CatalogError> {
-        self.catalog
-            .attestation(self.endpoint.driver_map().get(Capability::Attestation))
-    }
-
-    /// The console driver selected for this BMC.
-    pub fn console(&self) -> Result<&dyn Console<B>, CatalogError> {
-        self.catalog
-            .console(self.endpoint.driver_map().get(Capability::Console))
+    /// The drivers selected for this BMC.
+    pub const fn drivers(&self) -> &SelectedDrivers<B> {
+        &self.drivers
     }
 
     /// Returns the unconnected endpoint metadata.

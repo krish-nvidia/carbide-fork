@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod smc;
-
-pub(crate) use smc::SmcBmcControl;
+pub(crate) mod smc;

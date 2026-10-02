@@ -17,7 +17,7 @@ use nv_redfish::oem::lenovo::computer_system::{
 use nv_redfish::oem::lenovo::manager::KcsState;
 use nv_redfish::oem::lenovo::security_service::FwRollbackState;
 
-use crate::lockdown::{signal, state_from_signals, status};
+use crate::lockdown::support::{signal, state_from_signals, status};
 
 /// The manager Ethernet interface XCC exposes to the host OS.
 const HOST_INTERFACE_ID: &str = "ToHost";

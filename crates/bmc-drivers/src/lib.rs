@@ -25,7 +25,7 @@ mod storage;
 #[cfg(test)]
 mod test_support;
 
-pub use drivers::{Catalog, CatalogError, Driver, Drivers, PluginId, PluginIdError};
+pub use drivers::{CatalogError, Driver, Drivers, PluginId, PluginIdError, SelectedDrivers};
 pub use rules::{built_in_rules, rules_with_overrides};
 pub use selection::{
     CapabilitySelection, DriverMap, MatchedRule, ResolvedSelection, Rule, RuleError, Rules,

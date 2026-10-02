@@ -7,9 +7,10 @@
 //! [`Driver`], and the dispatch from a persisted selection to the driver.
 //!
 //! Adding a driver is one line in [`drivers!`] below plus its own file under
-//! the capability module. The macro derives the wire id, the capability, and
-//! the dispatch arm, so a driver named in a rule for the wrong capability, or
-//! missing from the list, fails to compile or fails table validation.
+//! the capability module; each line's path is the file that implements it.
+//! The macro derives the wire id, the capability, and the dispatch arm, so a
+//! driver named in a rule for the wrong capability, or missing from the list,
+//! fails to compile or fails table validation.
 
 use std::fmt;
 use std::str::FromStr;
@@ -27,12 +28,12 @@ use crate::{
     secure_boot, storage,
 };
 
-/// Declares the catalogue: one block per capability naming its trait, the
-/// [`Catalog`] accessor, optionally its standard driver, and every named
-/// driver as `Variant = "wire-id" => path::Type`.
+/// Declares the catalogue: one block per capability naming its
+/// [`SelectedDrivers`] accessor and override, its trait, optionally its
+/// standard driver, and every named driver as `Variant = "wire-id" => path::Type`.
 macro_rules! drivers {
     ($(
-        $capability:ident as $accessor:ident : $trait:ident $(= $standard:path)? {
+        $capability:ident as $accessor:ident, $with:ident : $trait:ident $(= $standard:path)? {
             $( $variant:ident = $id:literal => $driver:path, )*
         }
     )*) => {
@@ -96,32 +97,69 @@ macro_rules! drivers {
             }
         }
 
-        impl<B: Bmc + 'static> Catalog<B> for Drivers
+        /// The driver serving each capability on one BMC, resolved once from its
+        /// persisted [`DriverMap`] so a selection this binary cannot serve fails
+        /// before any I/O.
+        pub struct SelectedDrivers<B: Bmc + 'static> {
+            $( $accessor: Result<&'static dyn $trait<B>, CatalogError>, )*
+        }
+
+        impl<B: Bmc + 'static> SelectedDrivers<B>
         where
             B::Error: ActionError,
         {
-            $(
-                fn $accessor(
-                    &self,
-                    selection: &CapabilitySelection,
-                ) -> Result<&dyn $trait<B>, CatalogError> {
-                    let capability = Capability::$capability;
-                    match selection {
-                        CapabilitySelection::Unsupported => {
-                            Err(CatalogError::Unsupported { capability })
-                        }
-                        CapabilitySelection::Standard => {
-                            standard_driver!(capability, $($standard)?)
-                        }
-                        $( CapabilitySelection::Driver(Driver::$variant) => Ok(&$driver), )*
-                        CapabilitySelection::Driver(Driver::Plugin(id)) => {
-                            Err(CatalogError::UnknownPlugin { capability, id: id.clone() })
-                        }
-                        CapabilitySelection::Driver(other) => Err(CatalogError::WrongCapability {
-                            capability,
-                            driver: other.clone(),
+            /// Resolves every selection in `map` against the compiled catalogue.
+            pub fn resolve(map: &DriverMap) -> Self {
+                Self {
+                    $(
+                        $accessor: {
+                            let capability = Capability::$capability;
+                            match map.get(capability) {
+                                CapabilitySelection::Unsupported => {
+                                    Err(CatalogError::Unsupported { capability })
+                                }
+                                CapabilitySelection::Standard => {
+                                    standard_driver!(capability, $($standard)?)
+                                }
+                                $( CapabilitySelection::Driver(Driver::$variant) => Ok(&$driver), )*
+                                CapabilitySelection::Driver(Driver::Plugin(id)) => {
+                                    Err(CatalogError::UnknownPlugin { capability, id: id.clone() })
+                                }
+                                CapabilitySelection::Driver(other) => {
+                                    Err(CatalogError::WrongCapability {
+                                        capability,
+                                        driver: other.clone(),
+                                    })
+                                }
+                            }
+                        },
+                    )*
+                }
+            }
+        }
+
+        impl<B: Bmc + 'static> SelectedDrivers<B> {
+            /// Every capability unsupported; test doubles override what they script.
+            pub fn unsupported() -> Self {
+                Self {
+                    $(
+                        $accessor: Err(CatalogError::Unsupported {
+                            capability: Capability::$capability,
                         }),
-                    }
+                    )*
+                }
+            }
+
+            $(
+                #[doc = concat!("The ", stringify!($trait), " driver selected for this BMC.")]
+                pub fn $accessor(&self) -> Result<&dyn $trait<B>, CatalogError> {
+                    self.$accessor.clone()
+                }
+
+                #[doc = concat!("Serves ", stringify!($trait), " with `driver`, for test doubles.")]
+                pub fn $with(mut self, driver: &'static dyn $trait<B>) -> Self {
+                    self.$accessor = Ok(driver);
+                    self
                 }
             )*
         }
@@ -149,106 +187,106 @@ macro_rules! standard_driver {
 }
 
 drivers! {
-    Power as power: Power = power::StandardPower {
-        DellIdracPower = "dell-idrac-power" => power::IdracPower,
-        DeltaPowerShelfPower = "delta-power-shelf-power" => power::DeltaPowerShelfPower,
-        HpeIloPower = "hpe-ilo-power" => power::IloPower,
-        LenovoSr650V4Power = "lenovo-sr650-v4-power" => power::Sr650V4Power,
-        LenovoSr675V3OvxPower = "lenovo-sr675-v3-ovx-power" => power::Sr675V3OvxPower,
-        LenovoXccPower = "lenovo-xcc-power" => power::XccPower,
-        LiteOnPowerShelfPower = "liteon-power-shelf-power" => power::LiteOnPowerShelfPower,
-        NvidiaGh200Power = "nvidia-gh200-power" => power::Gh200Power,
-        NvidiaOpenBmcPower = "nvidia-openbmc-power" => power::OpenBmcPower,
-        NvidiaVikingPower = "nvidia-viking-power" => power::VikingPower,
-        SupermicroSmcPower = "supermicro-smc-power" => power::SmcPower,
+    Power as power, with_power: Power = power::standard::StandardPower {
+        DellIdracPower = "dell-idrac-power" => power::dell::idrac::IdracPower,
+        DeltaPowerShelfPower = "delta-power-shelf-power" => power::delta::power_shelf::DeltaPowerShelfPower,
+        HpeIloPower = "hpe-ilo-power" => power::hpe::ilo::IloPower,
+        LenovoSr650V4Power = "lenovo-sr650-v4-power" => power::lenovo::sr650_v4::Sr650V4Power,
+        LenovoSr675V3OvxPower = "lenovo-sr675-v3-ovx-power" => power::lenovo::sr675_v3_ovx::Sr675V3OvxPower,
+        LenovoXccPower = "lenovo-xcc-power" => power::lenovo::xcc::XccPower,
+        LiteOnPowerShelfPower = "liteon-power-shelf-power" => power::liteon::power_shelf::LiteOnPowerShelfPower,
+        NvidiaGh200Power = "nvidia-gh200-power" => power::nvidia::openbmc::Gh200Power,
+        NvidiaOpenBmcPower = "nvidia-openbmc-power" => power::nvidia::openbmc::OpenBmcPower,
+        NvidiaVikingPower = "nvidia-viking-power" => power::nvidia::viking::VikingPower,
+        SupermicroSmcPower = "supermicro-smc-power" => power::supermicro::smc::SmcPower,
     }
-    BmcControl as bmc_control: BmcControl = bmc_control::StandardBmcControl {
-        AmiMegaRacBmcControl = "ami-megarac-bmc-control" => bmc_control::MegaRacBmcControl,
-        DellIdracBmcControl = "dell-idrac-bmc-control" => bmc_control::IdracBmcControl,
-        HpeIloBmcControl = "hpe-ilo-bmc-control" => bmc_control::IloBmcControl,
-        SupermicroSmcBmcControl = "supermicro-smc-bmc-control" => bmc_control::SmcBmcControl,
+    BmcControl as bmc_control, with_bmc_control: BmcControl = bmc_control::standard::StandardBmcControl {
+        AmiMegaRacBmcControl = "ami-megarac-bmc-control" => bmc_control::ami::megarac::MegaRacBmcControl,
+        DellIdracBmcControl = "dell-idrac-bmc-control" => bmc_control::dell::idrac::IdracBmcControl,
+        HpeIloBmcControl = "hpe-ilo-bmc-control" => bmc_control::hpe::ilo::IloBmcControl,
+        SupermicroSmcBmcControl = "supermicro-smc-bmc-control" => bmc_control::supermicro::smc::SmcBmcControl,
     }
-    Bios as bios: Bios = bios::StandardBios {
-        AmiMegaRacBios = "ami-megarac-bios" => bios::MegaRacBios::AMI,
-        DellIdracBios = "dell-idrac-bios" => bios::IdracBios,
-        HpeIloBios = "hpe-ilo-bios" => bios::IloBios,
-        LenovoGb300Bios = "lenovo-gb300-bios" => bios::MegaRacBios::LENOVO_GB300,
-        LenovoXccBios = "lenovo-xcc-bios" => bios::XccBios,
-        NvidiaBlueFieldBios = "nvidia-bluefield-bios" => bios::BlueFieldBios,
-        NvidiaGbx00Bios = "nvidia-gbx00-bios" => bios::OpenBmcBios::GBX00,
-        NvidiaGh200Bios = "nvidia-gh200-bios" => bios::OpenBmcBios::GH200,
-        NvidiaSwitchBios = "nvidia-switch-bios" => bios::SwitchBios,
-        NvidiaVeraRubinBios = "nvidia-vera-rubin-bios" => bios::OpenBmcBios::VERA_RUBIN,
-        NvidiaVikingBios = "nvidia-viking-bios" => bios::VikingBios,
-        SupermicroGb300Bios = "supermicro-gb300-bios" => bios::SmcBios::GB300,
-        SupermicroSmcBios = "supermicro-smc-bios" => bios::SmcBios::X13,
+    Bios as bios, with_bios: Bios = bios::standard::StandardBios {
+        AmiMegaRacBios = "ami-megarac-bios" => bios::ami::megarac::MegaRacBios::AMI,
+        DellIdracBios = "dell-idrac-bios" => bios::dell::idrac::IdracBios,
+        HpeIloBios = "hpe-ilo-bios" => bios::hpe::ilo::IloBios,
+        LenovoGb300Bios = "lenovo-gb300-bios" => bios::ami::megarac::MegaRacBios::LENOVO_GB300,
+        LenovoXccBios = "lenovo-xcc-bios" => bios::lenovo::xcc::XccBios,
+        NvidiaBlueFieldBios = "nvidia-bluefield-bios" => bios::nvidia::bluefield::BlueFieldBios,
+        NvidiaGbx00Bios = "nvidia-gbx00-bios" => bios::nvidia::openbmc::OpenBmcBios::GBX00,
+        NvidiaGh200Bios = "nvidia-gh200-bios" => bios::nvidia::openbmc::OpenBmcBios::GH200,
+        NvidiaSwitchBios = "nvidia-switch-bios" => bios::nvidia::switch::SwitchBios,
+        NvidiaVeraRubinBios = "nvidia-vera-rubin-bios" => bios::nvidia::openbmc::OpenBmcBios::VERA_RUBIN,
+        NvidiaVikingBios = "nvidia-viking-bios" => bios::nvidia::viking::VikingBios,
+        SupermicroGb300Bios = "supermicro-gb300-bios" => bios::supermicro::smc::SmcBios::GB300,
+        SupermicroSmcBios = "supermicro-smc-bios" => bios::supermicro::smc::SmcBios::X13,
     }
-    BootOrder as boot_order: BootOrder = boot_order::StandardBootOrder {
-        AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::MegaRacBootOrder,
-        DellIdracBootOrder = "dell-idrac-boot-order" => boot_order::IdracBootOrder,
-        HpeIloBootOrder = "hpe-ilo-boot-order" => boot_order::IloBootOrder,
-        LenovoXccBootOrder = "lenovo-xcc-boot-order" => boot_order::XccBootOrder,
-        NvidiaBlueFieldBootOrder = "nvidia-bluefield-boot-order" => boot_order::BlueFieldBootOrder,
-        NvidiaOpenBmcBootOrder = "nvidia-openbmc-boot-order" => boot_order::OpenBmcBootOrder,
-        NvidiaVikingBootOrder = "nvidia-viking-boot-order" => boot_order::VikingBootOrder,
-        SupermicroX13BootOrder = "supermicro-x13-boot-order" => boot_order::X13BootOrder,
+    BootOrder as boot_order, with_boot_order: BootOrder = boot_order::standard::StandardBootOrder {
+        AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::ami::megarac::MegaRacBootOrder,
+        DellIdracBootOrder = "dell-idrac-boot-order" => boot_order::dell::idrac::IdracBootOrder,
+        HpeIloBootOrder = "hpe-ilo-boot-order" => boot_order::hpe::ilo::IloBootOrder,
+        LenovoXccBootOrder = "lenovo-xcc-boot-order" => boot_order::lenovo::xcc::XccBootOrder,
+        NvidiaBlueFieldBootOrder = "nvidia-bluefield-boot-order" => boot_order::nvidia::bluefield::BlueFieldBootOrder,
+        NvidiaOpenBmcBootOrder = "nvidia-openbmc-boot-order" => boot_order::nvidia::openbmc::OpenBmcBootOrder,
+        NvidiaVikingBootOrder = "nvidia-viking-boot-order" => boot_order::nvidia::viking::VikingBootOrder,
+        SupermicroX13BootOrder = "supermicro-x13-boot-order" => boot_order::supermicro::x13::X13BootOrder,
     }
-    SecureBoot as secure_boot: SecureBoot = secure_boot::StandardSecureBoot {
+    SecureBoot as secure_boot, with_secure_boot: SecureBoot = secure_boot::standard::StandardSecureBoot {
     }
-    Lockdown as lockdown: Lockdown {
-        AmiMegaRacLockdown = "ami-megarac-lockdown" => lockdown::MegaRacLockdown,
-        DellIdracLockdown = "dell-idrac-lockdown" => lockdown::IdracLockdown,
-        HpeIloLockdown = "hpe-ilo-lockdown" => lockdown::IloLockdown,
-        LenovoAmiLockdown = "lenovo-ami-lockdown" => lockdown::LenovoAmiLockdown,
-        LenovoGb300Lockdown = "lenovo-gb300-lockdown" => lockdown::Gb300Lockdown,
-        LenovoXccLockdown = "lenovo-xcc-lockdown" => lockdown::XccLockdown,
-        NoopLockdown = "noop-lockdown" => lockdown::NoopLockdown,
-        NvidiaOpenBmcLockdown = "nvidia-openbmc-lockdown" => lockdown::OpenBmcLockdown,
-        NvidiaVikingLockdown = "nvidia-viking-lockdown" => lockdown::VikingLockdown,
-        SupermicroArs121lLockdown = "supermicro-ars121l-lockdown" => lockdown::Ars121lLockdown,
-        SupermicroSmcLockdown = "supermicro-smc-lockdown" => lockdown::SmcLockdown,
+    Lockdown as lockdown, with_lockdown: Lockdown {
+        AmiMegaRacLockdown = "ami-megarac-lockdown" => lockdown::ami::megarac::MegaRacLockdown,
+        DellIdracLockdown = "dell-idrac-lockdown" => lockdown::dell::idrac::IdracLockdown,
+        HpeIloLockdown = "hpe-ilo-lockdown" => lockdown::hpe::ilo::IloLockdown,
+        LenovoAmiLockdown = "lenovo-ami-lockdown" => lockdown::lenovo::ami::LenovoAmiLockdown,
+        LenovoGb300Lockdown = "lenovo-gb300-lockdown" => lockdown::lenovo::gb300::Gb300Lockdown,
+        LenovoXccLockdown = "lenovo-xcc-lockdown" => lockdown::lenovo::xcc::XccLockdown,
+        NoopLockdown = "noop-lockdown" => lockdown::noop::NoopLockdown,
+        NvidiaOpenBmcLockdown = "nvidia-openbmc-lockdown" => lockdown::nvidia::openbmc::OpenBmcLockdown,
+        NvidiaVikingLockdown = "nvidia-viking-lockdown" => lockdown::nvidia::viking::VikingLockdown,
+        SupermicroArs121lLockdown = "supermicro-ars121l-lockdown" => lockdown::supermicro::ars121l::Ars121lLockdown,
+        SupermicroSmcLockdown = "supermicro-smc-lockdown" => lockdown::supermicro::smc::SmcLockdown,
     }
-    Accounts as accounts: Accounts = accounts::StandardAccounts {
-        DellIdracAccounts = "dell-idrac-accounts" => accounts::IdracAccounts,
-        DeltaPowerShelfAccounts = "delta-power-shelf-accounts" => accounts::DeltaPowerShelfAccounts,
-        HpeIloAccounts = "hpe-ilo-accounts" => accounts::IloAccounts,
-        LenovoXccAccounts = "lenovo-xcc-accounts" => accounts::XccAccounts,
-        LiteOnPowerShelfAccounts = "liteon-power-shelf-accounts" => accounts::LiteOnPowerShelfAccounts,
-        NvidiaBlueFieldAccounts = "nvidia-bluefield-accounts" => accounts::BlueFieldAccounts,
-        NvidiaGh200Accounts = "nvidia-gh200-accounts" => accounts::Gh200Accounts,
-        NvidiaOpenBmcAccounts = "nvidia-openbmc-accounts" => accounts::OpenBmcAccounts,
-        NvidiaSwitchAccounts = "nvidia-switch-accounts" => accounts::SwitchAccounts,
-        NvidiaVikingAccounts = "nvidia-viking-accounts" => accounts::VikingAccounts,
+    Accounts as accounts, with_accounts: Accounts = accounts::standard::StandardAccounts {
+        DellIdracAccounts = "dell-idrac-accounts" => accounts::dell::idrac::IdracAccounts,
+        DeltaPowerShelfAccounts = "delta-power-shelf-accounts" => accounts::delta::power_shelf::DeltaPowerShelfAccounts,
+        HpeIloAccounts = "hpe-ilo-accounts" => accounts::hpe::ilo::IloAccounts,
+        LenovoXccAccounts = "lenovo-xcc-accounts" => accounts::lenovo::xcc::XccAccounts,
+        LiteOnPowerShelfAccounts = "liteon-power-shelf-accounts" => accounts::liteon::power_shelf::LiteOnPowerShelfAccounts,
+        NvidiaBlueFieldAccounts = "nvidia-bluefield-accounts" => accounts::nvidia::bluefield::BlueFieldAccounts,
+        NvidiaGh200Accounts = "nvidia-gh200-accounts" => accounts::nvidia::gh200::Gh200Accounts,
+        NvidiaOpenBmcAccounts = "nvidia-openbmc-accounts" => accounts::nvidia::openbmc::OpenBmcAccounts,
+        NvidiaSwitchAccounts = "nvidia-switch-accounts" => accounts::nvidia::switch::SwitchAccounts,
+        NvidiaVikingAccounts = "nvidia-viking-accounts" => accounts::nvidia::viking::VikingAccounts,
     }
-    Firmware as firmware: Firmware = firmware::StandardFirmware {
-        AmiMegaRacFirmware = "ami-megarac-firmware" => firmware::MegaRacFirmware,
-        DellIdracFirmware = "dell-idrac-firmware" => firmware::IdracFirmware,
-        LenovoXccFirmware = "lenovo-xcc-firmware" => firmware::XccFirmware,
-        NvidiaOpenBmcFirmware = "nvidia-openbmc-firmware" => firmware::OpenBmcFirmware,
-        NvidiaVikingFirmware = "nvidia-viking-firmware" => firmware::VikingFirmware,
-        SupermicroSmcFirmware = "supermicro-smc-firmware" => firmware::SmcFirmware,
+    Firmware as firmware, with_firmware: Firmware = firmware::standard::StandardFirmware {
+        AmiMegaRacFirmware = "ami-megarac-firmware" => firmware::ami::megarac::MegaRacFirmware,
+        DellIdracFirmware = "dell-idrac-firmware" => firmware::dell::idrac::IdracFirmware,
+        LenovoXccFirmware = "lenovo-xcc-firmware" => firmware::lenovo::xcc::XccFirmware,
+        NvidiaOpenBmcFirmware = "nvidia-openbmc-firmware" => firmware::nvidia::openbmc::OpenBmcFirmware,
+        NvidiaVikingFirmware = "nvidia-viking-firmware" => firmware::nvidia::viking::VikingFirmware,
+        SupermicroSmcFirmware = "supermicro-smc-firmware" => firmware::supermicro::smc::SmcFirmware,
     }
-    Storage as storage: Storage {
-        DellIdracBossStorage = "dell-idrac-boss-storage" => storage::IdracBossStorage,
+    Storage as storage, with_storage: Storage {
+        DellIdracBossStorage = "dell-idrac-boss-storage" => storage::dell::idrac::IdracBossStorage,
     }
-    Dpu as dpu: Dpu {
-        NvidiaBlueField2Dpu = "nvidia-bluefield2-dpu" => dpu::BlueField2Dpu,
-        NvidiaBlueFieldDpu = "nvidia-bluefield-dpu" => dpu::BlueField3Dpu,
-        NvidiaBlueField4Dpu = "nvidia-bluefield4-dpu" => dpu::BlueField4Dpu,
+    Dpu as dpu, with_dpu: Dpu {
+        NvidiaBlueField2Dpu = "nvidia-bluefield2-dpu" => dpu::nvidia::bluefield2::BlueField2Dpu,
+        NvidiaBlueFieldDpu = "nvidia-bluefield-dpu" => dpu::nvidia::bluefield3::BlueField3Dpu,
+        NvidiaBlueField4Dpu = "nvidia-bluefield4-dpu" => dpu::nvidia::bluefield4::BlueField4Dpu,
     }
-    Attestation as attestation: Attestation = attestation::StandardAttestation {
-        NvidiaHgxAttestation = "nvidia-hgx-attestation" => attestation::HgxAttestation,
+    Attestation as attestation, with_attestation: Attestation = attestation::standard::StandardAttestation {
+        NvidiaHgxAttestation = "nvidia-hgx-attestation" => attestation::nvidia::hgx::HgxAttestation,
     }
-    Console as console: Console {
-        AmiMegaRacConsole = "ami-megarac-console" => console::MegaRacConsole,
-        DellIdracConsole = "dell-idrac-console" => console::IdracConsole,
-        HpeIloConsole = "hpe-ilo-console" => console::IloConsole,
-        LenovoAmiConsole = "lenovo-ami-console" => console::LenovoAmiConsole,
-        LenovoGb300Console = "lenovo-gb300-console" => console::Gb300Console,
-        LenovoXccConsole = "lenovo-xcc-console" => console::XccConsole,
-        NvidiaBlueFieldConsole = "nvidia-bluefield-console" => console::BlueFieldConsole,
-        NvidiaVikingConsole = "nvidia-viking-console" => console::VikingConsole,
-        SupermicroBmcConsole = "supermicro-bmc-console" => console::SupermicroBmcConsole,
+    Console as console, with_console: Console {
+        AmiMegaRacConsole = "ami-megarac-console" => console::ami::megarac::MegaRacConsole,
+        DellIdracConsole = "dell-idrac-console" => console::dell::idrac::IdracConsole,
+        HpeIloConsole = "hpe-ilo-console" => console::hpe::ilo::IloConsole,
+        LenovoAmiConsole = "lenovo-ami-console" => console::lenovo::ami::LenovoAmiConsole,
+        LenovoGb300Console = "lenovo-gb300-console" => console::lenovo::gb300::Gb300Console,
+        LenovoXccConsole = "lenovo-xcc-console" => console::lenovo::xcc::XccConsole,
+        NvidiaBlueFieldConsole = "nvidia-bluefield-console" => console::nvidia::bluefield::BlueFieldConsole,
+        NvidiaVikingConsole = "nvidia-viking-console" => console::nvidia::viking::VikingConsole,
+        SupermicroBmcConsole = "supermicro-bmc-console" => console::supermicro::bmc::SupermicroBmcConsole,
     }
 }
 
@@ -312,79 +350,6 @@ pub enum PluginIdError {
     InvalidCharacter,
     #[error("driver id must use single hyphens between nonempty segments")]
     InvalidSeparator,
-}
-
-/// Resolves a persisted selection to the driver that serves it.
-///
-/// [`Drivers`] is the compiled catalogue; test doubles implement only the
-/// accessors they exercise and inherit `Unsupported` for the rest.
-pub trait Catalog<B: Bmc>: Send + Sync {
-    fn power(&self, selection: &CapabilitySelection) -> Result<&dyn Power<B>, CatalogError> {
-        unsupported(Capability::Power, selection)
-    }
-
-    fn bmc_control(
-        &self,
-        selection: &CapabilitySelection,
-    ) -> Result<&dyn BmcControl<B>, CatalogError> {
-        unsupported(Capability::BmcControl, selection)
-    }
-
-    fn bios(&self, selection: &CapabilitySelection) -> Result<&dyn Bios<B>, CatalogError> {
-        unsupported(Capability::Bios, selection)
-    }
-
-    fn boot_order(
-        &self,
-        selection: &CapabilitySelection,
-    ) -> Result<&dyn BootOrder<B>, CatalogError> {
-        unsupported(Capability::BootOrder, selection)
-    }
-
-    fn secure_boot(
-        &self,
-        selection: &CapabilitySelection,
-    ) -> Result<&dyn SecureBoot<B>, CatalogError> {
-        unsupported(Capability::SecureBoot, selection)
-    }
-
-    fn lockdown(&self, selection: &CapabilitySelection) -> Result<&dyn Lockdown<B>, CatalogError> {
-        unsupported(Capability::Lockdown, selection)
-    }
-
-    fn accounts(&self, selection: &CapabilitySelection) -> Result<&dyn Accounts<B>, CatalogError> {
-        unsupported(Capability::Accounts, selection)
-    }
-
-    fn firmware(&self, selection: &CapabilitySelection) -> Result<&dyn Firmware<B>, CatalogError> {
-        unsupported(Capability::Firmware, selection)
-    }
-
-    fn storage(&self, selection: &CapabilitySelection) -> Result<&dyn Storage<B>, CatalogError> {
-        unsupported(Capability::Storage, selection)
-    }
-
-    fn dpu(&self, selection: &CapabilitySelection) -> Result<&dyn Dpu<B>, CatalogError> {
-        unsupported(Capability::Dpu, selection)
-    }
-
-    fn attestation(
-        &self,
-        selection: &CapabilitySelection,
-    ) -> Result<&dyn Attestation<B>, CatalogError> {
-        unsupported(Capability::Attestation, selection)
-    }
-
-    fn console(&self, selection: &CapabilitySelection) -> Result<&dyn Console<B>, CatalogError> {
-        unsupported(Capability::Console, selection)
-    }
-}
-
-fn unsupported<'a, T: ?Sized>(
-    capability: Capability,
-    _selection: &CapabilitySelection,
-) -> Result<&'a T, CatalogError> {
-    Err(CatalogError::Unsupported { capability })
 }
 
 /// The catalogue compiled into this binary.
@@ -480,8 +445,15 @@ mod tests {
 
     #[test]
     fn selections_resolve_or_fail_before_io() {
-        let catalog: &dyn Catalog<TestBmc> = &Drivers;
-        assert!(catalog.power(&CapabilitySelection::Standard).is_ok());
+        let power = |selection| {
+            SelectedDrivers::<TestBmc>::resolve(
+                &DriverMap::filled(CapabilitySelection::Standard)
+                    .with(Capability::Power, selection),
+            )
+            .power()
+            .err()
+        };
+        assert_eq!(power(CapabilitySelection::Standard), None);
         assert_eq!(
             Drivers::check(Capability::Storage, &CapabilitySelection::Standard),
             Err(CatalogError::StandardNotImplemented {
@@ -489,15 +461,13 @@ mod tests {
             })
         );
         assert_eq!(
-            catalog.power(&CapabilitySelection::Unsupported).err(),
+            power(CapabilitySelection::Unsupported),
             Some(CatalogError::Unsupported {
                 capability: Capability::Power,
             })
         );
         assert_eq!(
-            catalog
-                .power(&CapabilitySelection::Driver(Driver::DellIdracBios))
-                .err(),
+            power(CapabilitySelection::Driver(Driver::DellIdracBios)),
             Some(CatalogError::WrongCapability {
                 capability: Capability::Power,
                 driver: Driver::DellIdracBios,
@@ -506,8 +476,8 @@ mod tests {
         let plugin: Driver = "acme-power".parse().expect("well-formed plugin id");
         assert!(matches!(plugin, Driver::Plugin(_)));
         assert!(matches!(
-            catalog.power(&CapabilitySelection::Driver(plugin)),
-            Err(CatalogError::UnknownPlugin { .. })
+            power(CapabilitySelection::Driver(plugin)),
+            Some(CatalogError::UnknownPlugin { .. })
         ));
         assert!("Bad Id".parse::<Driver>().is_err());
     }

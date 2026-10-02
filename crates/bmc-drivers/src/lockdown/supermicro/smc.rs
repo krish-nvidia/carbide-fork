@@ -13,8 +13,8 @@ use nv_redfish::host_interface::HostInterface;
 use nv_redfish::manager::Manager;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
 
-use super::{kcs_privilege, kcs_signal, set_kcs_privilege};
-use crate::lockdown::{set_host_interface, signal, state_from_signals, status};
+use super::support::{kcs_privilege, kcs_signal, set_kcs_privilege};
+use crate::lockdown::support::{set_host_interface, signal, state_from_signals, status};
 
 /// Supermicro lockdown driver.
 ///

@@ -14,7 +14,7 @@ use nv_redfish::oem::ami::config_bmc::{
     LockoutBiosVariableWriteMode, LockoutHostControlState,
 };
 
-use crate::lockdown::{set_first_host_interface, signal, state_from_signals, status};
+use crate::lockdown::support::{set_first_host_interface, signal, state_from_signals, status};
 
 /// Lenovo AMI lockdown driver.
 ///

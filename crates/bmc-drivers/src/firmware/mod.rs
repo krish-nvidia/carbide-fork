@@ -5,17 +5,10 @@
 
 //! Firmware inventory and update capability drivers.
 
-mod ami;
-mod dell;
-mod lenovo;
-mod nvidia;
-mod standard;
-mod supermicro;
+pub(crate) mod ami;
+pub(crate) mod dell;
+pub(crate) mod lenovo;
+pub(crate) mod nvidia;
+pub(crate) mod standard;
+pub(crate) mod supermicro;
 mod support;
-
-pub(crate) use ami::MegaRacFirmware;
-pub(crate) use dell::IdracFirmware;
-pub(crate) use lenovo::XccFirmware;
-pub(crate) use nvidia::{OpenBmcFirmware, VikingFirmware};
-pub(crate) use standard::StandardFirmware;
-pub(crate) use supermicro::SmcFirmware;

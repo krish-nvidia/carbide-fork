@@ -12,7 +12,7 @@ use nv_redfish::core::Bmc;
 use serde_json::{Map, Value};
 use version_compare::Cmp;
 
-use crate::lockdown::{signal, state_from_signals};
+use crate::lockdown::support::{signal, state_from_signals};
 use crate::resources::{patch_bios_attributes, selected_bios};
 
 /// NVIDIA Viking lockdown driver; both host and BMC lockdown are BIOS attributes.
