@@ -303,7 +303,7 @@ fn narrower_identity_outranks_broader_rules() {
             identity: lenovo_ami(),
             expect: vec![
                 (Lockdown, driver(LenovoAmiLockdown)),
-                (Accounts, Standard),
+                (Accounts, driver(AmiMegaRacAccounts)),
                 (Power, Standard),
             ],
         },

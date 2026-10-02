@@ -247,6 +247,7 @@ drivers! {
         SupermicroSmcLockdown = "supermicro-smc-lockdown" => lockdown::supermicro::smc::SmcLockdown,
     }
     Accounts as accounts, with_accounts: Accounts = accounts::standard::StandardAccounts {
+        AmiMegaRacAccounts = "ami-megarac-accounts" => accounts::ami::megarac::MegaRacAccounts,
         DellIdracAccounts = "dell-idrac-accounts" => accounts::dell::idrac::IdracAccounts,
         DeltaPowerShelfAccounts = "delta-power-shelf-accounts" => accounts::delta::power_shelf::DeltaPowerShelfAccounts,
         HpeIloAccounts = "hpe-ilo-accounts" => accounts::hpe::ilo::IloAccounts,

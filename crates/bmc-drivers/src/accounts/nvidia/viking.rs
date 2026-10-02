@@ -8,16 +8,28 @@ use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
 
-use crate::accounts::standard::{StandardAccounts, apply_policy};
+use crate::accounts::standard::StandardAccounts;
+use crate::accounts::support::{apply_policy, set_password};
 
 /// NVIDIA DGX Viking: the firmware rejects a fully disabled lockout, so the
-/// policy keeps a short, self-resetting one.
+/// policy keeps a short, self-resetting one. Like other AMI firmware, a
+/// factory-state demand for a password change without an account means the
+/// administrator, account 2.
 pub(crate) struct VikingAccounts;
 
 #[async_trait]
 impl<B: Bmc> Accounts<B> for VikingAccounts {
     fn standard(&self) -> &dyn Accounts<B> {
         &StandardAccounts
+    }
+
+    async fn change_password(
+        &self,
+        cx: &OpCx<'_, B>,
+        username: &str,
+        password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        set_password(cx, username, password, Some("2")).await
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {

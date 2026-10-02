@@ -9,7 +9,8 @@ use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::hpe::{HpeAccountServiceUpdate, HpeAccountServiceUpdateExt};
 
-use crate::accounts::standard::{StandardAccounts, apply_policy};
+use crate::accounts::standard::StandardAccounts;
+use crate::accounts::support::apply_policy;
 
 /// HPE iLO: the lockout policy lives under `Oem.Hpe`.
 pub(crate) struct IloAccounts;

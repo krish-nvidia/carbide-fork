@@ -10,12 +10,12 @@ use nv_redfish::core::Bmc;
 use crate::accounts::standard::StandardAccounts;
 use crate::accounts::support::set_password;
 
-/// NVIDIA BlueField: the DPU BMC exposes its lockout policy read-only, so
-/// there is nothing to apply. OpenBMC account ids are usernames.
-pub(crate) struct BlueFieldAccounts;
+/// Generic AMI MegaRAC: a factory-state BMC that demands a password change
+/// without naming the account means the administrator, account 2.
+pub(crate) struct MegaRacAccounts;
 
 #[async_trait]
-impl<B: Bmc> Accounts<B> for BlueFieldAccounts {
+impl<B: Bmc> Accounts<B> for MegaRacAccounts {
     fn standard(&self) -> &dyn Accounts<B> {
         &StandardAccounts
     }
@@ -26,13 +26,6 @@ impl<B: Bmc> Accounts<B> for BlueFieldAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_password(cx, username, password, Some(username)).await
-    }
-
-    async fn apply_default_policy(
-        &self,
-        _cx: &OpCx<'_, B>,
-    ) -> Result<DriverOutcome, PlatformError> {
-        Ok(DriverOutcome::complete())
+        set_password(cx, username, password, Some("2")).await
     }
 }

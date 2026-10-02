@@ -5,6 +5,7 @@
 
 //! BMC local-account capability drivers.
 
+pub(crate) mod ami;
 pub(crate) mod dell;
 pub(crate) mod delta;
 pub(crate) mod hpe;

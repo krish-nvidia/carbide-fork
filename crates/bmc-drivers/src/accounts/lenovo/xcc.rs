@@ -11,16 +11,28 @@ use nv_redfish::oem::lenovo::account_service::{
     LenovoAccountServiceUpdate, LenovoAccountServiceUpdateExt,
 };
 
-use crate::accounts::standard::{StandardAccounts, apply_policy};
+use crate::accounts::standard::StandardAccounts;
+use crate::accounts::support::{apply_policy, set_password};
 
 /// Lenovo XCC rejects a zero lockout duration and enforces password rotation
-/// through `Oem.Lenovo`, which the default policy disables.
+/// through `Oem.Lenovo`, which the default policy disables. A factory-state
+/// demand for a password change without an account means the factory
+/// administrator, account 1.
 pub(crate) struct XccAccounts;
 
 #[async_trait]
 impl<B: Bmc> Accounts<B> for XccAccounts {
     fn standard(&self) -> &dyn Accounts<B> {
         &StandardAccounts
+    }
+
+    async fn change_password(
+        &self,
+        cx: &OpCx<'_, B>,
+        username: &str,
+        password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        set_password(cx, username, password, Some("1")).await
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
