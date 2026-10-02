@@ -6,14 +6,14 @@
 //! Dell iDRAC mechanics shared by several capabilities.
 
 use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError, VendorJobId};
-use nv_redfish::core::{Bmc, ModificationResponse, RedfishSettings};
+use nv_redfish::core::{ActionError, Bmc, ModificationResponse, RedfishSettings};
 use nv_redfish::oem::dell::DellManager;
 use nv_redfish::oem::dell::attributes::{AttributesUpdate, DellAttributes, DellAttributesUpdate};
-use nv_redfish::oem::dell::schema::ActionAnnotations;
-use nv_redfish::oem::dell::schema::dell_job_service::DellJobServiceDeleteJobQueueAction;
-use serde_json::{Value, json};
+use nv_redfish::schema::SettingsApplyTimeUpdate;
+use nv_redfish::schema::settings::ApplyTime;
+use serde_json::Value;
 
-use crate::resources::{dynamic_properties, patch_bios_settings, selected_bios};
+use crate::resources::{bios_update, dynamic_properties, selected_bios, update_bios_settings};
 
 /// The iDRAC attribute that blocks configuration changes while enabled.
 const SYSTEM_LOCKDOWN: &str = "Lockdown.1.SystemLockdown";
@@ -38,11 +38,16 @@ pub(crate) fn job_outcome<B: Bmc, T>(
         .filter(|id| id.starts_with("JID_") || location.to_string().contains("/Oem/Dell/Jobs/"))
         .and_then(|id| id.parse::<VendorJobId>().ok());
     Ok(DriverOutcome::accepted(match job_id {
-        Some(job_id) => OperationReference::VendorJob {
-            uri: format!("{}/Oem/Dell/Jobs/{job_id}", cx.manager()?.raw().odata_id).into(),
-            job_id,
-            retry_after_seconds,
-        },
+        Some(job_id) => {
+            let jobs = dell_manager(cx)?
+                .configuration_jobs()
+                .ok_or(PlatformError::Unsupported)?;
+            OperationReference::VendorJob {
+                uri: format!("{}/{job_id}", jobs.odata_id()).into(),
+                job_id,
+                retry_after_seconds,
+            }
+        }
         None => OperationReference::RedfishTask {
             uri: location,
             retry_after_seconds,
@@ -72,7 +77,10 @@ async fn manager_attributes<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellAttributes<B
 /// iDRAC rejects new configuration jobs (`SYS011`) while any job is queued,
 /// so every BIOS writer clears the queue first. The queue cannot be cleared
 /// while system lockdown is enabled, which is reported as `LockedDown`.
-pub(crate) async fn clear_job_queue<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), PlatformError> {
+pub(crate) async fn clear_job_queue<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), PlatformError>
+where
+    B::Error: ActionError,
+{
     let system_lockdown = manager_attributes(cx)
         .await?
         .attribute(SYSTEM_LOCKDOWN)
@@ -83,27 +91,15 @@ pub(crate) async fn clear_job_queue<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), Plat
     if system_lockdown == "Enabled" {
         return Err(PlatformError::LockedDown);
     }
-    let service = dell_manager(cx)?
+    dell_manager(cx)?
         .job_service()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
-        .raw();
-    let action = service
-        .actions
-        .as_ref()
-        .and_then(Option::as_ref)
-        .and_then(|actions| actions.delete_job_queue.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
-    cx.action(
-        action,
-        &DellJobServiceDeleteJobQueueAction {
-            redfish_annotations: ActionAnnotations::default(),
-            job_id: "JID_CLEARALL".to_string(),
-        },
-    )
-    .await
-    .map(drop)
+        .delete_job_queue("JID_CLEARALL")
+        .await
+        .map(drop)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Creates the configuration job that applies staged BIOS settings on the next reset.
@@ -128,17 +124,22 @@ pub(crate) async fn create_bios_config_job<B: Bmc>(
 pub(crate) async fn stage_bios_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
     attributes: Value,
-) -> Result<DriverOutcome, PlatformError> {
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     clear_job_queue(cx).await?;
-    patch_bios_settings(
-        cx,
-        &json!({
-            "@Redfish.SettingsApplyTime": {"ApplyTime": "OnReset"},
-            "Attributes": attributes,
-        }),
-    )
-    .await
-    .and_then(|response| job_outcome(cx, response))
+    let body = bios_update(attributes)?.with_settings_apply_time(on_reset());
+    update_bios_settings(cx, &body)
+        .await
+        .and_then(|response| job_outcome(cx, response))
+}
+
+/// `@Redfish.SettingsApplyTime` for settings iDRAC applies on the next reset.
+pub(crate) fn on_reset() -> SettingsApplyTimeUpdate {
+    SettingsApplyTimeUpdate::builder()
+        .with_apply_time(ApplyTime::OnReset)
+        .build()
 }
 
 /// Writes iDRAC manager attributes, given as a JSON object.
@@ -173,6 +174,8 @@ mod tests {
     use bmc_platform::EtagMode;
     use nv_redfish::core::{AsyncTask, AsyncTaskLocation};
 
+    use serde_json::json;
+
     use super::*;
     use crate::test_support::{Fixture, body};
 
@@ -185,11 +188,23 @@ mod tests {
 
     #[tokio::test]
     async fn job_ids_are_polled_in_the_managers_dell_job_queue() {
+        const MANAGER: &str = "/redfish/v1/Managers/iDRAC.Embedded.1";
         let bmc = Fixture::new(
             "Dell",
             "Integrated Dell Remote Access Controller",
             "System.Embedded.1",
             "iDRAC.Embedded.1",
+        )
+        .document(
+            MANAGER,
+            json!({
+                "@odata.id": MANAGER,
+                "Id": "iDRAC.Embedded.1",
+                "Name": "Manager",
+                "Links": {"Oem": {"Dell": {
+                    "Jobs": {"@odata.id": format!("{MANAGER}/Oem/Dell/Jobs")},
+                }}},
+            }),
         )
         .build()
         .await;

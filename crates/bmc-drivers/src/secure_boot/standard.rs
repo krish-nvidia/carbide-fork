@@ -5,13 +5,10 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, SecureBoot, SecureBootStatus};
+use nv_redfish::certificate::{CertificateCollection, CertificateCreate, CertificateType};
 use nv_redfish::computer_system::{SecureBoot as SecureBootResource, SecureBootCurrentBootType};
-use nv_redfish::core::{Bmc, EntityTypeRef, ODataETag, ODataId, ReferenceLeaf};
+use nv_redfish::core::Bmc;
 use nv_redfish::schema::secure_boot::SecureBootUpdate;
-use serde::Deserialize;
-use serde_json::json;
-
-use crate::update;
 
 const PLATFORM_KEY_DATABASE: &str = "PK";
 
@@ -97,24 +94,43 @@ async fn set_state<B: Bmc>(
     cx: &OpCx<'_, B>,
     update: &SecureBootUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    let secure_boot = secure_boot_resource(cx).await?;
-    update::apply(
-        cx,
-        secure_boot.raw().as_ref(),
-        update,
-        secure_boot.update(update),
-    )
-    .await
+    secure_boot_resource(cx)
+        .await?
+        .update(update)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
+}
+
+/// The certificates of the `PK` Secure Boot database.
+async fn platform_key_certificates<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<CertificateCollection<B>, PlatformError> {
+    let databases = secure_boot_resource(cx)
+        .await?
+        .databases()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .members()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?;
+    databases
+        .iter()
+        .find(|database| database.raw().id == PLATFORM_KEY_DATABASE)
+        .ok_or(PlatformError::Unsupported)?
+        .certificates()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)
 }
 
 async fn has_platform_key<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-    let secure_boot = secure_boot_resource(cx).await?;
-    let collection = cx
-        .bmc()
-        .get::<CertificateCollection>(&certificate_collection_path(secure_boot.raw().odata_id()))
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?;
-    Ok(!collection.members.is_empty() || collection.member_count.unwrap_or_default() != 0)
+    Ok(!platform_key_certificates(cx)
+        .await?
+        .raw()
+        .members
+        .is_empty())
 }
 
 async fn add_platform_key<B: Bmc>(
@@ -126,42 +142,12 @@ async fn add_platform_key<B: Bmc>(
             message: "platform key PEM is empty".to_string(),
         });
     }
-    let secure_boot = secure_boot_resource(cx).await?;
-    cx.post(
-        &certificate_collection_path(secure_boot.raw().odata_id()),
-        &json!({"CertificateString": pem, "CertificateType": "PEM"}),
-    )
-    .await
-}
-
-fn certificate_collection_path(secure_boot: &ODataId) -> ODataId {
-    format!(
-        "{}/SecureBootDatabases/{PLATFORM_KEY_DATABASE}/Certificates",
-        secure_boot.to_string().trim_end_matches('/')
-    )
-    .into()
-}
-
-#[derive(Deserialize)]
-struct CertificateCollection {
-    #[serde(rename = "@odata.id")]
-    odata_id: ODataId,
-    #[serde(rename = "@odata.etag", default)]
-    etag: Option<ODataETag>,
-    #[serde(rename = "Members", default)]
-    members: Vec<ReferenceLeaf>,
-    #[serde(rename = "Members@odata.count", default)]
-    member_count: Option<u64>,
-}
-
-impl EntityTypeRef for CertificateCollection {
-    fn odata_id(&self) -> &ODataId {
-        &self.odata_id
-    }
-
-    fn etag(&self) -> Option<&ODataETag> {
-        self.etag.as_ref()
-    }
+    platform_key_certificates(cx)
+        .await?
+        .create(&CertificateCreate::builder(pem.to_string(), CertificateType::Pem).build())
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[cfg(test)]

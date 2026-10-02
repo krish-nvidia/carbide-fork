@@ -8,7 +8,7 @@ use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
     PlatformError,
 };
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
 use crate::dell;
@@ -22,7 +22,10 @@ use crate::resources::selected_bios;
 /// disabling `racadm`.
 pub(crate) struct IdracLockdown;
 
-async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
+async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     dell::stage_bios_attributes(
         cx,
         json!({
@@ -48,7 +51,10 @@ async fn set_bmc<B: Bmc>(
 }
 
 #[async_trait]
-impl<B: Bmc> Lockdown<B> for IdracLockdown {
+impl<B: Bmc> Lockdown<B> for IdracLockdown
+where
+    B::Error: ActionError,
+{
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
         let bios = selected_bios(cx).await?;
         let in_band = bios

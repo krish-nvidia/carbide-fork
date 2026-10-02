@@ -49,6 +49,7 @@ pub enum Error {
     Cache(String),
     RejectedUriReference(String),
     NotSupported(&'static str),
+    ActionNotSupported,
 }
 
 /// Test transports classify exactly like the production reqwest transport.
@@ -58,6 +59,7 @@ impl bmc_platform::ClassifyBmcError for Error {
             Self::InvalidResponse { status, text, .. } => {
                 bmc_platform::PlatformError::from_http_response(status.as_u16(), &text)
             }
+            Self::ActionNotSupported => bmc_platform::PlatformError::Unsupported,
             other => bmc_platform::PlatformError::InvalidResponse {
                 message: other.to_string(),
             },
@@ -78,6 +80,7 @@ impl fmt::Display for Error {
                 write!(f, "rejected URI reference: {reason}")
             }
             Self::NotSupported(what) => write!(f, "not supported in test client: {what}"),
+            Self::ActionNotSupported => write!(f, "action is not supported by the service"),
         }
     }
 }
@@ -98,7 +101,7 @@ impl BmcError for Error {
 
 impl ActionError for Error {
     fn not_supported() -> Self {
-        Self::NotSupported("action is not supported")
+        Self::ActionNotSupported
     }
 }
 
@@ -317,11 +320,13 @@ impl HttpClient for AxumRouterHttpClient {
                 location: ODataId::from(location.unwrap_or_else(|| url.path().to_string())).into(),
                 retry_after: retry_after(response.headers()),
             })),
-            StatusCode::NO_CONTENT => location.map_or(Ok(ModificationResponse::Empty), |location| {
-                serde_json::from_value(serde_json::json!({"@odata.id": location}))
-                    .map(ModificationResponse::Entity)
-                    .map_err(Error::Json)
-            }),
+            StatusCode::NO_CONTENT => {
+                location.map_or(Ok(ModificationResponse::Empty), |location| {
+                    serde_json::from_value(serde_json::json!({"@odata.id": location}))
+                        .map(ModificationResponse::Entity)
+                        .map_err(Error::Json)
+                })
+            }
             _ => Self::modification_response(url, response).await,
         }
     }

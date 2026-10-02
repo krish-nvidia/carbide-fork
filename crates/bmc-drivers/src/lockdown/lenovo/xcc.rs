@@ -18,7 +18,6 @@ use nv_redfish::oem::lenovo::manager::KcsState;
 use nv_redfish::oem::lenovo::security_service::FwRollbackState;
 
 use crate::lockdown::{signal, state_from_signals, status};
-use crate::update;
 
 /// The manager Ethernet interface XCC exposes to the host OS.
 const HOST_INTERFACE_ID: &str = "ToHost";
@@ -81,8 +80,11 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
     let body = EthernetInterfaceUpdate::builder()
         .with_interface_enabled(!enabled)
         .build();
-    update::apply(cx, to_host.raw().as_ref(), &body, to_host.update(&body))
+    to_host
+        .update(&body)
         .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
         .map(|to_host| kcs.merge(rollback).merge(to_host))
 }
 

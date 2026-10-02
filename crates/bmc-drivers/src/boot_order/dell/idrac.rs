@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BootOrder, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
@@ -38,7 +38,10 @@ fn read_only_attribute_is_unsupported(error: PlatformError) -> PlatformError {
 }
 
 #[async_trait]
-impl<B: Bmc> BootOrder<B> for IdracBootOrder {
+impl<B: Bmc> BootOrder<B> for IdracBootOrder
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn BootOrder<B> {
         &StandardBootOrder
     }

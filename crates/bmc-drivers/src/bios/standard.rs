@@ -9,9 +9,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosDiff, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
-use nv_redfish::schema::ActionAnnotations;
-use nv_redfish::schema::bios::{BiosChangePasswordAction, BiosResetBiosAction};
+use nv_redfish::core::{ActionError, Bmc};
 use serde_json::Value;
 
 use crate::resources::{bios_attributes, bios_settings, selected_bios, update_settings};
@@ -23,7 +21,10 @@ const UEFI_PASSWORD_NAME: &str = "AdministratorPassword";
 pub(crate) struct StandardBios;
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for StandardBios {
+impl<B: Bmc> Bios<B> for StandardBios
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Bios<B> {
         self
     }
@@ -111,20 +112,16 @@ async fn apply<B: Bmc>(
 }
 
 /// Restores BIOS defaults through the advertised `Bios.ResetBios` action.
-async fn reset<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    let bios = selected_bios(cx).await?.raw();
-    let action = bios
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.reset_bios.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
-    cx.action(
-        action,
-        &BiosResetBiosAction {
-            redfish_annotations: ActionAnnotations::default(),
-        },
-    )
-    .await
+async fn reset<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    selected_bios(cx)
+        .await?
+        .reset()
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Reverts only the staged attributes that differ, since re-sending every
@@ -153,23 +150,20 @@ pub(super) async fn change_password<B: Bmc>(
     password_name: &str,
     current_password: &str,
     new_password: &str,
-) -> Result<DriverOutcome, PlatformError> {
-    let bios = selected_bios(cx).await?.raw();
-    let action = bios
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.change_password.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
-    cx.action(
-        action,
-        &BiosChangePasswordAction {
-            redfish_annotations: ActionAnnotations::default(),
-            password_name: password_name.to_string(),
-            old_password: Some(current_password.to_string()),
-            new_password: new_password.to_string(),
-        },
-    )
-    .await
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    selected_bios(cx)
+        .await?
+        .change_password(
+            password_name.to_string(),
+            Some(current_password.to_string()),
+            new_password.to_string(),
+        )
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 pub(super) fn differences(actual: &BiosSettings, expected: &BiosSettings) -> Vec<BiosDiff> {

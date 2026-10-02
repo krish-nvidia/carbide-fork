@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
 use crate::bmc_control::standard::StandardBmcControl;
@@ -18,7 +18,10 @@ use crate::dell;
 pub(crate) struct IdracBmcControl;
 
 #[async_trait]
-impl<B: Bmc> BmcControl<B> for IdracBmcControl {
+impl<B: Bmc> BmcControl<B> for IdracBmcControl
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn BmcControl<B> {
         &StandardBmcControl
     }

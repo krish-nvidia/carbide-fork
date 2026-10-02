@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::standard::{self, StandardBios};
 
@@ -16,7 +16,10 @@ pub(crate) struct MegaRacBios;
 const UEFI_PASSWORD_NAME: &str = "SETUP001";
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for MegaRacBios {
+impl<B: Bmc> Bios<B> for MegaRacBios
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
     }

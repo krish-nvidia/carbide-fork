@@ -16,6 +16,7 @@
  */
 
 use nv_redfish::bmc_http::reqwest::BmcError;
+use nv_redfish::core::ActionError;
 
 use crate::{AuthError, PlatformError};
 
@@ -23,8 +24,9 @@ use crate::{AuthError, PlatformError};
 ///
 /// Implemented once per HTTP client error type, so a context built over a
 /// given `Bmc` always classifies the same way and tests cannot substitute a
-/// weaker mapping.
-pub trait ClassifyBmcError {
+/// weaker mapping. Drivers invoke typed Redfish actions, so the transport must
+/// also report an action the service does not advertise.
+pub trait ClassifyBmcError: ActionError {
     fn classify(self) -> PlatformError;
 }
 
@@ -35,6 +37,7 @@ impl ClassifyBmcError for BmcError {
             Self::InvalidResponse { status, text, .. } => {
                 PlatformError::from_http_response(status.as_u16(), &text)
             }
+            Self::ActionNotSupported => PlatformError::Unsupported,
             other => PlatformError::InvalidResponse {
                 message: other.to_string(),
             },

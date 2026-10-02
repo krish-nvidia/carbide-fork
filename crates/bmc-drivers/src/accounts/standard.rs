@@ -11,12 +11,10 @@ use async_trait::async_trait;
 use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::account::{
     Account, AccountCollection, AccountService, AccountServiceConfig, AccountServiceUpdate,
-    ManagerAccountCreate, ManagerAccountUpdate,
+    ManagerAccountCreate,
 };
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::manager_account::ManagerAccount;
-
-use crate::update;
 
 /// Redfish-standard account operations.
 pub(crate) struct StandardAccounts;
@@ -68,17 +66,12 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        let account = account_by_username(cx, username).await?;
-        let body = ManagerAccountUpdate::builder()
-            .with_password(password.to_string())
-            .build();
-        update::apply(
-            cx,
-            account.raw().as_ref(),
-            &body,
-            account.update_password(password.to_string()),
-        )
-        .await
+        account_by_username(cx, username)
+            .await?
+            .update_password(password.to_string())
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn change_username(
@@ -87,17 +80,12 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         old_username: &str,
         new_username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        let account = account_by_username(cx, old_username).await?;
-        let body = ManagerAccountUpdate::builder()
-            .with_user_name(new_username.to_string())
-            .build();
-        update::apply(
-            cx,
-            account.raw().as_ref(),
-            &body,
-            account.update_user_name(new_username.to_string()),
-        )
-        .await
+        account_by_username(cx, old_username)
+            .await?
+            .update_user_name(new_username.to_string())
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     /// Disables account lockout so NICo cannot lock itself out during automation.
@@ -152,7 +140,11 @@ pub(super) async fn apply_policy<B: Bmc>(
     body: AccountServiceUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
     let service = account_service(cx, AccountServiceConfig::standard()).await?;
-    update::apply(cx, service.raw().as_ref(), &body, service.update(&body)).await
+    service
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 async fn account_by_username<B: Bmc>(

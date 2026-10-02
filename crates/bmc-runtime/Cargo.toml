@@ -33,7 +33,7 @@ carbide-secrets = { path = "../secrets", default-features = false }
 carbide-utils = { path = "../utils", default-features = false }
 carbide-uuid = { path = "../uuid" }
 mac_address = { features = ["serde"], workspace = true }
-nv-redfish = { features = ["bmc-http", "task-service"], workspace = true }
+nv-redfish = { features = ["bmc-http", "job-service", "oem-dell", "task-service"], workspace = true }
 serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -9,8 +9,6 @@ use bmc_platform::{DriverOutcome, LockdownState, LockdownStatus, OpCx, PlatformE
 use nv_redfish::core::Bmc;
 use nv_redfish::host_interface::{HostInterface, HostInterfaceUpdate};
 
-use crate::update;
-
 mod ami;
 mod dell;
 mod hpe;
@@ -68,7 +66,11 @@ async fn set_host_interface<B: Bmc>(
     let body = HostInterfaceUpdate::builder()
         .with_interface_enabled(enabled)
         .build();
-    update::apply(cx, interface.raw().as_ref(), &body, interface.update(&body)).await
+    interface
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// One control's observation: `(locked, unlocked)`, both false when unknown.

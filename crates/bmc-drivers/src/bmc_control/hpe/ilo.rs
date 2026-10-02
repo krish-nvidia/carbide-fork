@@ -5,12 +5,9 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::oem::hpe::HpeManager;
 use nv_redfish::oem::hpe::date_time::HpeiLoDateTimeUpdate;
-use nv_redfish::oem::hpe::manager::ResetType;
-use nv_redfish::oem::hpe::schema::ActionAnnotations;
-use nv_redfish::oem::hpe::schema::hpei_lo::HpeiLOResetToFactoryDefaultsAction;
 
 use crate::bmc_control::standard::StandardBmcControl;
 
@@ -28,7 +25,10 @@ fn hpe_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<HpeManager<B>, PlatformError>
 }
 
 #[async_trait]
-impl<B: Bmc> BmcControl<B> for IloBmcControl {
+impl<B: Bmc> BmcControl<B> for IloBmcControl
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn BmcControl<B> {
         &StandardBmcControl
     }
@@ -37,20 +37,11 @@ impl<B: Bmc> BmcControl<B> for IloBmcControl {
         &self,
         cx: &OpCx<'_, B>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let manager = hpe_manager(cx)?.raw();
-        let action = manager
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.reset_to_factory_defaults.as_ref())
-            .ok_or(PlatformError::Unsupported)?;
-        cx.action(
-            action,
-            &HpeiLOResetToFactoryDefaultsAction {
-                redfish_annotations: ActionAnnotations::default(),
-                reset_type: ResetType::Default,
-            },
-        )
-        .await
+        hpe_manager(cx)?
+            .reset_to_factory_defaults()
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     /// An empty list leaves the NTP configuration unchanged; the first two

@@ -9,7 +9,7 @@ use bmc_platform::{
     ControllerAction, DriverOutcome, HostPrivilegeLevel, ManualInterventionCode, NicMode, OpCx,
     PlatformError, RshimState,
 };
-use nv_redfish::core::{Bmc, ODataId};
+use nv_redfish::core::Bmc;
 use nv_redfish::oem::nvidia::NvidiaComputerSystem;
 use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
 use serde_json::{Value, json};
@@ -182,24 +182,6 @@ pub(super) fn host_rshim_state(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<R
         HostRshim::Disabled => Some(RshimState::Disabled),
         HostRshim::UnsupportedValue => None,
     }
-}
-
-/// Posts `payload` to the system `Oem.Nvidia` action `action`.
-///
-/// `NvidiaComputerSystem::set_mode` and `set_host_rshim` require
-/// `B::Error: ActionError`, which the production HTTP transport does not
-/// implement, so these two actions are still posted to their fixed targets.
-pub(super) async fn oem_action<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    action: &str,
-    payload: &Value,
-) -> Result<DriverOutcome, PlatformError> {
-    let system = cx.system().map_err(no_dpu)?;
-    let target = ODataId::from(format!(
-        "{}/Oem/Nvidia/Actions/{action}",
-        system.raw().odata_id
-    ));
-    cx.post(&target, payload).await
 }
 
 /// Enables the BMC side of rshim through the manager's `Oem.Nvidia` resource.

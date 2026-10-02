@@ -7,13 +7,13 @@ use async_trait::async_trait;
 use bmc_platform::{
     Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, RshimState,
 };
-use nv_redfish::core::Bmc;
-use serde_json::json;
+use nv_redfish::core::{ActionError, Bmc};
+use nv_redfish::oem::nvidia::computer_system::Mode;
 
 use crate::dpu::nvidia::support::{
     bios_host_privilege_level, enable_bmc_rshim, host_rshim_state, nic_mode_firmware,
-    nic_mode_value, oem_action, require_nic_mode_firmware, restricted_host_privilege,
-    set_bios_host_privilege_level, system_nic_mode, system_oem,
+    require_nic_mode_firmware, restricted_host_privilege, set_bios_host_privilege_level,
+    system_nic_mode, system_oem,
 };
 
 /// BlueField-3: mode and host rshim are the system `Oem.Nvidia` properties
@@ -21,7 +21,10 @@ use crate::dpu::nvidia::support::{
 pub(crate) struct BlueField3Dpu;
 
 #[async_trait]
-impl<B: Bmc> Dpu<B> for BlueField3Dpu {
+impl<B: Bmc> Dpu<B> for BlueField3Dpu
+where
+    B::Error: ActionError,
+{
     /// The mode is unknown on BMC firmware that predates NIC-mode support.
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
         let firmware = nic_mode_firmware(cx).await?;
@@ -47,7 +50,16 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
         {
             return Ok(restricted_host_privilege());
         }
-        oem_action(cx, "Mode.Set", &json!({"Mode": nic_mode_value(mode)})).await
+        let mode = match mode {
+            NicMode::Nic => Mode::NicMode,
+            NicMode::Dpu => Mode::DpuMode,
+        };
+        system_oem(cx)
+            .await?
+            .set_mode(mode)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn set_host_rshim(
@@ -55,11 +67,12 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
         cx: &OpCx<'_, B>,
         state: RshimState,
     ) -> Result<DriverOutcome, PlatformError> {
-        let host_rshim = match state {
-            RshimState::Enabled => "Enabled",
-            RshimState::Disabled => "Disabled",
-        };
-        oem_action(cx, "HostRshim.Set", &json!({"HostRshim": host_rshim})).await
+        system_oem(cx)
+            .await?
+            .set_host_rshim(state == RshimState::Enabled)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn enable_bmc_rshim(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {

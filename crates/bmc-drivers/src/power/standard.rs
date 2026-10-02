@@ -8,17 +8,17 @@
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
 use nv_redfish::chassis::Chassis;
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
-use nv_redfish::schema::ActionAnnotations;
-use nv_redfish::schema::chassis::ChassisResetAction;
-use nv_redfish::schema::computer_system::ComputerSystemResetAction;
 
 /// Spec-compliant Redfish power control.
 pub(crate) struct StandardPower;
 
 #[async_trait]
-impl<B: Bmc> Power<B> for StandardPower {
+impl<B: Bmc> Power<B> for StandardPower
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         self
     }
@@ -59,22 +59,16 @@ pub(super) fn state<B: Bmc>(cx: &OpCx<'_, B>) -> Result<PowerState, PlatformErro
 async fn reset<B: Bmc>(
     cx: &OpCx<'_, B>,
     reset_type: ResetType,
-) -> Result<DriverOutcome, PlatformError> {
-    let system = cx.system()?.raw();
-    let action = system
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.reset.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     already_satisfied_is_complete(
-        cx.action(
-            action,
-            &ComputerSystemResetAction {
-                redfish_annotations: ActionAnnotations::default(),
-                reset_type: Some(reset_type),
-            },
-        )
-        .await,
+        cx.system()?
+            .reset(Some(reset_type))
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error)),
     )
 }
 
@@ -83,22 +77,17 @@ async fn chassis_reset<B: Bmc>(
     cx: &OpCx<'_, B>,
     chassis_id: &str,
     reset_type: ResetType,
-) -> Result<DriverOutcome, PlatformError> {
-    let chassis = chassis(cx, chassis_id).await?.raw();
-    let action = chassis
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.reset.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     already_satisfied_is_complete(
-        cx.action(
-            action,
-            &ChassisResetAction {
-                redfish_annotations: ActionAnnotations::default(),
-                reset_type: Some(reset_type),
-            },
-        )
-        .await,
+        chassis(cx, chassis_id)
+            .await?
+            .reset(Some(reset_type))
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error)),
     )
 }
 

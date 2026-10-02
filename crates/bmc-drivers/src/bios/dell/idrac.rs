@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::standard::{self, StandardBios};
 use crate::dell;
@@ -24,14 +24,20 @@ async fn change_password<B: Bmc>(
     cx: &OpCx<'_, B>,
     current_password: &str,
     new_password: &str,
-) -> Result<DriverOutcome, PlatformError> {
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     dell::clear_job_queue(cx).await?;
     standard::change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await?;
     dell::create_bios_config_job(cx).await
 }
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for IdracBios {
+impl<B: Bmc> Bios<B> for IdracBios
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
     }

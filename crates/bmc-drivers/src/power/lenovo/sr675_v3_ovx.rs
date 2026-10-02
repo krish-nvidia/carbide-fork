@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 
 use async_trait::async_trait;
 use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 
 use crate::power::lenovo::ac_power_cycle;
@@ -35,7 +35,10 @@ fn force_restart_outcome(state: PowerState) -> DriverOutcome {
 }
 
 #[async_trait]
-impl<B: Bmc> Power<B> for Sr675V3OvxPower {
+impl<B: Bmc> Power<B> for Sr675V3OvxPower
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         &StandardPower
     }

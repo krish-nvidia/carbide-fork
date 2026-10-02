@@ -9,14 +9,9 @@ use std::collections::BTreeMap;
 
 use bmc_platform::{DriverOutcome, OpCx, PlatformError};
 use nv_redfish::computer_system::{AttributesUpdate, Bios, BiosUpdate};
-use nv_redfish::core::{
-    Bmc, DynamicProperties, EdmPrimitiveType, EntityTypeRef, ModificationResponse,
-};
+use nv_redfish::core::{Bmc, DynamicProperties, EdmPrimitiveType, ModificationResponse};
 use nv_redfish::schema::bios::Bios as BiosSchema;
-use serde::Serialize;
 use serde_json::Value;
-
-use crate::update;
 
 /// Returns the BIOS resource of the selected ComputerSystem.
 pub(crate) async fn selected_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Bios<B>, PlatformError> {
@@ -47,7 +42,11 @@ pub(crate) async fn update_settings<B: Bmc>(
     let body = BiosUpdate::builder()
         .with_attributes(attributes_update(attributes)?)
         .build();
-    update::apply(cx, settings.raw().as_ref(), &body, settings.update(&body)).await
+    settings
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Stages BIOS attribute values, given as a JSON object, through the
@@ -56,31 +55,35 @@ pub(crate) async fn patch_bios_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
     attributes: Value,
 ) -> Result<DriverOutcome, PlatformError> {
+    update_bios_settings(cx, &bios_update(attributes)?)
+        .await
+        .map(DriverOutcome::from)
+}
+
+/// The BIOS update writing `attributes`, given as a JSON object.
+pub(crate) fn bios_update(attributes: Value) -> Result<BiosUpdate, PlatformError> {
     let Value::Object(attributes) = attributes else {
         return Err(PlatformError::InvalidResponse {
             message: "BIOS attributes must be a JSON object".to_string(),
         });
     };
-    let bios = selected_bios(cx).await?;
-    let settings = bios_settings(cx, &bios).await?;
-    update_settings(cx, &settings, &attributes.into_iter().collect()).await
+    Ok(BiosUpdate::builder()
+        .with_attributes(attributes_update(&attributes.into_iter().collect())?)
+        .build())
 }
 
-/// Writes `payload` to the BIOS pending-settings resource and returns the raw
-/// response, for bodies `BiosUpdate` cannot carry, such as Dell's
-/// `@Redfish.SettingsApplyTime`.
-pub(crate) async fn patch_bios_settings<B, T>(
+/// Writes `body` to the BIOS pending-settings resource and returns the
+/// response, whose task location callers such as Dell track as a job.
+pub(crate) async fn update_bios_settings<B: Bmc>(
     cx: &OpCx<'_, B>,
-    payload: &T,
-) -> Result<ModificationResponse<Value>, PlatformError>
-where
-    B: Bmc,
-    T: Serialize + Send + Sync,
-{
+    body: &BiosUpdate,
+) -> Result<ModificationResponse<Bios<B>>, PlatformError> {
     let bios = selected_bios(cx).await?;
-    let settings = bios_settings(cx, &bios).await?.raw();
-    cx.patch_id(settings.odata_id(), settings.etag(), payload)
+    bios_settings(cx, &bios)
+        .await?
+        .update(body)
         .await
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Converts the BIOS `Attributes` object into plain JSON values, skipping null attributes.

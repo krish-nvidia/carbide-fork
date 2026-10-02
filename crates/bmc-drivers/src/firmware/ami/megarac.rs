@@ -14,7 +14,6 @@ use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService, Updat
 
 use crate::firmware::standard::{StandardFirmware, UploadRequest, update_service, upload};
 use crate::firmware::support::upload_uri;
-use crate::update;
 
 /// The multipart part AMI reads the image type from.
 const OEM_PARAMETERS_PART: &str = "OemParameters";
@@ -95,7 +94,12 @@ async fn preserve_bmc_configuration<B: Bmc>(
         .map_err(|error| PlatformError::InvalidResponse {
             message: format!("failed to build the AMI preserve-configuration update: {error}"),
         })?;
-    match update::apply(cx, service.raw().as_ref(), &body, service.update(&body)).await? {
+    match service
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))?
+    {
         DriverOutcome::Complete { .. } => Ok(()),
         DriverOutcome::Accepted { .. } | DriverOutcome::Blocked { .. } => {
             Err(PlatformError::Unsupported)

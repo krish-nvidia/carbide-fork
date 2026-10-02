@@ -7,22 +7,19 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
-use nv_redfish::manager::ManagerNetworkProtocolUpdate;
+use nv_redfish::core::{ActionError, Bmc};
+use nv_redfish::manager::{ManagerNetworkProtocolUpdate, ManagerResetToDefaultsType};
 use nv_redfish::resource::ResetType;
-use nv_redfish::schema::ActionAnnotations;
-use nv_redfish::schema::manager::{
-    ManagerResetAction, ManagerResetToDefaultsAction, ResetToDefaultsType,
-};
 use nv_redfish::schema::manager_network_protocol::{NtpProtocolUpdate, ProtocolUpdate};
-
-use crate::update;
 
 /// DMTF manager control.
 pub(crate) struct StandardBmcControl;
 
 #[async_trait]
-impl<B: Bmc> BmcControl<B> for StandardBmcControl {
+impl<B: Bmc> BmcControl<B> for StandardBmcControl
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn BmcControl<B> {
         self
     }
@@ -104,25 +101,16 @@ impl<B: Bmc> BmcControl<B> for StandardBmcControl {
 pub(super) async fn reset<B: Bmc>(
     cx: &OpCx<'_, B>,
     reset_type: ResetType,
-) -> Result<DriverOutcome, PlatformError> {
-    let manager = cx.manager()?.raw();
-    let redfish = match manager
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.reset.as_ref())
-    {
-        Some(action) => {
-            cx.action(
-                action,
-                &ManagerResetAction {
-                    redfish_annotations: ActionAnnotations::default(),
-                    reset_type: Some(reset_type),
-                },
-            )
-            .await
-        }
-        None => Err(PlatformError::Unsupported),
-    };
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    let redfish = cx
+        .manager()?
+        .reset(Some(reset_type))
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error));
     match (redfish, cx.ipmi()) {
         (Err(_), Some(ipmi)) => ipmi
             .bmc_cold_reset()
@@ -133,23 +121,15 @@ pub(super) async fn reset<B: Bmc>(
 }
 
 /// Restores every manager setting through the `Manager.ResetToDefaults` action.
-async fn reset_to_factory_defaults<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<DriverOutcome, PlatformError> {
-    let manager = cx.manager()?.raw();
-    let action = manager
-        .actions
-        .as_ref()
-        .and_then(|actions| actions.reset_to_defaults.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
-    cx.action(
-        action,
-        &ManagerResetToDefaultsAction {
-            redfish_annotations: ActionAnnotations::default(),
-            reset_type: ResetToDefaultsType::ResetAll,
-        },
-    )
-    .await
+async fn reset_to_factory_defaults<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    cx.manager()?
+        .reset_to_defaults(ManagerResetToDefaultsType::ResetAll)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Writes to the manager's advertised `NetworkProtocol` resource.
@@ -157,11 +137,13 @@ async fn update_network_protocol<B: Bmc>(
     cx: &OpCx<'_, B>,
     body: ManagerNetworkProtocolUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    let protocol = cx
-        .manager()?
+    cx.manager()?
         .network_protocol()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?;
-    update::apply(cx, protocol.raw().as_ref(), &body, protocol.update(&body)).await
+        .ok_or(PlatformError::Unsupported)?
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }

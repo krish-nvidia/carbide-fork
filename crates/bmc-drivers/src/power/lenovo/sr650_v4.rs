@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::ResetType;
 
 use crate::power::lenovo::ac_power_cycle;
@@ -20,7 +20,10 @@ use crate::power::support::ipmi_restart;
 pub(crate) struct Sr650V4Power;
 
 #[async_trait]
-impl<B: Bmc> Power<B> for Sr650V4Power {
+impl<B: Bmc> Power<B> for Sr650V4Power
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         &StandardPower
     }

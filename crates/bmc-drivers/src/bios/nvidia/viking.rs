@@ -5,9 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, EntityTypeRef};
-use nv_redfish::oem::nvidia::schema::ActionAnnotations;
-use nv_redfish::oem::nvidia::schema::nvidia_update_service::NvidiaUpdateServiceClearNVRAMAction;
+use nv_redfish::core::{ActionError, Bmc, EntityTypeRef};
 
 use crate::bios::standard::{self, StandardBios};
 
@@ -18,36 +16,46 @@ pub(crate) struct VikingBios;
 
 const UEFI_PASSWORD_NAME: &str = "AdminPassword";
 
+/// The firmware inventory entry whose NVRAM holds the host BIOS settings.
+const HOST_BIOS_INVENTORY: &str = "HostBIOS_0";
+
 /// Clears the host BIOS NVRAM through the NVIDIA UpdateService OEM action.
-async fn clear_nvram<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+async fn clear_nvram<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     let service = cx
         .service_root()
         .update_service()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let host_bios = format!("{}/FirmwareInventory/HostBIOS_0", service.raw().odata_id());
-    let actions = service
+    let host_bios = service
+        .firmware_inventories()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .into_iter()
+        .map(|inventory| inventory.raw())
+        .find(|inventory| inventory.id == HOST_BIOS_INVENTORY)
+        .ok_or(PlatformError::Unsupported)?
+        .odata_id()
+        .to_string();
+    service
         .oem_nvidia_actions()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
-        .raw();
-    let action = actions
-        .clear_nvram
-        .as_ref()
-        .ok_or(PlatformError::Unsupported)?;
-    cx.action(
-        action,
-        &NvidiaUpdateServiceClearNVRAMAction {
-            redfish_annotations: ActionAnnotations::default(),
-            targets: vec![host_bios],
-        },
-    )
-    .await
+        .clear_nvram(vec![host_bios])
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for VikingBios {
+impl<B: Bmc> Bios<B> for VikingBios
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
     }

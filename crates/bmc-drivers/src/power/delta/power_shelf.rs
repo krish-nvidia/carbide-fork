@@ -4,11 +4,9 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, Fetched, OpCx, PlatformError, Power};
-use nv_redfish::core::{Bmc, EntityTypeRef, ODataId};
+use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
-use serde::Deserialize;
-use serde_json::json;
 
 use crate::power::standard::StandardPower;
 use crate::power::support::{power_state_from_supplies, power_supplies};
@@ -19,40 +17,11 @@ use crate::power::support::{power_state_from_supplies, power_supplies};
 /// on the PowerShelf resource and only support on and off.
 pub(crate) struct DeltaPowerShelfPower;
 
-/// The PowerShelf OEM actions nv-redfish does not model.
-#[derive(Deserialize)]
-struct Shelf {
-    #[serde(rename = "Oem")]
-    oem: Option<ShelfOem>,
-}
-
-#[derive(Deserialize)]
-struct ShelfOem {
-    deltaenergysystems: Option<DeltaOem>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DeltaOem {
-    actions: Option<DeltaActions>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DeltaActions {
-    #[serde(rename = "#PowerShelf.TurnOnPSUs")]
-    turn_on_psus: Option<ActionTarget>,
-    #[serde(rename = "#PowerShelf.TurnOffPSUs")]
-    turn_off_psus: Option<ActionTarget>,
-}
-
-#[derive(Deserialize)]
-struct ActionTarget {
-    target: String,
-}
-
-async fn set_psus<B: Bmc>(cx: &OpCx<'_, B>, on: bool) -> Result<DriverOutcome, PlatformError> {
-    let shelf = cx
+async fn set_psus<B: Bmc>(cx: &OpCx<'_, B>, on: bool) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    let delta = cx
         .service_root()
         .power_equipment()
         .await
@@ -67,29 +36,24 @@ async fn set_psus<B: Bmc>(cx: &OpCx<'_, B>, on: bool) -> Result<DriverOutcome, P
         .map_err(|error| cx.map_redfish_error(error))?
         .into_iter()
         .next()
+        .ok_or(PlatformError::Unsupported)?
+        .oem_delta()
+        .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let shelf = cx
-        .bmc()
-        .get::<Fetched<Shelf>>(shelf.raw().odata_id())
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?;
-    let actions = shelf
-        .oem
-        .as_ref()
-        .and_then(|oem| oem.deltaenergysystems.as_ref())
-        .and_then(|delta| delta.actions.as_ref())
-        .ok_or(PlatformError::Unsupported)?;
-    let action = if on {
-        actions.turn_on_psus.as_ref()
+    if on {
+        delta.turn_on_psus().await
     } else {
-        actions.turn_off_psus.as_ref()
-    };
-    let target = ODataId::from(action.ok_or(PlatformError::Unsupported)?.target.clone());
-    cx.post(&target, &json!({})).await
+        delta.turn_off_psus().await
+    }
+    .map(DriverOutcome::from)
+    .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[async_trait]
-impl<B: Bmc> Power<B> for DeltaPowerShelfPower {
+impl<B: Bmc> Power<B> for DeltaPowerShelfPower
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         &StandardPower
     }

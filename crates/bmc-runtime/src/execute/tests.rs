@@ -227,25 +227,38 @@ fn task_and_job_states_classify_completion_and_failure() {
         task_state(Some(TaskState::Exception)),
         WorkState::Failed(state) if state == "Exception"
     ));
-    let job = |body: &str| serde_json::from_str::<VendorJob>(body).expect("job body");
+    let job = |fields: serde_json::Value| {
+        let mut body = serde_json::json!({
+            "@odata.id": "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/JID_1",
+            "Id": "JID_1",
+            "Name": "Configure: BIOS.Setup.1-1",
+        });
+        body.as_object_mut()
+            .expect("job body is an object")
+            .extend(fields.as_object().expect("fields are an object").clone());
+        serde_json::from_value::<DellJob>(body).expect("job body")
+    };
     assert!(matches!(
-        job_state(&job(r#"{"JobState":"Completed"}"#)),
-        WorkState::Done
+        job_state(&job(serde_json::json!({"JobState": "Completed"}))),
+        Ok(WorkState::Done)
     ));
     assert!(matches!(
-        job_state(&job(
-            r#"{"JobState":"Scheduled","Message":"Task successfully scheduled."}"#
-        )),
-        WorkState::Running
+        job_state(&job(serde_json::json!({
+            "JobState": "Scheduled",
+            "Message": "Task successfully scheduled."
+        }))),
+        Ok(WorkState::Running)
     ));
     assert!(matches!(
-        job_state(&job(
-            r#"{"JobState":"Scheduled","Message":"Job processing initialization failure."}"#
-        )),
-        WorkState::Failed(state) if state == "ScheduledWithErrors"
+        job_state(&job(serde_json::json!({
+            "JobState": "Scheduled",
+            "Message": "Job processing initialization failure."
+        }))),
+        Ok(WorkState::Failed(state)) if state == "ScheduledWithErrors"
     ));
     assert!(matches!(
-        job_state(&job(r#"{"JobState":"RebootFailed"}"#)),
-        WorkState::Failed(_)
+        job_state(&job(serde_json::json!({"JobState": "RebootFailed"}))),
+        Ok(WorkState::Failed(_))
     ));
+    assert!(job_state(&job(serde_json::json!({}))).is_err());
 }

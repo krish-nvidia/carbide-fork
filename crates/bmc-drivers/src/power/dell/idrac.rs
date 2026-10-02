@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 use serde_json::json;
 
@@ -18,7 +18,10 @@ use crate::power::standard::{self, StandardPower};
 /// the next reset, so the follow-up reset is what actually performs the cycle.
 pub(crate) struct IdracPower;
 
-async fn full_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+async fn full_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
     let staged =
         dell::stage_bios_attributes(cx, json!({"PowerCycleRequest": "FullPowerCycle"})).await?;
     let follow_up = match standard::state(cx)? {
@@ -29,7 +32,10 @@ async fn full_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Pla
 }
 
 #[async_trait]
-impl<B: Bmc> Power<B> for IdracPower {
+impl<B: Bmc> Power<B> for IdracPower
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         &StandardPower
     }

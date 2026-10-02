@@ -15,8 +15,6 @@ use nv_redfish::computer_system::{
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use crate::update;
-
 /// Standard boot-option and boot-order policy using advertised BootOptions.
 pub(crate) struct StandardBootOrder;
 
@@ -62,7 +60,11 @@ async fn set_override<B: Bmc>(
     let body = ComputerSystemUpdate::builder()
         .with_boot(boot_source_override(override_setting))
         .build();
-    update::apply(cx, system.raw().as_ref(), &body, system.update(&body)).await
+    system
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// The boot-source override fields of `setting`: target, enablement, mode,
@@ -277,7 +279,12 @@ async fn set_option_enabled<B: Bmc>(
     let body = BootOptionUpdate::builder()
         .with_boot_option_enabled(enabled)
         .build();
-    match update::apply(cx, option.raw().as_ref(), &body, option.update(&body)).await? {
+    match option
+        .update(&body)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))?
+    {
         DriverOutcome::Complete { .. } => Ok(()),
         DriverOutcome::Accepted { .. } | DriverOutcome::Blocked { .. } => {
             Err(PlatformError::Unsupported)

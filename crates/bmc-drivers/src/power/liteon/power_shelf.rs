@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{OpCx, PlatformError, Power};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::PowerState;
 
 use crate::power::standard::StandardPower;
@@ -18,7 +18,10 @@ use crate::power::support::power_state_from_supplies;
 pub(crate) struct LiteOnPowerShelfPower;
 
 #[async_trait]
-impl<B: Bmc> Power<B> for LiteOnPowerShelfPower {
+impl<B: Bmc> Power<B> for LiteOnPowerShelfPower
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         &StandardPower
     }

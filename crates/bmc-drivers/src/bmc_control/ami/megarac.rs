@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::ResetType;
 
 use crate::bmc_control::standard::{self, StandardBmcControl};
@@ -16,7 +16,10 @@ pub(crate) struct MegaRacBmcControl;
 const MAX_NTP_SERVERS: usize = 2;
 
 #[async_trait]
-impl<B: Bmc> BmcControl<B> for MegaRacBmcControl {
+impl<B: Bmc> BmcControl<B> for MegaRacBmcControl
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn BmcControl<B> {
         &StandardBmcControl
     }

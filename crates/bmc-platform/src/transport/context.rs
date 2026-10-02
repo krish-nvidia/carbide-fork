@@ -16,11 +16,10 @@
  */
 
 use nv_redfish::computer_system::ComputerSystem;
-use nv_redfish::core::{Action, EntityTypeRef, ModificationResponse, ODataETag, ODataId};
+use nv_redfish::core::Action;
 use nv_redfish::manager::Manager;
 use nv_redfish::{Bmc, Error as RedfishError, ServiceRoot};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::{ClassifyBmcError, EtagMode, IpmiOps};
 use crate::{DriverOutcome, PlatformError, PlatformIdentity};
@@ -30,8 +29,7 @@ use crate::{DriverOutcome, PlatformError, PlatformIdentity};
 /// `nv-redfish` is the only Redfish transport: drivers navigate through the
 /// typed `ServiceRoot` wrappers and reach OEM resources through the same
 /// authenticated `Bmc`. The ComputerSystem and Manager that exploration
-/// selected are resolved once here, and PATCH requests go through
-/// [`OpCx::patch`] so the BMC's [`EtagMode`] is applied in one place.
+/// selected are resolved once here.
 pub struct OpCx<'a, B: Bmc> {
     bmc: &'a B,
     service_root: &'a ServiceRoot<B>,
@@ -153,45 +151,6 @@ impl<'a, B: Bmc> OpCx<'a, B> {
         PlatformError::from_redfish_with(error, self.classify)
     }
 
-    /// Patches a fetched resource with its ETag under the BMC's [`EtagMode`].
-    pub async fn patch<R, T>(&self, resource: &R, body: &T) -> Result<DriverOutcome, PlatformError>
-    where
-        R: EntityTypeRef,
-        T: Serialize + Send + Sync,
-    {
-        self.patch_id(resource.odata_id(), resource.etag(), body)
-            .await
-            .map(DriverOutcome::from)
-    }
-
-    /// Patches `id` and returns the raw response for callers that must
-    /// distinguish an entity from a task.
-    ///
-    /// `etag` is the resource's reported ETag; `None` is for resources that
-    /// were never fetched, in which case the transport sends `If-Match: *`.
-    pub async fn patch_id<T>(
-        &self,
-        id: &ODataId,
-        etag: Option<&ODataETag>,
-        body: &T,
-    ) -> Result<ModificationResponse<Value>, PlatformError>
-    where
-        T: Serialize + Send + Sync,
-    {
-        let wildcard;
-        let etag = match self.etag_mode {
-            EtagMode::Resource => etag,
-            EtagMode::Wildcard => {
-                wildcard = ODataETag::from("*".to_string());
-                Some(&wildcard)
-            }
-        };
-        self.bmc
-            .update::<_, Value>(id, etag, body)
-            .await
-            .map_err(|error| self.map_bmc_error(error))
-    }
-
     /// Runs an advertised Redfish action with `params`.
     ///
     /// The transport resolves the action target the same way `nv-redfish`
@@ -209,30 +168,6 @@ impl<'a, B: Bmc> OpCx<'a, B> {
             .run(self.bmc, params)
             .await
             .map(DriverOutcome::from)
-            .map_err(|error| self.map_bmc_error(error))
-    }
-
-    /// Posts `body` to `id`, for OEM actions and collection inserts.
-    pub async fn post<T>(&self, id: &ODataId, body: &T) -> Result<DriverOutcome, PlatformError>
-    where
-        T: Serialize + Send + Sync,
-    {
-        self.post_response(id, body).await.map(DriverOutcome::from)
-    }
-
-    /// Posts `body` to `id` and returns the raw response, for callers that
-    /// interpret the task location themselves.
-    pub async fn post_response<T>(
-        &self,
-        id: &ODataId,
-        body: &T,
-    ) -> Result<ModificationResponse<Value>, PlatformError>
-    where
-        T: Serialize + Send + Sync,
-    {
-        self.bmc
-            .create::<_, Value>(id, body)
-            .await
             .map_err(|error| self.map_bmc_error(error))
     }
 }

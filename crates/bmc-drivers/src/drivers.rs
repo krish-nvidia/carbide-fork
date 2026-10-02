@@ -18,7 +18,7 @@ use bmc_platform::{
     Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, Console, Dpu, Firmware,
     Lockdown, Power, SecureBoot, Storage,
 };
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use thiserror::Error;
 
 use crate::selection::{CapabilitySelection, DriverMap, Rules};
@@ -96,7 +96,10 @@ macro_rules! drivers {
             }
         }
 
-        impl<B: Bmc + 'static> Catalog<B> for Drivers {
+        impl<B: Bmc + 'static> Catalog<B> for Drivers
+        where
+            B::Error: ActionError,
+        {
             $(
                 fn $accessor(
                     &self,

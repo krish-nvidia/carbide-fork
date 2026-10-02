@@ -14,7 +14,7 @@ use crate::console::support::{
     AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, optional_attr, spec_error,
 };
 use crate::dell;
-use crate::resources::patch_bios_settings;
+use crate::resources::{bios_update, update_bios_settings};
 
 /// Dell iDRAC console driver.
 ///
@@ -87,7 +87,7 @@ impl<B: Bmc> Console<B> for IdracConsole {
         if attrs.contains_key("RedirAfterBoot") {
             payload["RedirAfterBoot"] = "Enabled".into();
         }
-        let bios_outcome = patch_bios_settings(cx, &json!({"Attributes": payload}))
+        let bios_outcome = update_bios_settings(cx, &bios_update(payload)?)
             .await
             .and_then(|response| dell::job_outcome(cx, response))?;
         let manager_outcome = dell::patch_manager_attributes(

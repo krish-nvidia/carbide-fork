@@ -26,7 +26,8 @@ use bmc_platform::{
     PlatformError,
 };
 use nv_redfish::Bmc;
-use nv_redfish::core::ODataId;
+use nv_redfish::core::{EntityTypeRef, ODataId};
+use nv_redfish::oem::dell::schema::dell_job::{DellJob, JobState};
 use nv_redfish::schema::task::{Task, TaskState};
 use serde::Deserialize;
 use thiserror::Error;
@@ -80,29 +81,6 @@ pub struct Executor<'a, B: Bmc + 'static> {
     remaining_actions: AtomicU32,
 }
 
-/// A vendor job-service entry. Today only Dell iDRAC produces
-/// [`OperationReference::VendorJob`], and its entries report `JobState`
-/// rather than a Redfish `TaskState`; a second vendor must extend this
-/// vocabulary. A body without `JobState` is an invalid response, not a
-/// running job.
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct VendorJob {
-    job_state: JobState,
-    message: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-enum JobState {
-    Completed,
-    Failed,
-    CompletedWithErrors,
-    RebootFailed,
-    Scheduled,
-    #[serde(other)]
-    Running,
-}
-
 /// The message of a `Scheduled` iDRAC job that will never start.
 const JOB_INITIALIZATION_FAILURE: &str = "Job processing initialization failure.";
 
@@ -125,15 +103,27 @@ fn task_state(state: Option<TaskState>) -> WorkState {
     }
 }
 
-fn job_state(job: &VendorJob) -> WorkState {
-    match job.job_state {
+/// The state of a vendor job. Today only Dell iDRAC produces
+/// [`OperationReference::VendorJob`]; a job that reports no `JobState` is an
+/// invalid response, not a running job.
+fn job_state(job: &DellJob) -> Result<WorkState, PlatformError> {
+    let state = job
+        .job_state
+        .flatten()
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: format!("Dell job {} reports no JobState", job.id),
+        })?;
+    let message = job.message.as_ref().and_then(Option::as_deref);
+    Ok(match state {
         JobState::Completed => WorkState::Done,
-        JobState::Scheduled if job.message.as_deref() == Some(JOB_INITIALIZATION_FAILURE) => {
+        JobState::Scheduled if message == Some(JOB_INITIALIZATION_FAILURE) => {
             WorkState::Failed("ScheduledWithErrors".to_string())
         }
-        JobState::Scheduled | JobState::Running => WorkState::Running,
-        failed => WorkState::Failed(format!("{failed:?}")),
-    }
+        failed @ (JobState::Failed | JobState::CompletedWithErrors | JobState::RebootFailed) => {
+            WorkState::Failed(format!("{failed:?}"))
+        }
+        _ => WorkState::Running,
+    })
 }
 
 impl<'a, B: Bmc + 'static> Executor<'a, B>
@@ -224,11 +214,10 @@ where
         loop {
             let state = match reference {
                 OperationReference::RedfishTask { uri, .. } => {
-                    task_state(self.get::<Task>(uri).await?.task_state)
+                    task_state(self.get::<Fetched<Task>>(uri).await?.task_state)
                 }
                 OperationReference::VendorJob { uri, .. } => {
-                    let job = self.get::<VendorJob>(uri).await?;
-                    job_state(&job)
+                    job_state(self.get::<DellJob>(uri).await?.as_ref())?
                 }
             };
             match state {
@@ -250,13 +239,13 @@ where
         }
     }
 
-    async fn get<T>(&self, uri: &ODataId) -> Result<Arc<Fetched<T>>, ExecuteError>
+    async fn get<T>(&self, uri: &ODataId) -> Result<Arc<T>, ExecuteError>
     where
-        T: for<'de> Deserialize<'de> + Send + Sync + 'static,
+        T: EntityTypeRef + for<'de> Deserialize<'de> + Send + Sync + 'static,
     {
         self.bmc
             .bmc()
-            .get::<Fetched<T>>(uri)
+            .get::<T>(uri)
             .await
             .map_err(|error| error.classify().into())
     }

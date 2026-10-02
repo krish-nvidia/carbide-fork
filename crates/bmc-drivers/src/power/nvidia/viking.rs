@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::ResetType;
 
 use crate::power::standard::StandardPower;
@@ -16,7 +16,10 @@ use crate::power::support::ipmi_restart;
 pub(crate) struct VikingPower;
 
 #[async_trait]
-impl<B: Bmc> Power<B> for VikingPower {
+impl<B: Bmc> Power<B> for VikingPower
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Power<B> {
         &StandardPower
     }

@@ -1101,8 +1101,10 @@ impl Bmc for BmcClient {
         &self,
         uri: &ODataId,
     ) -> Result<ModificationResponse<R>, Self::Error> {
-        self.read_with_auth_retry(|| async { self.inner.poll(uri).await.map_err(HealthError::from) })
-            .await
+        self.read_with_auth_retry(|| async {
+            self.inner.poll(uri).await.map_err(HealthError::from)
+        })
+        .await
     }
 
     async fn create<V: Send + Sync + Serialize, R: Send + Sync + for<'de> Deserialize<'de>>(

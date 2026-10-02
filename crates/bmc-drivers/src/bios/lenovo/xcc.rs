@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::standard::{self, StandardBios};
 
@@ -15,7 +15,10 @@ pub(crate) struct XccBios;
 const UEFI_PASSWORD_NAME: &str = "UefiAdminPassword";
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for XccBios {
+impl<B: Bmc> Bios<B> for XccBios
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
     }

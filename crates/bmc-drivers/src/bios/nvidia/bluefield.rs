@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
 use crate::bios::standard::{StandardBios, differences};
@@ -33,7 +33,10 @@ async fn set_password_attributes<B: Bmc>(
 }
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for BlueFieldBios {
+impl<B: Bmc> Bios<B> for BlueFieldBios
+where
+    B::Error: ActionError,
+{
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
     }
