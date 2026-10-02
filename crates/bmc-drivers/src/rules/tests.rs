@@ -4,7 +4,8 @@
  */
 
 use Capability::{
-    Accounts, Bios, BmcControl, BootOrder, Console, Dpu, Firmware, Lockdown, Power, SecureBoot,
+    Accounts, Attestation, Bios, BmcControl, BootOrder, Console, Dpu, Firmware, Lockdown, Power,
+    SecureBoot,
 };
 use bmc_platform::{
     ChassisIdentity, ManagerIdentity, PlatformIdentity, ServiceRootIdentity, SystemIdentity,
@@ -318,6 +319,7 @@ fn narrower_identity_outranks_broader_rules() {
             expect: vec![
                 (Lockdown, driver(LenovoGb300Lockdown)),
                 (Bios, driver(LenovoGb300Bios)),
+                (Attestation, driver(NvidiaHgxAttestation)),
             ],
         },
         Case {

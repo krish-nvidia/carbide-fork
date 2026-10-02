@@ -300,7 +300,8 @@ fn built_ins() -> Vec<Rule> {
     );
 
     // Lenovo GB300 trays run AMI firmware; the GB300 model is on the GPU
-    // baseboard, not the selected Lenovo host system.
+    // baseboard, not the selected Lenovo host system. The baseboard's GPUs
+    // attest through HGX ComponentIntegrity.
     rules.push(
         Rule::new(
             "lenovo-gb300",
@@ -310,7 +311,12 @@ fn built_ins() -> Vec<Rule> {
                 Match::contains(IdentityField::ChassisModel, "GB300"),
             ],
         )
-        .drivers([LenovoGb300Bios, LenovoGb300Lockdown, LenovoGb300Console]),
+        .drivers([
+            LenovoGb300Bios,
+            LenovoGb300Lockdown,
+            LenovoGb300Console,
+            NvidiaHgxAttestation,
+        ]),
     );
 
     // DGX Viking runs AMI firmware and identifies itself by its system and

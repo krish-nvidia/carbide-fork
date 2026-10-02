@@ -30,6 +30,7 @@ nv-redfish = { features = [
     "accounts",
     "bmc-http",
     "boot-options",
+    "component-integrity",
     "computer-systems",
     "managers",
     "secure-boot",

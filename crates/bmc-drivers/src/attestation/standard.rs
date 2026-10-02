@@ -9,15 +9,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bmc_platform::{
-    Attestation, AttestationEvidence, CaCertificate, ComponentIntegritySummary, EvidenceProgress,
-    OpCx, PendingEvidence, PlatformError,
-};
+use bmc_platform::{Attestation, EvidenceProgress, OpCx, OperationReference, PlatformError};
+use nv_redfish::Error as RedfishError;
 use nv_redfish::component_integrity::{ComponentIntegrity, SpdmGetSignedMeasurementsResponse};
-use nv_redfish::core::{AsyncTask, Bmc};
+use nv_redfish::core::action::ActionTarget;
+use nv_redfish::core::{Action, AsyncTask, Bmc};
+use nv_redfish::schema::certificate::Certificate;
+use nv_redfish::schema::component_integrity::{
+    ComponentIntegrity as ComponentIntegritySchema,
+    ComponentIntegritySPDMGetSignedMeasurementsAction,
+};
 use nv_redfish::schema::software_inventory::SoftwareInventory;
 use nv_redfish::task_service::AsyncActionResult;
-use serde::Serialize;
 
 /// Standard ComponentIntegrity attestation.
 pub(crate) struct StandardAttestation;
@@ -31,23 +34,12 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
     async fn components(
         &self,
         cx: &OpCx<'_, B>,
-    ) -> Result<Vec<ComponentIntegritySummary>, PlatformError> {
-        components(cx)
+    ) -> Result<Vec<Arc<ComponentIntegritySchema>>, PlatformError> {
+        Ok(components(cx)
             .await?
             .iter()
-            .map(|component| {
-                let raw = component.raw();
-                Ok(ComponentIntegritySummary {
-                    id: raw.id.clone(),
-                    name: raw.name.clone(),
-                    enabled: raw
-                        .component_integrity_enabled
-                        .ok_or_else(|| missing(&raw.id, "ComponentIntegrityEnabled"))?,
-                    component_type: wire_name(&raw.component_integrity_type)?,
-                    component_type_version: raw.component_integrity_type_version.clone(),
-                })
-            })
-            .collect()
+            .map(ComponentIntegrity::raw)
+            .collect())
     }
 
     /// Redfish defines no relationship between a component and its firmware
@@ -64,48 +56,14 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
-    ) -> Result<CaCertificate, PlatformError> {
-        let certificate = component(cx, component_id)
+    ) -> Result<Arc<Certificate>, PlatformError> {
+        Ok(component(cx, component_id)
             .await?
             .component_certificate()
             .await
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?
-            .raw();
-        let slot_id = certificate
-            .spdm
-            .as_ref()
-            .and_then(|spdm| spdm.slot_id.flatten())
-            .ok_or_else(|| missing(&certificate.id, "SPDM.SlotId"))?;
-        Ok(CaCertificate {
-            certificate_string: certificate
-                .certificate_string
-                .clone()
-                .flatten()
-                .ok_or_else(|| missing(&certificate.id, "CertificateString"))?,
-            certificate_type: wire_name(
-                &certificate
-                    .certificate_type
-                    .flatten()
-                    .ok_or_else(|| missing(&certificate.id, "CertificateType"))?,
-            )?,
-            certificate_usage_types: certificate
-                .certificate_usage_types
-                .clone()
-                .flatten()
-                .ok_or_else(|| missing(&certificate.id, "CertificateUsageTypes"))?
-                .iter()
-                .map(wire_name)
-                .collect::<Result<_, _>>()?,
-            id: certificate.id.clone(),
-            name: certificate.name.clone(),
-            slot_id: u16::try_from(slot_id).map_err(|_| PlatformError::InvalidResponse {
-                message: format!(
-                    "certificate {} reports SPDM slot {slot_id} out of range",
-                    certificate.id
-                ),
-            })?,
-        })
+            .raw())
     }
 
     /// Requests signed measurements, returning them when the BMC answers at
@@ -130,22 +88,21 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
     async fn poll_evidence(
         &self,
         cx: &OpCx<'_, B>,
-        component_id: &str,
-        pending: &PendingEvidence,
+        pending: &OperationReference,
     ) -> Result<EvidenceProgress, PlatformError> {
-        let component = component(cx, component_id).await?;
-        let raw = component.raw();
-        let action = raw
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.spdm_get_signed_measurements.as_ref())
-            .ok_or(PlatformError::Unsupported)?;
         let task = AsyncTask {
-            location: pending.uri.clone().into(),
-            retry_after: pending.retry_after_seconds.map(Duration::from_secs),
+            location: pending.uri().clone().into(),
+            retry_after: pending.retry_after_seconds().map(Duration::from_secs),
         };
-        advance(cx, AsyncActionResult::resume(action, task)).await
+        advance(cx, AsyncActionResult::resume(&signed_measurements(), task)).await
     }
+}
+
+/// The signed-measurements action, typed for [`AsyncActionResult::resume`],
+/// which reads only the action's types and never its target.
+fn signed_measurements()
+-> Action<ComponentIntegritySPDMGetSignedMeasurementsAction, SpdmGetSignedMeasurementsResponse> {
+    Action::new(ActionTarget::new(String::new()))
 }
 
 async fn components<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Vec<ComponentIntegrity<B>>, PlatformError> {
@@ -177,47 +134,26 @@ async fn advance<B: Bmc>(
     cx: &OpCx<'_, B>,
     mut result: AsyncActionResult<SpdmGetSignedMeasurementsResponse>,
 ) -> Result<EvidenceProgress, PlatformError> {
-    match result
-        .poll_result(cx.bmc())
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-    {
-        Some(measurements) => Ok(EvidenceProgress::Ready(AttestationEvidence {
-            hashing_algorithm: measurements.hashing_algorithm,
-            signed_measurements: measurements.signed_measurements,
-            signing_algorithm: measurements.signing_algorithm,
-            version: measurements.version,
-        })),
-        None => result
+    match result.poll_result(cx.bmc()).await {
+        Ok(Some(measurements)) => Ok(EvidenceProgress::Ready(measurements)),
+        Ok(None) => result
             .pending_task()
             .map(|task| EvidenceProgress::Pending(pending(task)))
             .ok_or_else(|| PlatformError::InvalidResponse {
                 message: "signed-measurements request reported neither a result nor a task"
                     .to_string(),
             }),
+        Err(RedfishError::TaskFailed { state, messages }) => {
+            Ok(EvidenceProgress::Failed { state, messages })
+        }
+        Err(error) => Err(cx.map_redfish_error(error)),
     }
 }
 
-fn pending(task: &AsyncTask) -> PendingEvidence {
-    PendingEvidence {
+fn pending(task: &AsyncTask) -> OperationReference {
+    OperationReference::RedfishTask {
         uri: task.location.0.clone(),
         retry_after_seconds: task.retry_after.map(|delay| delay.as_secs()),
-    }
-}
-
-/// The Redfish spelling of a schema enum value, such as `SPDM` or `PEM`.
-fn wire_name(value: &impl Serialize) -> Result<String, PlatformError> {
-    match serde_json::to_value(value) {
-        Ok(serde_json::Value::String(name)) => Ok(name),
-        _ => Err(PlatformError::InvalidResponse {
-            message: "schema enum value has no string form".to_string(),
-        }),
-    }
-}
-
-fn missing(resource: &str, property: &str) -> PlatformError {
-    PlatformError::InvalidResponse {
-        message: format!("{resource} does not report {property}"),
     }
 }
 
@@ -305,23 +241,27 @@ mod tests {
             .request_evidence(&cx, "HGX_IRoT_GPU_0", &[0xab, 0xcd])
             .await
             .expect("request accepted");
-        let pending = PendingEvidence {
+        let pending = OperationReference::RedfishTask {
             uri: TASK.to_string().into(),
             retry_after_seconds: None,
         };
-        assert_eq!(progress, EvidenceProgress::Pending(pending.clone()));
+        assert!(
+            matches!(&progress, EvidenceProgress::Pending(reference) if *reference == pending),
+            "expected the task to poll, got {progress:?}"
+        );
         assert_eq!(body(&bmc.writes()[0]), json!({"Nonce": "abcd"}));
 
-        assert_eq!(
-            StandardAttestation
-                .poll_evidence(&cx, "HGX_IRoT_GPU_0", &pending)
-                .await,
-            Ok(EvidenceProgress::Ready(AttestationEvidence {
-                hashing_algorithm: "TPM_ALG_SHA_384".to_string(),
-                signed_measurements: "bWVhc3VyZW1lbnRz".to_string(),
-                signing_algorithm: "TPM_ALG_ECDSA_ECC_NIST_P384".to_string(),
-                version: "1.1".to_string(),
-            }))
-        );
+        match StandardAttestation.poll_evidence(&cx, &pending).await {
+            Ok(EvidenceProgress::Ready(measurements)) => {
+                assert_eq!(measurements.hashing_algorithm, "TPM_ALG_SHA_384");
+                assert_eq!(measurements.signed_measurements, "bWVhc3VyZW1lbnRz");
+                assert_eq!(
+                    measurements.signing_algorithm,
+                    "TPM_ALG_ECDSA_ECC_NIST_P384"
+                );
+                assert_eq!(measurements.version, "1.1");
+            }
+            other => panic!("expected measurements, got {other:?}"),
+        }
     }
 }

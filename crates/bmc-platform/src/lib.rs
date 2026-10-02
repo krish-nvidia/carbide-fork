@@ -34,13 +34,12 @@ mod selection;
 mod transport;
 
 pub use capabilities::{
-    Accounts, Attestation, AttestationEvidence, Bios, BiosDiff, BiosSettings, BiosStatus,
-    BmcControl, BootInterfaceSelector, BootOrder, BootOrderStatus, CaCertificate,
-    ComponentIntegritySummary, Console, ConsoleFallback, ConsoleSpec, ConsoleSpecError,
-    ConsoleState, ConsoleStatus, Dpu, DpuStatus, EscapeSeq, EvidenceProgress, Firmware,
-    FirmwareComponent, FirmwareUpload, HostPrivilegeLevel, Lockdown, LockdownDesiredState,
-    LockdownScope, LockdownState, LockdownStatus, NicMode, NonEmptyBytes, NonEmptyBytesError,
-    PendingEvidence, Power, RshimState, SecureBoot, SecureBootStatus, SshShellSpec, Storage,
+    Accounts, Attestation, Bios, BiosDiff, BiosSettings, BiosStatus, BmcControl,
+    BootInterfaceSelector, BootOrder, BootOrderStatus, Console, ConsoleFallback, ConsoleSpec,
+    ConsoleSpecError, ConsoleState, ConsoleStatus, Dpu, DpuStatus, EscapeSeq, EvidenceProgress,
+    Firmware, FirmwareComponent, FirmwareUpload, HostPrivilegeLevel, Lockdown,
+    LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus, NicMode, NonEmptyBytes,
+    NonEmptyBytesError, Power, RshimState, SecureBoot, SecureBootStatus, SshShellSpec, Storage,
 };
 pub use error::{AuthError, PlatformError};
 pub use identity::{

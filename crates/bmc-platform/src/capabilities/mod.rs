@@ -29,10 +29,7 @@ mod secure_boot;
 mod storage;
 
 pub use accounts::Accounts;
-pub use attestation::{
-    Attestation, AttestationEvidence, CaCertificate, ComponentIntegritySummary, EvidenceProgress,
-    PendingEvidence,
-};
+pub use attestation::{Attestation, EvidenceProgress};
 pub use bios::{Bios, BiosDiff, BiosSettings, BiosStatus};
 pub use bmc_control::BmcControl;
 pub use boot_order::{BootInterfaceSelector, BootOrder, BootOrderStatus};

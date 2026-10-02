@@ -18,75 +18,30 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nv_redfish::core::{Bmc, ODataId};
+use nv_redfish::component_integrity::SpdmGetSignedMeasurementsResponse;
+use nv_redfish::core::Bmc;
+use nv_redfish::schema::certificate::Certificate;
+use nv_redfish::schema::component_integrity::ComponentIntegrity;
+use nv_redfish::schema::message::Message;
 use nv_redfish::schema::software_inventory::SoftwareInventory;
-use serde::{Deserialize, Serialize};
+use nv_redfish::schema::task::TaskState;
 
-use crate::{OpCx, PlatformError};
+use crate::{OpCx, OperationReference, PlatformError};
 
-/// One ComponentIntegrity resource as listed for attestation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ComponentIntegritySummary {
-    /// Redfish `ComponentIntegrity` resource id.
-    pub id: String,
-    pub name: String,
-    /// `ComponentIntegrityEnabled` as reported.
-    pub enabled: bool,
-    /// `ComponentIntegrityType`, for example `SPDM`.
-    pub component_type: String,
-    /// `ComponentIntegrityTypeVersion`, the protocol version string.
-    pub component_type_version: String,
-}
-
-/// The CA certificate a ComponentIntegrity responder authenticates with.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CaCertificate {
-    /// Certificate body in the encoding named by `certificate_type` (usually PEM).
-    pub certificate_string: String,
-    /// Redfish `CertificateType`, for example `PEM`.
-    pub certificate_type: String,
-    /// Redfish `CertificateUsageTypes`.
-    pub certificate_usage_types: Vec<String>,
-    /// Certificate resource id.
-    pub id: String,
-    pub name: String,
-    /// SPDM certificate slot the responder presented.
-    pub slot_id: u16,
-}
-
-/// Signed measurements retrieved for a component.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AttestationEvidence {
-    /// SPDM hashing algorithm name.
-    pub hashing_algorithm: String,
-    /// Base64 SPDM `MEASUREMENTS` response as returned by the BMC.
-    pub signed_measurements: String,
-    /// SPDM signing algorithm name.
-    pub signing_algorithm: String,
-    /// SPDM protocol version of the evidence.
-    pub version: String,
-}
-
-/// A signed-measurements request the BMC is still running.
-///
-/// Persist it between polls: the BMC can move the operation to a new URI.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PendingEvidence {
-    /// Task Monitor or Task the next poll reads.
-    pub uri: ODataId,
-    /// Poll interval the BMC suggested, if any.
-    pub retry_after_seconds: Option<u64>,
-}
-
-/// Signed measurements, or the request still producing them.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "details", rename_all = "snake_case")]
+/// Signed measurements, the request still producing them, or how it ended
+/// without them.
+#[derive(Debug)]
 pub enum EvidenceProgress {
     /// The measurements are available. A BMC can serve them from a URI shared
     /// between requests, so check them against the request nonce.
-    Ready(AttestationEvidence),
-    /// The BMC is still collecting; poll again with this request.
-    Pending(PendingEvidence),
+    Ready(SpdmGetSignedMeasurementsResponse),
+    /// The BMC is still collecting; persist this and poll again with it.
+    Pending(OperationReference),
+    /// The collection task ended without measurements; request them again.
+    Failed {
+        state: TaskState,
+        messages: Vec<Message>,
+    },
 }
 
 /// Collection of hardware attestation evidence.
@@ -105,7 +60,7 @@ pub trait Attestation<B: Bmc>: Send + Sync {
     async fn components(
         &self,
         cx: &OpCx<'_, B>,
-    ) -> Result<Vec<ComponentIntegritySummary>, PlatformError> {
+    ) -> Result<Vec<Arc<ComponentIntegrity>>, PlatformError> {
         self.standard().components(cx).await
     }
 
@@ -119,11 +74,12 @@ pub trait Attestation<B: Bmc>: Send + Sync {
             .await
     }
 
+    /// The certificate the component's SPDM responder authenticates with.
     async fn ca_certificate(
         &self,
         cx: &OpCx<'_, B>,
         component_id: &str,
-    ) -> Result<CaCertificate, PlatformError> {
+    ) -> Result<Arc<Certificate>, PlatformError> {
         self.standard().ca_certificate(cx, component_id).await
     }
 
@@ -143,11 +99,8 @@ pub trait Attestation<B: Bmc>: Send + Sync {
     async fn poll_evidence(
         &self,
         cx: &OpCx<'_, B>,
-        component_id: &str,
-        pending: &PendingEvidence,
+        pending: &OperationReference,
     ) -> Result<EvidenceProgress, PlatformError> {
-        self.standard()
-            .poll_evidence(cx, component_id, pending)
-            .await
+        self.standard().poll_evidence(cx, pending).await
     }
 }
