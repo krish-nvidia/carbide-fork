@@ -238,14 +238,9 @@ impl AxumRouterHttpClient {
                     status,
                     text: "202 Accepted without Location header".to_string(),
                 })?;
-            let retry_after = headers
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok())
-                .map(Duration::from_secs);
             return Ok(ModificationResponse::Task(AsyncTask {
                 location: ODataId::from(location.to_string()).into(),
-                retry_after,
+                retry_after: retry_after(&headers),
             }));
         }
         if bytes.is_empty() {
@@ -260,6 +255,14 @@ impl AxumRouterHttpClient {
             Err(error) => Err(Error::Json(error)),
         }
     }
+}
+
+fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 impl HttpClient for AxumRouterHttpClient {
@@ -287,6 +290,40 @@ impl HttpClient for AxumRouterHttpClient {
         }
         let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(Error::Json)?;
         serde_json::from_value(value).map_err(Error::Json)
+    }
+
+    /// Pending responses without `Location` keep the polled URI, and a `204`
+    /// naming a `Location` is read as a reference to it.
+    async fn poll<T>(
+        &self,
+        url: Url,
+        credentials: &BmcCredentials,
+        custom_headers: &HeaderMap,
+    ) -> Result<ModificationResponse<T>, Self::Error>
+    where
+        T: DeserializeOwned + Send + Sync,
+    {
+        let request = Self::request_builder(Method::GET, &url, credentials, custom_headers)
+            .body(Body::empty())
+            .map_err(Error::Http)?;
+        let response = self.call(request).await?;
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        match response.status() {
+            StatusCode::ACCEPTED => Ok(ModificationResponse::Task(AsyncTask {
+                location: ODataId::from(location.unwrap_or_else(|| url.path().to_string())).into(),
+                retry_after: retry_after(response.headers()),
+            })),
+            StatusCode::NO_CONTENT => location.map_or(Ok(ModificationResponse::Empty), |location| {
+                serde_json::from_value(serde_json::json!({"@odata.id": location}))
+                    .map(ModificationResponse::Entity)
+                    .map_err(Error::Json)
+            }),
+            _ => Self::modification_response(url, response).await,
+        }
     }
 
     async fn post<B, T>(

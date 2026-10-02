@@ -818,6 +818,22 @@ impl HttpClient for InstrumentedHttpClient {
         result
     }
 
+    async fn poll<T>(
+        &self,
+        url: Url,
+        credentials: &nv_redfish::bmc_http::BmcCredentials,
+        custom_headers: &HeaderMap,
+    ) -> Result<ModificationResponse<T>, Self::Error>
+    where
+        T: DeserializeOwned + Send + Sync,
+    {
+        let started = Instant::now();
+        let request_url = url.clone();
+        let result = self.inner.poll::<T>(url, credentials, custom_headers).await;
+        self.observe_modification_result("GET", &request_url, &result, "200", started.elapsed());
+        result
+    }
+
     async fn post<B, T>(
         &self,
         url: Url,
@@ -1079,6 +1095,14 @@ impl Bmc for BmcClient {
                 .map_err(HealthError::from)
         })
         .await
+    }
+
+    async fn poll<R: Send + Sync + Sized + for<'de> Deserialize<'de>>(
+        &self,
+        uri: &ODataId,
+    ) -> Result<ModificationResponse<R>, Self::Error> {
+        self.read_with_auth_retry(|| async { self.inner.poll(uri).await.map_err(HealthError::from) })
+            .await
     }
 
     async fn create<V: Send + Sync + Serialize, R: Send + Sync + for<'de> Deserialize<'de>>(
