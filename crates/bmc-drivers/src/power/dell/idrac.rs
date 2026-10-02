@@ -11,6 +11,7 @@ use serde_json::json;
 
 use crate::dell;
 use crate::power::standard::{self, StandardPower};
+use crate::resources::selected_bios;
 
 /// Dell iDRAC host-power behavior.
 ///
@@ -18,10 +19,19 @@ use crate::power::standard::{self, StandardPower};
 /// the next reset, so the follow-up reset is what actually performs the cycle.
 pub(crate) struct IdracPower;
 
+/// Refused while the BIOS still restricts UEFI variable access, which a host
+/// lockdown leaves in place until the next reboot after unlocking.
 async fn full_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
 where
     B::Error: ActionError,
 {
+    let uefi_variable_access = selected_bios(cx)
+        .await?
+        .attribute("UefiVariableAccess")
+        .and_then(|value| value.str_value().map(str::to_owned));
+    if uefi_variable_access.as_deref() == Some("Controlled") {
+        return Err(PlatformError::LockedDown);
+    }
     let staged =
         dell::stage_bios_attributes(cx, json!({"PowerCycleRequest": "FullPowerCycle"})).await?;
     let follow_up = match standard::state(cx)? {

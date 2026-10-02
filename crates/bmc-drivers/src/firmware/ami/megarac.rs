@@ -4,15 +4,17 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, OemMultipartPart};
+use bmc_platform::{DriverOutcome, Firmware, OpCx, OperationReference, PlatformError};
+use nv_redfish::core::{Bmc, ModificationResponse, ODataId, OemMultipartPart};
 use nv_redfish::oem::ami::update_service::{
     AmiUpdateServiceUpdate, AmiUpdateServiceUpdateExt, ImageType, OemParametersUpdate,
     PreserveConfigurationUpdate, oem_parameters_part,
 };
+use nv_redfish::schema::message::Message;
 use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService, UpdateServiceUpdate};
+use serde::Deserialize;
 
-use crate::firmware::standard::{StandardFirmware, UploadRequest, update_service, upload};
+use crate::firmware::standard::{StandardFirmware, UploadRequest, update_service, upload_response};
 use crate::firmware::support::upload_uri;
 
 /// The multipart part AMI reads the image type from.
@@ -27,6 +29,47 @@ const OEM_PARAMETERS_PART: &str = "OemParameters";
 pub(crate) struct MegaRacFirmware;
 
 const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/upload";
+
+/// The message announcing the task an upload started.
+const TASK_STARTED: &str = "Task.1.0.New";
+
+/// An upload answered without `202 Accepted`: the started task is announced
+/// in `Messages`, or the body is the task itself.
+#[derive(Deserialize)]
+struct UploadResponse {
+    #[serde(rename = "@odata.id")]
+    odata_id: Option<ODataId>,
+    #[serde(rename = "@odata.type")]
+    odata_type: Option<String>,
+    #[serde(rename = "Messages", default)]
+    messages: Vec<Message>,
+}
+
+/// The task an upload started, or completion when it started none.
+fn upload_outcome(response: ModificationResponse<UploadResponse>) -> DriverOutcome {
+    let ModificationResponse::Entity(body) = response else {
+        return DriverOutcome::from(response);
+    };
+    let announced = body.messages.iter().find_map(|message| {
+        (message.message_id == TASK_STARTED)
+            .then(|| message.message_args.as_ref()?.first().cloned())
+            .flatten()
+    });
+    let task = body
+        .odata_type
+        .as_deref()
+        .is_some_and(|odata_type| odata_type.starts_with("#Task."));
+    match announced
+        .map(ODataId::from)
+        .or(body.odata_id.filter(|_| task))
+    {
+        Some(uri) => DriverOutcome::accepted(OperationReference::RedfishTask {
+            uri,
+            retry_after_seconds: None,
+        }),
+        None => DriverOutcome::complete(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Image {
@@ -128,13 +171,38 @@ impl<B: Bmc> Firmware<B> for MegaRacFirmware {
             preserve_bmc_configuration(cx, &service).await?;
         }
         let uri = upload_uri(cx, MULTIPART_UPLOAD).await?;
-        upload(cx, request, &uri).await
+        upload_response(cx, request, &uri).await.map(upload_outcome)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    #[test]
+    fn an_upload_answered_with_a_task_message_is_tracked_as_that_task() {
+        let entity = |body| {
+            ModificationResponse::Entity(
+                serde_json::from_value::<UploadResponse>(body).expect("upload response"),
+            )
+        };
+        assert_eq!(
+            upload_outcome(entity(json!({"Messages": [{
+                "MessageId": TASK_STARTED,
+                "MessageArgs": ["/redfish/v1/TaskService/Tasks/3"],
+            }]}))),
+            DriverOutcome::accepted(OperationReference::RedfishTask {
+                uri: "/redfish/v1/TaskService/Tasks/3".to_string().into(),
+                retry_after_seconds: None,
+            })
+        );
+        assert_eq!(
+            upload_outcome(entity(json!({"Messages": []}))),
+            DriverOutcome::complete()
+        );
+    }
 
     #[test]
     fn only_bios_and_paired_bmc_image_targets_are_accepted() {

@@ -20,6 +20,6 @@ pub(crate) use delta::DeltaPowerShelfPower;
 pub(crate) use hpe::IloPower;
 pub(crate) use lenovo::{Sr650V4Power, Sr675V3OvxPower, XccPower};
 pub(crate) use liteon::LiteOnPowerShelfPower;
-pub(crate) use nvidia::{OpenBmcPower, VikingPower};
+pub(crate) use nvidia::{Gh200Power, OpenBmcPower, VikingPower};
 pub(crate) use standard::StandardPower;
 pub(crate) use supermicro::SmcPower;

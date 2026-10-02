@@ -5,20 +5,56 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
-    PlatformError,
+    DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
+    OpCx, PlatformError,
 };
 use nv_redfish::core::Bmc;
 use serde_json::{Map, Value};
+use version_compare::Cmp;
 
-use crate::lockdown::{signal, state_from_signals, status};
+use crate::lockdown::{signal, state_from_signals};
 use crate::resources::{patch_bios_attributes, selected_bios};
 
 /// NVIDIA Viking lockdown driver; both host and BMC lockdown are BIOS attributes.
 ///
 /// Firmware generations differ in both the KCS attribute name and its value
-/// vocabulary, so the write mirrors whichever encoding the BIOS reports.
+/// vocabulary, so the write mirrors whichever encoding the BIOS reports. A
+/// denied KCS alone reports lockdown as enabled; unlocked also needs
+/// `RedfishEnable` enabled.
 pub(crate) struct VikingLockdown;
+
+/// Lockdown needs at least these firmware inventory versions.
+const MINIMUM_LOCKDOWN_FIRMWARE: [(&str, &str); 2] =
+    [("HostBIOS_0", "1.01.03"), ("HostBMC_0", "23.11.09")];
+
+/// Fails with `Unsupported` when the host BIOS or BMC firmware is older than
+/// lockdown needs or does not report a version.
+async fn require_lockdown_firmware<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), PlatformError> {
+    let inventories = cx
+        .service_root()
+        .update_service()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .firmware_inventories()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?;
+    for (id, minimum) in MINIMUM_LOCKDOWN_FIRMWARE {
+        let version = inventories
+            .iter()
+            .map(|inventory| inventory.raw())
+            .find(|inventory| inventory.id == id)
+            .and_then(|inventory| inventory.version.clone().flatten());
+        let supported = version.as_deref().is_some_and(|version| {
+            version_compare::compare(version, minimum).is_ok_and(|order| order != Cmp::Lt)
+        });
+        if !supported {
+            return Err(PlatformError::Unsupported);
+        }
+    }
+    Ok(())
+}
 
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for VikingLockdown {
@@ -31,16 +67,25 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
         let redfish = bios
             .attribute("RedfishEnable")
             .and_then(|value| value.str_value().map(str::to_owned));
-        let host = state_from_signals(&[(
-            matches!(kcs.as_deref(), Some("Deny All" | "Disabled")),
-            matches!(kcs.as_deref(), Some("Allow All" | "Enabled")),
-        )]);
+        let kcs_locked = matches!(kcs.as_deref(), Some("Deny All" | "Disabled"));
+        let kcs_unlocked = matches!(kcs.as_deref(), Some("Allow All" | "Enabled"));
+        let host = state_from_signals(&[(kcs_locked, kcs_unlocked)]);
         let bmc = state_from_signals(&[signal(redfish.as_deref(), "Disabled", "Enabled")]);
-        Ok(status(
+        let aggregate = match (kcs.as_deref(), redfish.as_deref()) {
+            (None, None) => LockdownState::Disabled,
+            (None, Some(_)) | (Some(_), None) => LockdownState::Partial,
+            (Some(_), Some(_)) if kcs_locked => LockdownState::Enabled,
+            (Some(_), Some(redfish)) if kcs_unlocked && redfish == "Enabled" => {
+                LockdownState::Disabled
+            }
+            (Some(_), Some(_)) => LockdownState::Partial,
+        };
+        Ok(LockdownStatus {
+            aggregate,
+            message: format!("kcs_interface_disable={kcs:?}, redfish_enable={redfish:?}"),
             host,
             bmc,
-            format!("kcs_interface_disable={kcs:?}, redfish_enable={redfish:?}"),
-        ))
+        })
     }
 
     async fn set(
@@ -49,7 +94,14 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
         scope: LockdownScope,
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
+        // There is no separate system-lockdown switch to change.
+        if scope == LockdownScope::BmcSystemLockdown {
+            return Ok(DriverOutcome::complete());
+        }
         let enabled = desired == LockdownDesiredState::Enabled;
+        if enabled {
+            require_lockdown_firmware(cx).await?;
+        }
         let bios = selected_bios(cx).await?;
         let mut attributes = Map::new();
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
@@ -69,10 +121,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
             };
             attributes.insert(key.to_string(), kcs.into());
         }
-        if matches!(
-            scope,
-            LockdownScope::Bmc | LockdownScope::BmcSystemLockdown | LockdownScope::All
-        ) {
+        if matches!(scope, LockdownScope::Bmc | LockdownScope::All) {
             attributes.insert(
                 "RedfishEnable".to_string(),
                 (if enabled { "Disabled" } else { "Enabled" }).into(),

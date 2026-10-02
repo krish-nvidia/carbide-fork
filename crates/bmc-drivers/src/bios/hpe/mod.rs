@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-mod megarac;
+mod ilo;
 
-pub(in crate::console) use megarac::ATTRS as MEGARAC_ATTRS;
-pub(crate) use megarac::MegaRacConsole;
+pub(crate) use ilo::IloBios;

@@ -37,6 +37,8 @@ pub enum IdentityField {
     ManagerModel,
     /// Selected Manager firmware version.
     ManagerFirmware,
+    /// Selected Manager identifier.
+    ManagerId,
     /// Selected ComputerSystem identifier.
     SystemId,
     /// Selected ComputerSystem manufacturer.
@@ -238,6 +240,11 @@ fn field_values(identity: &PlatformIdentity, field: IdentityField) -> Vec<&str> 
                 .as_ref()
                 .and_then(|value| value.firmware.as_deref()),
         ),
+        IdentityField::ManagerId => identity
+            .manager
+            .as_ref()
+            .map(|value| vec![value.id.as_str()])
+            .unwrap_or_default(),
         IdentityField::SystemId => identity
             .system
             .as_ref()
@@ -320,6 +327,7 @@ const fn field_precedence(field: IdentityField) -> Option<Precedence> {
             Some(Precedence::BmcProductManager)
         }
         IdentityField::SystemId
+        | IdentityField::ManagerId
         | IdentityField::SystemModel
         | IdentityField::SystemSku
         | IdentityField::SystemPartNumber

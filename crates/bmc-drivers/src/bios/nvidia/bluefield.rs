@@ -15,7 +15,49 @@ use crate::resources::patch_bios_attributes;
 /// actions; both are write-only attributes on the pending settings. The
 /// pending settings list nothing once staged values take effect on the next
 /// DPU boot, so status is read from the current attributes.
+///
+/// BMC 24.10 dropped the spaces from some attribute names, so expected values
+/// are matched to whichever spelling the BIOS reports. An attribute missing
+/// under both spellings means the UEFI has not finished POST.
 pub(crate) struct BlueFieldBios;
+
+/// Attributes reported either without or with spaces, depending on firmware.
+const RENAMED: [(&str, &str); 2] = [
+    ("HostPrivilegeLevel", "Host Privilege Level"),
+    ("InternalCPUModel", "Internal CPU Model"),
+];
+
+/// `expected` with each renamed attribute under the spelling `current`
+/// reports. When `current` reports neither, the unspaced spelling is used
+/// unless `require_reported` makes that an error.
+fn reported_spellings(
+    current: &BiosSettings,
+    expected: &BiosSettings,
+    require_reported: bool,
+) -> Result<BiosSettings, PlatformError> {
+    let mut attributes = expected.attributes.clone();
+    for (unspaced, spaced) in RENAMED {
+        let Some(value) = attributes
+            .remove(unspaced)
+            .into_iter()
+            .chain(attributes.remove(spaced))
+            .next()
+        else {
+            continue;
+        };
+        let name = if current.attributes.contains_key(spaced) {
+            spaced
+        } else if current.attributes.contains_key(unspaced) || !require_reported {
+            unspaced
+        } else {
+            return Err(PlatformError::InvalidResponse {
+                message: format!("BlueField BIOS does not report {unspaced}"),
+            });
+        };
+        attributes.insert(name.to_string(), value);
+    }
+    Ok(BiosSettings { attributes })
+}
 
 async fn set_password_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
@@ -46,11 +88,23 @@ where
         cx: &OpCx<'_, B>,
         expected: &BiosSettings,
     ) -> Result<BiosStatus, PlatformError> {
-        let differences = differences(&self.current(cx).await?, expected);
+        let current = self.current(cx).await?;
+        let differences = differences(&current, &reported_spellings(&current, expected, true)?);
         Ok(BiosStatus {
             is_applied: differences.is_empty(),
             differences,
         })
+    }
+
+    async fn apply(
+        &self,
+        cx: &OpCx<'_, B>,
+        expected: &BiosSettings,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let current = self.current(cx).await?;
+        self.standard()
+            .apply(cx, &reported_spellings(&current, expected, false)?)
+            .await
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -121,7 +175,9 @@ mod tests {
         let expected = BiosSettings {
             attributes: BTreeMap::from([
                 ("HostPrivilegeLevel".to_string(), json!("Restricted")),
+                ("Host Privilege Level".to_string(), json!("Restricted")),
                 ("InternalCPUModel".to_string(), json!("Embedded")),
+                ("Internal CPU Model".to_string(), json!("Embedded")),
             ]),
         };
 

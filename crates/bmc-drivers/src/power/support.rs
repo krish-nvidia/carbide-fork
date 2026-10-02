@@ -20,25 +20,21 @@ pub(super) async fn ipmi_restart<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutco
         .map(|()| DriverOutcome::complete())
 }
 
-/// Aggregates per-supply states into one host state; mixed states are an error.
-pub(super) fn power_state_from_supplies(
-    states: &[Option<bool>],
-) -> Result<PowerState, PlatformError> {
+/// Aggregates per-supply states into one shelf state; `None` when there are no
+/// supplies or they disagree or do not report.
+pub(super) fn power_state_from_supplies(states: &[Option<bool>]) -> Option<PowerState> {
     if states.is_empty() {
-        return Err(PlatformError::NoContent);
-    }
-    if states.iter().all(|state| *state == Some(true)) {
-        Ok(PowerState::On)
+        None
+    } else if states.iter().all(|state| *state == Some(true)) {
+        Some(PowerState::On)
     } else if states.iter().all(|state| *state == Some(false)) {
-        Ok(PowerState::Off)
+        Some(PowerState::Off)
     } else {
-        Err(PlatformError::InvalidResponse {
-            message: format!("power supplies report mixed or missing states: {states:?}"),
-        })
+        None
     }
 }
 
-/// Every power supply of every chassis.
+/// The power supplies of the first chassis that has any.
 pub(super) async fn power_supplies<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<Vec<PowerSupply<B>>, PlatformError> {
@@ -51,14 +47,36 @@ pub(super) async fn power_supplies<B: Bmc>(
         .members()
         .await
         .map_err(|error| cx.map_redfish_error(error))?;
-    let mut supplies = Vec::new();
     for chassis in &chassis {
-        supplies.extend(
-            chassis
-                .power_supplies()
-                .await
-                .map_err(|error| cx.map_redfish_error(error))?,
+        let supplies = chassis
+            .power_supplies()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
+        if !supplies.is_empty() {
+            return Ok(supplies);
+        }
+    }
+    Ok(Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use carbide_test_support::value_scenarios;
+
+    use super::*;
+
+    #[test]
+    fn supplies_agree_on_a_state_or_report_it_unknown() {
+        value_scenarios!(run = |states: Vec<Option<bool>>| power_state_from_supplies(&states);
+            "agreeing supplies" {
+                vec![Some(true), Some(true)] => Some(PowerState::On),
+                vec![Some(false)] => Some(PowerState::Off),
+            }
+            "unknown" {
+                Vec::new() => None,
+                vec![Some(true), Some(false)] => None,
+                vec![Some(true), None] => None,
+            }
         );
     }
-    Ok(supplies)
 }

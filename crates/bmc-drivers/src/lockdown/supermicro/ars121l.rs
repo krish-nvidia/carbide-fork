@@ -44,7 +44,9 @@ impl<B: Bmc> Lockdown<B> for Ars121lLockdown {
             .first()
             .and_then(|value| value.interface_enabled());
 
-        let host = state_from_signals(&[kcs_signal(privilege)]);
+        // The host interface stays up while locked, so it only gates unlocking.
+        let host =
+            state_from_signals(&[kcs_signal(privilege), (true, host_interface == Some(true))]);
         let bmc = state_from_signals(&[signal(lockdown, true, false)]);
         Ok(status(
             host,

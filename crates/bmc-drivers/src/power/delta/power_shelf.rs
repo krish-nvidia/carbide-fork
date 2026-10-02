@@ -58,7 +58,7 @@ where
         &StandardPower
     }
 
-    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
+    async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
         let mut states = Vec::new();
         for supply in power_supplies(cx).await? {
             states.push(
@@ -68,7 +68,7 @@ where
                     .and_then(|delta| delta.power()),
             );
         }
-        power_state_from_supplies(&states)
+        Ok(power_state_from_supplies(&states))
     }
 
     async fn set(

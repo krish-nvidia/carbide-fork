@@ -23,8 +23,8 @@ where
         self
     }
 
-    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
-        state(cx)
+    async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
+        state(cx).map(Some)
     }
 
     /// Standard Redfish offers no AC power cycle.

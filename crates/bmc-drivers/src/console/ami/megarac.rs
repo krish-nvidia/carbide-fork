@@ -14,7 +14,7 @@ use crate::console::support::{
 /// AMI MegaRAC BIOS console attributes; the console transport is not identified.
 pub(crate) struct MegaRacConsole;
 
-const ATTRS: &[AttrExpectation] = &[
+pub(in crate::console) const ATTRS: &[AttrExpectation] = &[
     attr("TER001", &["Enabled"], &["Disabled"]),
     attr("TER010", &["Enabled"], &["Disabled"]),
     attr("TER06B", &["COM1"], &[]),

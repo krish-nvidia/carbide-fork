@@ -157,6 +157,7 @@ drivers! {
         LenovoSr675V3OvxPower = "lenovo-sr675-v3-ovx-power" => power::Sr675V3OvxPower,
         LenovoXccPower = "lenovo-xcc-power" => power::XccPower,
         LiteOnPowerShelfPower = "liteon-power-shelf-power" => power::LiteOnPowerShelfPower,
+        NvidiaGh200Power = "nvidia-gh200-power" => power::Gh200Power,
         NvidiaOpenBmcPower = "nvidia-openbmc-power" => power::OpenBmcPower,
         NvidiaVikingPower = "nvidia-viking-power" => power::VikingPower,
         SupermicroSmcPower = "supermicro-smc-power" => power::SmcPower,
@@ -170,9 +171,11 @@ drivers! {
     Bios as bios: Bios = bios::StandardBios {
         AmiMegaRacBios = "ami-megarac-bios" => bios::MegaRacBios,
         DellIdracBios = "dell-idrac-bios" => bios::IdracBios,
+        HpeIloBios = "hpe-ilo-bios" => bios::IloBios,
         LenovoXccBios = "lenovo-xcc-bios" => bios::XccBios,
         NvidiaBlueFieldBios = "nvidia-bluefield-bios" => bios::BlueFieldBios,
         NvidiaOpenBmcBios = "nvidia-openbmc-bios" => bios::OpenBmcBios,
+        NvidiaSwitchBios = "nvidia-switch-bios" => bios::SwitchBios,
         NvidiaVikingBios = "nvidia-viking-bios" => bios::VikingBios,
     }
     BootOrder as boot_order: BootOrder = boot_order::StandardBootOrder {
@@ -191,6 +194,7 @@ drivers! {
         LenovoAmiLockdown = "lenovo-ami-lockdown" => lockdown::LenovoAmiLockdown,
         LenovoGb300Lockdown = "lenovo-gb300-lockdown" => lockdown::Gb300Lockdown,
         LenovoXccLockdown = "lenovo-xcc-lockdown" => lockdown::XccLockdown,
+        NoopLockdown = "noop-lockdown" => lockdown::NoopLockdown,
         NvidiaOpenBmcLockdown = "nvidia-openbmc-lockdown" => lockdown::OpenBmcLockdown,
         NvidiaVikingLockdown = "nvidia-viking-lockdown" => lockdown::VikingLockdown,
         SupermicroArs121lLockdown = "supermicro-ars121l-lockdown" => lockdown::Ars121lLockdown,

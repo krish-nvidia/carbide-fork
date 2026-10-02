@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use bmc_platform::{BootOrder, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
-use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
+use nv_redfish::schema::computer_system::{BootSource, BootSourceOverrideEnabled, BootUpdate};
 use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
@@ -14,26 +14,18 @@ use crate::dell;
 
 /// Dell iDRAC boot behavior.
 ///
-/// iDRAC rejects `BootSourceOverrideTarget` writes, so a UEFI HTTP override is
-/// pinned through the `HttpDev1*` BIOS attributes as a configuration job.
+/// iDRAC rejects `BootSourceOverrideTarget` writes: a PXE or disk override is
+/// the iDRAC `ServerBoot` first boot device, and a UEFI HTTP override is pinned
+/// through the `HttpDev1*` BIOS attributes as a configuration job.
 pub(crate) struct IdracBootOrder;
 
 // Some iDRACs report `HttpDev1Uri` as read-only (MessageId `IDRAC.*.SYS410`)
 // for reasons that have not been isolated; callers then fall back to DHCP.
 fn read_only_attribute_is_unsupported(error: PlatformError) -> PlatformError {
-    match &error {
-        PlatformError::Bmc {
-            status: 400,
-            message_id,
-            message,
-        } if message_id
-            .as_deref()
-            .is_some_and(|id| id.ends_with("SYS410"))
-            || message.contains("SYS410") =>
-        {
-            PlatformError::Unsupported
-        }
-        _ => error,
+    if dell::is_read_only_attribute(&error) {
+        PlatformError::Unsupported
+    } else {
+        error
     }
 }
 
@@ -51,8 +43,29 @@ where
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        if override_setting.boot_source_override_target != Some(BootSource::UefiHttp) {
-            return Err(PlatformError::Unsupported);
+        let device = match override_setting.boot_source_override_target {
+            Some(BootSource::UefiHttp) => None,
+            Some(BootSource::Pxe) => Some("PXE"),
+            Some(BootSource::Hdd) => Some("HDD"),
+            _ => return Err(PlatformError::Unsupported),
+        };
+        if let Some(device) = device {
+            let boot_once = match override_setting.boot_source_override_enabled {
+                Some(BootSourceOverrideEnabled::Continuous) => "Disabled",
+                Some(BootSourceOverrideEnabled::Disabled) => {
+                    return Err(PlatformError::Unsupported);
+                }
+                _ => "Enabled",
+            };
+            return dell::patch_manager_attributes(
+                cx,
+                json!({
+                    "ServerBoot.1.FirstBootDevice": device,
+                    "ServerBoot.1.BootOnce": boot_once
+                }),
+                None,
+            )
+            .await;
         }
         let uri = override_setting
             .http_boot_uri

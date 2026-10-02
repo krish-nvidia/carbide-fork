@@ -10,6 +10,7 @@ use bmc_platform::{
     PlatformError, RshimState,
 };
 use nv_redfish::core::Bmc;
+use nv_redfish::core::action::{Action, ActionTarget};
 use nv_redfish::oem::nvidia::NvidiaComputerSystem;
 use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
 use serde_json::{Value, json};
@@ -152,23 +153,43 @@ pub(super) async fn system_oem<B: Bmc>(
         .ok_or(PlatformError::Unsupported)
 }
 
+/// Whether `firmware` is the BMC release whose system `Oem.Nvidia` resource
+/// times out in NIC mode.
+pub(super) fn oem_times_out_in_nic_mode(firmware: &str) -> bool {
+    compare(firmware, OEM_EXTENSION_TIMEOUT_FIRMWARE) == Some(Cmp::Eq)
+}
+
+/// Whether a BIOS read fails while reporting NIC mode, which on the firmware
+/// whose OEM resource times out must answer before that resource is read.
+pub(super) async fn bios_reports_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> bool {
+    selected_bios(cx)
+        .await
+        .err()
+        .is_some_and(|error| bios_error_reports_nic_mode(&error))
+}
+
+/// Switches the BlueField-3 mode on the firmware whose `Oem.Nvidia` resource
+/// times out in NIC mode, where the advertised action cannot be read; the
+/// action is posted to the target that firmware serves.
+pub(super) async fn set_mode_without_oem_read<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    mode: NicMode,
+) -> Result<DriverOutcome, PlatformError> {
+    let system = cx.system().map_err(no_dpu)?;
+    let action = Action::<Value, ()>::new(ActionTarget::new(format!(
+        "{}/Oem/Nvidia/Actions/Mode.Set",
+        system.raw().odata_id
+    )));
+    cx.action(&action, &json!({"Mode": nic_mode_value(mode)}))
+        .await
+}
+
 /// The BlueField-3 mode: the system `Oem.Nvidia` mode, falling back to BIOS.
-///
-/// On the firmware whose OEM resource times out in NIC mode, a BIOS read that
-/// fails while reporting NIC mode answers first.
 pub(super) async fn system_nic_mode<B: Bmc>(
     cx: &OpCx<'_, B>,
     firmware: &str,
     oem: &NvidiaComputerSystem<B>,
 ) -> Result<NicMode, PlatformError> {
-    if compare(firmware, OEM_EXTENSION_TIMEOUT_FIRMWARE) == Some(Cmp::Eq)
-        && selected_bios(cx)
-            .await
-            .err()
-            .is_some_and(|error| bios_error_reports_nic_mode(&error))
-    {
-        return Ok(NicMode::Nic);
-    }
     match oem.mode() {
         Some(Mode::NicMode) => Ok(NicMode::Nic),
         Some(Mode::DpuMode) => Ok(NicMode::Dpu),

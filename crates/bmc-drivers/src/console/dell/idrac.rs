@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bmc_platform::{
     Console, ConsoleSpec, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx, PlatformError,
 };
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{ActionError, Bmc};
 use serde_json::{Value, json};
 
 use crate::console::support::{
@@ -47,14 +47,16 @@ const ATTRS: &[AttrExpectation] = &[
     attr("IPMISOL.1.Enable", &["Enabled"], &["Disabled"]),
     attr("IPMISOL.1.BaudRate", &["115200"], &[]),
     attr("IPMISOL.1.MinPrivilege", &["Administrator"], &[]),
+    attr("IPMILan.1.Enable", &["Enabled"], &["Disabled"]),
 ];
 
-const MANAGER_ATTRS: [&str; 5] = [
+const MANAGER_ATTRS: [&str; 6] = [
     "SSH.1.Enable",
     "SerialRedirection.1.Enable",
     "IPMISOL.1.Enable",
     "IPMISOL.1.BaudRate",
     "IPMISOL.1.MinPrivilege",
+    "IPMILan.1.Enable",
 ];
 
 fn dell_spec() -> Result<ConsoleSpec, PlatformError> {
@@ -69,7 +71,10 @@ fn dell_spec() -> Result<ConsoleSpec, PlatformError> {
 }
 
 #[async_trait]
-impl<B: Bmc> Console<B> for IdracConsole {
+impl<B: Bmc> Console<B> for IdracConsole
+where
+    B::Error: ActionError,
+{
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         let attrs = bios_attributes(cx).await?;
         // Newer BIOS generations expose a second serial address encoding.
@@ -87,9 +92,7 @@ impl<B: Bmc> Console<B> for IdracConsole {
         if attrs.contains_key("RedirAfterBoot") {
             payload["RedirAfterBoot"] = "Enabled".into();
         }
-        let bios_outcome = update_bios_settings(cx, &bios_update(payload)?)
-            .await
-            .and_then(|response| dell::job_outcome(cx, response))?;
+        dell::clear_job_queue(cx).await?;
         let manager_outcome = dell::patch_manager_attributes(
             cx,
             json!({
@@ -100,9 +103,14 @@ impl<B: Bmc> Console<B> for IdracConsole {
                 "SSH.1.Enable": "Enabled",
                 "IPMILan.1.Enable": "Enabled"
             }),
+            None,
         )
         .await?;
-        Ok(bios_outcome.merge(manager_outcome))
+        let body = bios_update(payload)?.with_settings_apply_time(dell::on_reset());
+        let bios_outcome = update_bios_settings(cx, &body)
+            .await
+            .and_then(|response| dell::job_outcome(cx, response))?;
+        Ok(manager_outcome.merge(bios_outcome))
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {

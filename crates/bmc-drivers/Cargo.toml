@@ -41,6 +41,7 @@ nv-redfish = { features = [
     "power-equipment",
     "power-supplies",
     "secure-boot",
+    "serial-interfaces",
     "storages",
     "update-service",
 ], workspace = true }

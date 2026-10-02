@@ -8,12 +8,14 @@
 mod ami;
 pub mod attributes;
 mod dell;
+mod hpe;
 mod lenovo;
 mod nvidia;
 mod standard;
 
 pub(crate) use ami::MegaRacBios;
 pub(crate) use dell::IdracBios;
+pub(crate) use hpe::IloBios;
 pub(crate) use lenovo::XccBios;
-pub(crate) use nvidia::{BlueFieldBios, OpenBmcBios, VikingBios};
+pub(crate) use nvidia::{BlueFieldBios, OpenBmcBios, SwitchBios, VikingBios};
 pub(crate) use standard::StandardBios;

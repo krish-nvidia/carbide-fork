@@ -57,3 +57,29 @@ where
         }
     }
 }
+
+/// NVIDIA GH200 trays: the auxiliary power cycle runs when requested, but is
+/// not reported as an AC power cycle callers may plan around.
+pub(crate) struct Gh200Power;
+
+#[async_trait]
+impl<B: Bmc> Power<B> for Gh200Power
+where
+    B::Error: ActionError,
+{
+    fn standard(&self) -> &dyn Power<B> {
+        &StandardPower
+    }
+
+    async fn ac_power_cycle_supported(&self, _cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+        Ok(false)
+    }
+
+    async fn set(
+        &self,
+        cx: &OpCx<'_, B>,
+        reset_type: ResetType,
+    ) -> Result<DriverOutcome, PlatformError> {
+        OpenBmcPower.set(cx, reset_type).await
+    }
+}

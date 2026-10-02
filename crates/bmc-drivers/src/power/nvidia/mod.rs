@@ -6,5 +6,5 @@
 mod openbmc;
 mod viking;
 
-pub(crate) use openbmc::OpenBmcPower;
+pub(crate) use openbmc::{Gh200Power, OpenBmcPower};
 pub(crate) use viking::VikingPower;

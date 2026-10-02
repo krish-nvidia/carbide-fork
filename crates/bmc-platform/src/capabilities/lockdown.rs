@@ -53,7 +53,10 @@ pub enum LockdownDesiredState {
 /// Host and BMC lockdown state with the raw signals behind them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LockdownStatus {
-    /// `Enabled`/`Disabled` only when host and BMC agree; otherwise `Partial`.
+    /// `Enabled`/`Disabled` once the platform's lockdown is fully applied or
+    /// lifted; otherwise `Partial`. Usually that means host and BMC agree, but a
+    /// platform whose lockdown leaves some host control open reports the
+    /// controls its lockdown sets.
     pub aggregate: LockdownState,
     /// Human-readable list of the controls that were read.
     pub message: String,

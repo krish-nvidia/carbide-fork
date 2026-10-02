@@ -28,6 +28,7 @@ use bmc_platform::{
 use nv_redfish::Bmc;
 use nv_redfish::core::{EntityTypeRef, ODataId};
 use nv_redfish::oem::dell::schema::dell_job::{DellJob, JobState};
+use nv_redfish::schema::job::{Job, JobState as JobServiceState};
 use nv_redfish::schema::task::{Task, TaskState};
 use serde::Deserialize;
 use thiserror::Error;
@@ -84,10 +85,37 @@ pub struct Executor<'a, B: Bmc + 'static> {
 /// The message of a `Scheduled` iDRAC job that will never start.
 const JOB_INITIALIZATION_FAILURE: &str = "Job processing initialization failure.";
 
+/// The message by which a task hands its work to the job named in its first argument.
+const TRANSITIONED_TO_JOB: &str = "Update.1.0.OperationTransitionedToJob";
+
 enum WorkState {
     Running,
     Done,
     Failed(String),
+}
+
+/// The job a task handed its work to, if it did.
+fn transitioned_job(task: &Task) -> Option<ODataId> {
+    task.messages
+        .iter()
+        .flatten()
+        .find(|message| message.message_id == TRANSITIONED_TO_JOB)?
+        .message_args
+        .as_ref()?
+        .first()
+        .map(|job| ODataId::from(job.clone()))
+}
+
+fn job_service_state(state: Option<JobServiceState>) -> WorkState {
+    match state {
+        Some(JobServiceState::Completed) => WorkState::Done,
+        Some(
+            failed @ (JobServiceState::Exception
+            | JobServiceState::Cancelled
+            | JobServiceState::Interrupted),
+        ) => WorkState::Failed(format!("{failed:?}")),
+        _ => WorkState::Running,
+    }
 }
 
 fn task_state(state: Option<TaskState>) -> WorkState {
@@ -214,7 +242,11 @@ where
         loop {
             let state = match reference {
                 OperationReference::RedfishTask { uri, .. } => {
-                    task_state(self.get::<Fetched<Task>>(uri).await?.task_state)
+                    let task = self.get::<Fetched<Task>>(uri).await?;
+                    match transitioned_job(&task) {
+                        Some(job) => job_service_state(self.get::<Job>(&job).await?.job_state),
+                        None => task_state(task.task_state),
+                    }
                 }
                 OperationReference::VendorJob { uri, .. } => {
                     job_state(self.get::<DellJob>(uri).await?.as_ref())?

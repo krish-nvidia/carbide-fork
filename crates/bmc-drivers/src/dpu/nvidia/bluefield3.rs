@@ -11,9 +11,9 @@ use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::oem::nvidia::computer_system::Mode;
 
 use crate::dpu::nvidia::support::{
-    bios_host_privilege_level, enable_bmc_rshim, host_rshim_state, nic_mode_firmware,
-    require_nic_mode_firmware, restricted_host_privilege, set_bios_host_privilege_level,
-    system_nic_mode, system_oem,
+    bios_host_privilege_level, bios_reports_nic_mode, enable_bmc_rshim, host_rshim_state,
+    nic_mode_firmware, oem_times_out_in_nic_mode, restricted_host_privilege,
+    set_bios_host_privilege_level, set_mode_without_oem_read, system_nic_mode, system_oem,
 };
 
 /// BlueField-3: mode and host rshim are the system `Oem.Nvidia` properties
@@ -28,6 +28,14 @@ where
     /// The mode is unknown on BMC firmware that predates NIC-mode support.
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
         let firmware = nic_mode_firmware(cx).await?;
+        if firmware.as_deref().is_some_and(oem_times_out_in_nic_mode)
+            && bios_reports_nic_mode(cx).await
+        {
+            return Ok(DpuStatus {
+                nic_mode: Some(NicMode::Nic),
+                host_rshim: None,
+            });
+        }
         let oem = system_oem(cx).await?;
         let nic_mode = match firmware {
             Some(firmware) => Some(system_nic_mode(cx, &firmware, &oem).await?),
@@ -44,11 +52,16 @@ where
         cx: &OpCx<'_, B>,
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
-        require_nic_mode_firmware(cx).await?;
+        let firmware = nic_mode_firmware(cx)
+            .await?
+            .ok_or(PlatformError::Unsupported)?;
         if mode == NicMode::Nic
             && bios_host_privilege_level(cx).await? == Some(HostPrivilegeLevel::Restricted)
         {
             return Ok(restricted_host_privilege());
+        }
+        if oem_times_out_in_nic_mode(&firmware) {
+            return set_mode_without_oem_read(cx, mode).await;
         }
         let mode = match mode {
             NicMode::Nic => Mode::NicMode,

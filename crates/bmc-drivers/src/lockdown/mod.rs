@@ -13,6 +13,7 @@ mod ami;
 mod dell;
 mod hpe;
 mod lenovo;
+mod noop;
 mod nvidia;
 mod supermicro;
 
@@ -20,6 +21,7 @@ pub(crate) use ami::MegaRacLockdown;
 pub(crate) use dell::IdracLockdown;
 pub(crate) use hpe::IloLockdown;
 pub(crate) use lenovo::{Gb300Lockdown, LenovoAmiLockdown, XccLockdown};
+pub(crate) use noop::NoopLockdown;
 pub(crate) use nvidia::{OpenBmcLockdown, VikingLockdown};
 pub(crate) use supermicro::{Ars121lLockdown, SmcLockdown};
 

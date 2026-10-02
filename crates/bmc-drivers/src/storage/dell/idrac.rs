@@ -7,13 +7,14 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Storage};
-use nv_redfish::core::{Bmc, Reference};
+use nv_redfish::core::{ActionError, Bmc, Reference};
 use nv_redfish::oem::dell::OperationApplyTime;
 use nv_redfish::schema::volume::{LinksCreate, RaidType, VolumeCreate};
 
-use crate::dell::job_outcome;
+use crate::dell::{job_outcome, require_lifecycle_controller_ready};
 
-/// Dell iDRAC boot-storage driver.
+/// Dell iDRAC boot-storage driver; the Lifecycle Controller must be ready
+/// before the BOSS controller is reconfigured.
 pub(crate) struct IdracBossStorage;
 
 fn raid_type(drive_count: usize) -> Result<RaidType, PlatformError> {
@@ -49,7 +50,10 @@ async fn find_controller<B: Bmc>(
 }
 
 #[async_trait]
-impl<B: Bmc> Storage<B> for IdracBossStorage {
+impl<B: Bmc> Storage<B> for IdracBossStorage
+where
+    B::Error: ActionError,
+{
     async fn boot_controller(&self, cx: &OpCx<'_, B>) -> Result<Option<String>, PlatformError> {
         let controllers = cx
             .system()?
@@ -79,6 +83,7 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
         cx: &OpCx<'_, B>,
         controller_id: &str,
     ) -> Result<DriverOutcome, PlatformError> {
+        require_lifecycle_controller_ready(cx).await?;
         let response = find_controller(cx, controller_id)
             .await?
             .oem_dell_actions()
@@ -102,6 +107,7 @@ impl<B: Bmc> Storage<B> for IdracBossStorage {
             });
         }
 
+        require_lifecycle_controller_ready(cx).await?;
         let controller = find_controller(cx, controller_id).await?;
         let raw = controller.raw();
         let drive_refs = raw

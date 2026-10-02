@@ -46,8 +46,8 @@ impl Power<TestBmc> for ScriptedPower {
         self
     }
 
-    async fn state(&self, _cx: &OpCx<'_, TestBmc>) -> Result<PowerState, PlatformError> {
-        Ok(PowerState::On)
+    async fn state(&self, _cx: &OpCx<'_, TestBmc>) -> Result<Option<PowerState>, PlatformError> {
+        Ok(Some(PowerState::On))
     }
 
     async fn ac_power_cycle_supported(
@@ -225,6 +225,29 @@ fn task_and_job_states_classify_completion_and_failure() {
     assert!(matches!(
         task_state(Some(TaskState::Exception)),
         WorkState::Failed(state) if state == "Exception"
+    ));
+    let task = serde_json::from_value::<Task>(serde_json::json!({
+        "@odata.id": "/redfish/v1/TaskService/Tasks/7",
+        "Id": "7",
+        "Name": "Firmware update",
+        "TaskState": "Running",
+        "Messages": [{
+            "MessageId": TRANSITIONED_TO_JOB,
+            "MessageArgs": ["/redfish/v1/JobService/Jobs/3"],
+        }],
+    }))
+    .expect("task body");
+    assert_eq!(
+        transitioned_job(&task),
+        Some(ODataId::from("/redfish/v1/JobService/Jobs/3".to_string()))
+    );
+    assert!(matches!(
+        job_service_state(Some(JobServiceState::Completed)),
+        WorkState::Done
+    ));
+    assert!(matches!(
+        job_service_state(Some(JobServiceState::Exception)),
+        WorkState::Failed(_)
     ));
     let job = |fields: serde_json::Value| {
         let mut body = serde_json::json!({

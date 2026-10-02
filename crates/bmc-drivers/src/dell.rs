@@ -9,6 +9,13 @@ use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError, Vendo
 use nv_redfish::core::{ActionError, Bmc, ModificationResponse, RedfishSettings};
 use nv_redfish::oem::dell::DellManager;
 use nv_redfish::oem::dell::attributes::{AttributesUpdate, DellAttributes, DellAttributesUpdate};
+use nv_redfish::oem::dell::schema::ActionAnnotations as DellActionAnnotations;
+use nv_redfish::oem::dell::schema::SettingsApplyTimeUpdate as DellSettingsApplyTimeUpdate;
+use nv_redfish::oem::dell::schema::dell_lc_service::GetRemoteServicesApiStatusResponseLcStatus as LcStatus;
+use nv_redfish::oem::dell::schema::oem_manager::{
+    ManagerImportSystemConfigurationAction, ShareParametersUpdate, ShutdownType,
+};
+pub(crate) use nv_redfish::oem::dell::schema::settings::ApplyTime as ManagerApplyTime;
 use nv_redfish::schema::SettingsApplyTimeUpdate;
 use nv_redfish::schema::settings::ApplyTime;
 use serde_json::Value;
@@ -102,6 +109,79 @@ where
         .map_err(|error| cx.map_redfish_error(error))
 }
 
+/// Fails unless the Lifecycle Controller is ready to accept provisioning
+/// requests, which storage configuration needs.
+pub(crate) async fn require_lifecycle_controller_ready<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<(), PlatformError>
+where
+    B::Error: ActionError,
+{
+    let response = dell_manager(cx)?
+        .lc_service()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .remote_services_api_status()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?;
+    let lc_status = match response {
+        ModificationResponse::Entity(status) => status.lc_status,
+        ModificationResponse::Task(_) | ModificationResponse::Empty => None,
+    };
+    match lc_status {
+        Some(LcStatus::Ready) => Ok(()),
+        other => Err(PlatformError::InvalidResponse {
+            message: format!(
+                "the Lifecycle Controller is not ready to accept provisioning requests: {other:?}"
+            ),
+        }),
+    }
+}
+
+/// Clears the UEFI setup password by importing a BIOS Server Configuration
+/// Profile, for iDRAC firmware whose `Bios.ChangePassword` cannot clear a
+/// password once set (dell/iDRAC-Redfish-Scripting#308).
+pub(crate) async fn clear_uefi_password_via_import<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    current_password: &str,
+) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    let import_buffer = format!(
+        r#"<SystemConfiguration><Component FQDD="BIOS.Setup.1-1"><Attribute Name="OldSetupPassword">{}</Attribute><Attribute Name="NewSetupPassword"></Attribute></Component></SystemConfiguration>"#,
+        xml_escape(current_password)
+    );
+    let response = dell_manager(cx)?
+        .import_system_configuration(&ManagerImportSystemConfigurationAction {
+            redfish_annotations: DellActionAnnotations::default(),
+            share_parameters: ShareParametersUpdate::builder()
+                .with_target(vec!["BIOS".to_string()])
+                .build(),
+            import_buffer: Some(import_buffer),
+            shutdown_type: Some(ShutdownType::Forced),
+            host_power_state: None,
+        })
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?;
+    job_outcome(cx, response)
+}
+
+/// Escapes XML character data.
+fn xml_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
 /// Creates the configuration job that applies staged BIOS settings on the next reset.
 pub(crate) async fn create_bios_config_job<B: Bmc>(
     cx: &OpCx<'_, B>,
@@ -142,23 +222,47 @@ pub(crate) fn on_reset() -> SettingsApplyTimeUpdate {
         .build()
 }
 
-/// Writes iDRAC manager attributes, given as a JSON object.
+/// Whether iDRAC rejected a write because an attribute is read-only
+/// (MessageId `IDRAC.*.SYS410`).
+pub(crate) fn is_read_only_attribute(error: &PlatformError) -> bool {
+    matches!(
+        error,
+        PlatformError::Bmc {
+            status: 400,
+            message_id,
+            message,
+        } if message_id.as_deref().is_some_and(|id| id.ends_with("SYS410"))
+            || message.contains("SYS410")
+            || message.contains("read-only")
+    )
+}
+
+/// Writes iDRAC manager attributes, given as a JSON object, applied at
+/// `apply_time` when given.
 pub(crate) async fn patch_manager_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
     attributes: Value,
+    apply_time: Option<ManagerApplyTime>,
 ) -> Result<DriverOutcome, PlatformError> {
     let Value::Object(attributes) = attributes else {
         return Err(PlatformError::InvalidResponse {
             message: "iDRAC attributes must be a JSON object".to_string(),
         });
     };
-    let body = DellAttributesUpdate::builder()
+    let mut body = DellAttributesUpdate::builder()
         .with_attributes(
             AttributesUpdate::builder()
                 .with_dynamic_properties(dynamic_properties(&attributes.into_iter().collect())?)
                 .build(),
         )
         .build();
+    if let Some(apply_time) = apply_time {
+        body = body.with_settings_apply_time(
+            DellSettingsApplyTimeUpdate::builder()
+                .with_apply_time(apply_time)
+                .build(),
+        );
+    }
     let response = manager_attributes(cx)
         .await?
         .update(&body)

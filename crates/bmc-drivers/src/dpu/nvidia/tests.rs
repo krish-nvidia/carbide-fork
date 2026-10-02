@@ -218,6 +218,46 @@ async fn bluefield3_status_reads_the_system_oem_body_on_supported_firmware() {
 }
 
 #[tokio::test]
+async fn bluefield3_avoids_the_oem_resource_on_firmware_where_it_times_out() {
+    let nic_mode_bios_error = json!({"Attributes": {"NicMode": "NicMode"}});
+    let bmc = bluefield3("BF-24.04-5")
+        .respond(
+            Method::GET,
+            BF3_SYSTEM_OEM,
+            StatusCode::GATEWAY_TIMEOUT,
+            None,
+        )
+        .respond(
+            Method::GET,
+            BF3_BIOS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some(nic_mode_bios_error),
+        )
+        .build()
+        .await;
+    let cx = bmc.cx().await;
+
+    assert_eq!(
+        BlueField3Dpu.status(&cx).await,
+        Ok(DpuStatus {
+            nic_mode: Some(NicMode::Nic),
+            host_rshim: None,
+        })
+    );
+    assert_eq!(
+        BlueField3Dpu.set_nic_mode(&cx, NicMode::Dpu).await,
+        Ok(DriverOutcome::complete())
+    );
+    let writes = bmc.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        path(&writes[0]),
+        format!("{BF3_SYSTEM_OEM}/Actions/Mode.Set")
+    );
+    assert_eq!(body(&writes[0]), json!({"Mode": "DpuMode"}));
+}
+
+#[tokio::test]
 async fn bluefield3_host_privilege_retries_with_the_spaced_attribute_name() {
     let rejection = json!({"error": {"@Message.ExtendedInfo": [{
         "MessageId": "Base.1.15.PropertyUnknown",

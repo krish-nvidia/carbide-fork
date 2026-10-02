@@ -46,6 +46,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("hpe", [vendor("HPE")]).drivers([
             HpeIloPower,
             HpeIloBmcControl,
+            HpeIloBios,
             HpeIloBootOrder,
             HpeIloLockdown,
             HpeIloAccounts,
@@ -87,19 +88,34 @@ fn built_ins() -> Vec<Rule> {
         // Power shelves have no ServiceRoot vendor; their chassis manufacturer
         // identifies them.
         Rule::new("delta-power-shelf", [chassis_manufacturer("Delta")])
-            .drivers([DeltaPowerShelfPower, DeltaPowerShelfAccounts])
+            .drivers([DeltaPowerShelfPower, DeltaPowerShelfAccounts, NoopLockdown])
+            .unsupported([
+                Capability::Bios,
+                Capability::BootOrder,
+                Capability::SecureBoot,
+                Capability::Firmware,
+                Capability::Attestation,
+            ]),
+        Rule::new("liteon-power-shelf", [chassis_manufacturer("Lite-On")])
+            .drivers([
+                LiteOnPowerShelfPower,
+                LiteOnPowerShelfAccounts,
+                NoopLockdown,
+            ])
             .unsupported([
                 Capability::Bios,
                 Capability::BootOrder,
                 Capability::SecureBoot,
                 Capability::Attestation,
             ]),
-        Rule::new("liteon-power-shelf", [chassis_manufacturer("Lite-On")])
-            .drivers([LiteOnPowerShelfPower, LiteOnPowerShelfAccounts])
-            .unsupported([
-                Capability::BootOrder,
-                Capability::SecureBoot,
-                Capability::Attestation,
+        // Wiwynn's GB200 NVL trays run NVIDIA OpenBMC under their own vendor.
+        Rule::new("nvidia-gbx00-wiwynn", [vendor("Wiwynn")])
+            .drivers(OPENBMC_TRAY)
+            .drivers([
+                NvidiaOpenBmcPower,
+                NvidiaOpenBmcFirmware,
+                NvidiaOpenBmcAccounts,
+                NvidiaHgxAttestation,
             ]),
         // ---- Product rules: ServiceRoot product ----
         Rule::new(
@@ -107,13 +123,28 @@ fn built_ins() -> Vec<Rule> {
             [product(&["GB BMC", "GB200 NVL", "GB NVL"])],
         )
         .drivers(OPENBMC_TRAY)
-        .drivers([NvidiaOpenBmcAccounts, NvidiaHgxAttestation]),
+        .drivers([
+            NvidiaOpenBmcPower,
+            NvidiaOpenBmcFirmware,
+            NvidiaOpenBmcAccounts,
+            NvidiaHgxAttestation,
+        ])
+        // Supermicro's GB NVL trays also match the Supermicro vendor rule,
+        // whose OEM factory reset and console do not apply to OpenBMC.
+        .standard([Capability::BmcControl])
+        .unsupported([Capability::Console]),
         Rule::new("nvidia-vera", [product(&["VR NVL72"])])
             .drivers(OPENBMC_TRAY)
-            .drivers([NvidiaOpenBmcAccounts, NvidiaHgxAttestation]),
+            .drivers([
+                NvidiaOpenBmcPower,
+                NvidiaOpenBmcFirmware,
+                NvidiaOpenBmcAccounts,
+                NvidiaHgxAttestation,
+            ]),
+        // GH200 firmware updates take the caller's parameters unchanged.
         Rule::new("nvidia-gh", [product(&["P3809"])])
             .drivers(OPENBMC_TRAY)
-            .drivers([NvidiaGh200Accounts])
+            .drivers([NvidiaGh200Power, NvidiaGh200Accounts])
             .unsupported([Capability::Attestation]),
         Rule::new(
             "bluefield",
@@ -139,18 +170,25 @@ fn built_ins() -> Vec<Rule> {
         )
         .drivers([NvidiaBlueField4Dpu]),
         // ---- Model rules: exact system, chassis, or firmware evidence ----
-        // GB NVSwitch trays share the GH200 service root; only their chassis
-        // ids tell them apart. They have no BIOS, secure boot, lockdown, or
-        // attestation.
+        // GB NVSwitch trays share the GH200 service root; only their switch
+        // chassis tells them apart. Their BIOS takes only password changes, and
+        // they have no secure boot, lockdown, AC power cycle, or attestation.
         Rule::new(
             "nvidia-switch",
-            [contains(IdentityField::ChassisId, "NVSwitch")],
+            [
+                product(&["P3809"]),
+                exact(IdentityField::ChassisId, "MGX_NVSwitch_0"),
+            ],
         )
-        .drivers([NvidiaOpenBmcBootOrder, NvidiaSwitchAccounts])
+        .drivers([
+            NvidiaOpenBmcBootOrder,
+            NvidiaSwitchAccounts,
+            NvidiaSwitchBios,
+            NoopLockdown,
+        ])
+        .standard([Capability::Power])
         .unsupported([
-            Capability::Bios,
             Capability::SecureBoot,
-            Capability::Lockdown,
             Capability::Firmware,
             Capability::Attestation,
         ]),
@@ -181,16 +219,28 @@ fn built_ins() -> Vec<Rule> {
             )],
         )
         .drivers([NvidiaBlueField2Dpu]),
+        // Lenovo GB300 trays run AMI firmware; the GB300 model is on the GPU
+        // baseboard, not the selected Lenovo host system.
         Rule::new(
             "lenovo-gb300",
             [
+                vendor("AMI"),
                 contains(IdentityField::SystemManufacturer, "Lenovo"),
-                contains(IdentityField::SystemModel, "GB300"),
+                contains(IdentityField::ChassisModel, "GB300"),
             ],
         )
         .drivers([AmiMegaRacBios, LenovoGb300Lockdown, LenovoGb300Console]),
-        // DGX Viking runs AMI firmware and identifies itself by its system id.
-        Rule::new("nvidia-viking", [exact(IdentityField::SystemId, "DGX")]).drivers([
+        // DGX Viking runs AMI firmware and identifies itself by its system and
+        // manager ids.
+        Rule::new(
+            "nvidia-viking",
+            [
+                vendor("AMI"),
+                exact(IdentityField::SystemId, "DGX"),
+                exact(IdentityField::ManagerId, "BMC"),
+            ],
+        )
+        .drivers([
             NvidiaVikingPower,
             AmiMegaRacBmcControl,
             NvidiaVikingBios,
@@ -199,6 +249,16 @@ fn built_ins() -> Vec<Rule> {
             NvidiaVikingFirmware,
             NvidiaVikingConsole,
         ]),
+        // Supermicro GB300 firmware exposes SecureBoot without SecureBootEnable.
+        Rule::new(
+            "supermicro-gb300",
+            [
+                vendor("Supermicro"),
+                contains_any_case(IdentityField::SystemManufacturer, "Supermicro"),
+                contains(IdentityField::SystemModel, "GB300"),
+            ],
+        )
+        .unsupported([Capability::SecureBoot]),
         // A standard ForceRestart can hang on this SKU at exactly this firmware pair.
         Rule::new(
             "lenovo-sr675-v3-ovx",
@@ -212,12 +272,10 @@ fn built_ins() -> Vec<Rule> {
     ]
 }
 
-/// The drivers every NVIDIA OpenBMC compute tray shares.
-const OPENBMC_TRAY: [Driver; 5] = [
-    NvidiaOpenBmcPower,
+/// The drivers every NVIDIA OpenBMC tray shares, GH200 included.
+const OPENBMC_TRAY: [Driver; 3] = [
     NvidiaOpenBmcBios,
     NvidiaOpenBmcBootOrder,
-    NvidiaOpenBmcFirmware,
     NvidiaOpenBmcLockdown,
 ];
 
@@ -308,9 +366,14 @@ mod tests {
         lenovo_gb300.system = Some(SystemIdentity {
             id: "System_0".to_string(),
             manufacturer: Some("Lenovo".to_string()),
-            model: Some("ThinkSystem GB300".to_string()),
+            model: Some("HG634N_V2".to_string()),
             ..SystemIdentity::default()
         });
+        lenovo_gb300.chassis = vec![ChassisIdentity {
+            id: "HGX_Chassis_0".to_string(),
+            model: Some("NVIDIA GB300".to_string()),
+            ..ChassisIdentity::default()
+        }];
         let mut viking = identity("AMI", Some("AMI Redfish Server"));
         viking.system = Some(SystemIdentity {
             id: "DGX".to_string(),
@@ -350,6 +413,7 @@ mod tests {
             identity("NVIDIA", Some("VR NVL72")),
             identity("NVIDIA", Some("P3809")),
             identity("NVIDIA", Some("BlueField-4")),
+            identity("WIWYNN", Some("GB200 NVL")),
             lenovo_gb300,
             viking,
         ];
@@ -375,6 +439,14 @@ mod tests {
             gb_platform.drivers.get(Capability::Lockdown),
             &driver(NvidiaOpenBmcLockdown)
         );
+        assert_eq!(
+            gb_platform.drivers.get(Capability::BmcControl),
+            &CapabilitySelection::Standard
+        );
+        assert_eq!(
+            gb_platform.drivers.get(Capability::Console),
+            &CapabilitySelection::Unsupported
+        );
 
         let mut viking = identity("AMI", None);
         viking.system = Some(SystemIdentity {
@@ -389,6 +461,22 @@ mod tests {
         assert_eq!(
             viking.drivers.get(Capability::Bios),
             &driver(NvidiaVikingBios)
+        );
+        let mut dgx_without_bmc_manager = identity("AMI", None);
+        dgx_without_bmc_manager.system = Some(SystemIdentity {
+            id: "DGX".to_string(),
+            ..SystemIdentity::default()
+        });
+        dgx_without_bmc_manager.manager = Some(ManagerIdentity {
+            id: "Self".to_string(),
+            model: None,
+            firmware: None,
+        });
+        assert_eq!(
+            resolve(&rules, &dgx_without_bmc_manager)
+                .drivers
+                .get(Capability::Bios),
+            &driver(AmiMegaRacBios)
         );
 
         let mut ars = identity("Supermicro", Some("Super Server"));
@@ -430,19 +518,40 @@ mod tests {
             nvswitch.drivers.get(Capability::Accounts),
             &driver(NvidiaSwitchAccounts)
         );
+        let gh200 = resolve(&rules, &identity("NVIDIA", Some("P3809")));
         assert_eq!(
-            resolve(&rules, &identity("NVIDIA", Some("P3809")))
-                .drivers
-                .get(Capability::Accounts),
+            gh200.drivers.get(Capability::Accounts),
             &driver(NvidiaGh200Accounts)
         );
         assert_eq!(
+            gh200.drivers.get(Capability::Power),
+            &driver(NvidiaGh200Power)
+        );
+        assert_eq!(
+            gh200.drivers.get(Capability::Firmware),
+            &CapabilitySelection::Standard
+        );
+        assert_eq!(
             nvswitch.drivers.get(Capability::Bios),
-            &CapabilitySelection::Unsupported
+            &driver(NvidiaSwitchBios)
         );
         assert_eq!(
             nvswitch.drivers.get(Capability::Power),
-            &driver(NvidiaOpenBmcPower)
+            &CapabilitySelection::Standard
+        );
+        assert_eq!(
+            nvswitch.drivers.get(Capability::Lockdown),
+            &driver(NoopLockdown)
+        );
+        let mut delta = identity("Delta Electronics Inc.", None);
+        delta.chassis = vec![ChassisIdentity {
+            id: "chassis".to_string(),
+            manufacturer: Some("DELTA".to_string()),
+            ..ChassisIdentity::default()
+        }];
+        assert_eq!(
+            resolve(&rules, &delta).drivers.get(Capability::Lockdown),
+            &driver(NoopLockdown)
         );
 
         let mut lenovo_ami = identity("Lenovo", None);
@@ -465,6 +574,25 @@ mod tests {
                 .drivers
                 .get(Capability::Lockdown),
             &driver(LenovoXccLockdown)
+        );
+
+        let mut lenovo_gb300 = identity("AMI", Some("AMI Redfish Server"));
+        lenovo_gb300.system = Some(SystemIdentity {
+            id: "System_0".to_string(),
+            manufacturer: Some("Lenovo".to_string()),
+            model: Some("HG634N_V2".to_string()),
+            ..SystemIdentity::default()
+        });
+        lenovo_gb300.chassis = vec![ChassisIdentity {
+            id: "HGX_Chassis_0".to_string(),
+            model: Some("NVIDIA GB300".to_string()),
+            ..ChassisIdentity::default()
+        }];
+        assert_eq!(
+            resolve(&rules, &lenovo_gb300)
+                .drivers
+                .get(Capability::Lockdown),
+            &driver(LenovoGb300Lockdown)
         );
     }
 

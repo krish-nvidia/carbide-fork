@@ -10,11 +10,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, MultipartUpdateRequest, UploadReader};
+use nv_redfish::core::{Bmc, ModificationResponse, MultipartUpdateRequest, UploadReader};
 use nv_redfish::schema::software_inventory::SoftwareInventory;
 use nv_redfish::schema::update_service::UpdateServiceSimpleUpdateAction;
 use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// The multipart request as the [`Firmware`] contract receives it.
@@ -103,10 +104,25 @@ where
     B: Bmc,
     V: Serialize + Send + Sync,
 {
-    cx.bmc()
-        .multipart_update::<_, _, Value>(uri, request)
+    upload_response::<B, V, Value>(cx, request, uri)
         .await
         .map(DriverOutcome::from)
+}
+
+/// [`upload`], returning the response for drivers that read the task from its body.
+pub(super) async fn upload_response<B, V, R>(
+    cx: &OpCx<'_, B>,
+    request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, V>,
+    uri: &str,
+) -> Result<ModificationResponse<R>, PlatformError>
+where
+    B: Bmc,
+    V: Serialize + Send + Sync,
+    R: DeserializeOwned + Send + Sync,
+{
+    cx.bmc()
+        .multipart_update::<_, _, R>(uri, request)
+        .await
         .map_err(|error| match cx.map_bmc_error(error) {
             PlatformError::Bmc { status: 404, .. } => PlatformError::Unsupported,
             other => other,

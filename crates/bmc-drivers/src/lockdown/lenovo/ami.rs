@@ -14,12 +14,13 @@ use nv_redfish::oem::ami::config_bmc::{
     LockoutBiosVariableWriteMode, LockoutHostControlState,
 };
 
-use crate::lockdown::{signal, state_from_signals, status};
+use crate::lockdown::{set_first_host_interface, signal, state_from_signals, status};
 
 /// Lenovo AMI lockdown driver.
 ///
 /// The OEM `ConfigBMC` object switches host control and BIOS protection
-/// together, so only the `All` scope is expressible.
+/// together, so `All` is the only full scope; BMC system lockdown is the
+/// host interface.
 pub(crate) struct LenovoAmiLockdown;
 
 #[async_trait]
@@ -74,8 +75,13 @@ impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
         scope: LockdownScope,
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
-        if scope != LockdownScope::All {
-            return Err(PlatformError::Unsupported);
+        match scope {
+            LockdownScope::All => {}
+            LockdownScope::BmcSystemLockdown => {
+                let enabled = desired == LockdownDesiredState::Enabled;
+                return set_first_host_interface(cx, !enabled).await;
+            }
+            LockdownScope::Host | LockdownScope::Bmc => return Err(PlatformError::Unsupported),
         }
         let config = cx
             .manager()?

@@ -34,7 +34,9 @@ pub trait Power<B: Bmc>: Send + Sync {
     /// operation and returns `self`.
     fn standard(&self) -> &dyn Power<B>;
 
-    async fn state(&self, cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
+    /// The power state; `None` when the platform cannot tell, such as a power
+    /// shelf whose supplies disagree or do not report.
+    async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
         self.standard().state(cx).await
     }
 

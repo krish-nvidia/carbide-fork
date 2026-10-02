@@ -77,6 +77,9 @@ where
         cx: &OpCx<'_, B>,
         current_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        change_password(cx, current_password, "").await
+        match change_password(cx, current_password, "").await {
+            Ok(outcome) => Ok(outcome),
+            Err(_) => dell::clear_uefi_password_via_import(cx, current_password).await,
+        }
     }
 }
