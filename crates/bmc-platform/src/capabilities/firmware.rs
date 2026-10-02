@@ -17,14 +17,44 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use nv_redfish::core::{Bmc, MultipartUpdateRequest, UploadReader};
+use nv_redfish::core::{Bmc, DataStream, UploadReader};
 use nv_redfish::schema::software_inventory::SoftwareInventory;
 use nv_redfish::schema::update_service::UpdateServiceSimpleUpdateAction;
-use nv_redfish::update_service::MultipartUpdateParameters;
 
 use crate::{DriverOutcome, OpCx, PlatformError};
+
+/// The device a firmware image updates; each driver turns it into the targets
+/// and OEM parameters its BMC needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FirmwareComponent {
+    Bmc,
+    Uefi,
+    ErotBmc,
+    ErotBios,
+    CpldMid,
+    CpldMb,
+    CpldPdb,
+    Psu(u32),
+    PcieSwitch(u32),
+    PcieRetimer(u32),
+    HgxBmc,
+    /// The image itself names what it updates.
+    Unknown,
+}
+
+/// A firmware image for a multipart `UpdateService` upload.
+pub struct FirmwareUpload {
+    /// The image and the file name it is uploaded under.
+    pub image: DataStream<Pin<Box<dyn UploadReader>>>,
+    pub component: FirmwareComponent,
+    /// Whether the image applies once uploaded rather than on the next reset,
+    /// on BMCs that let the caller choose.
+    pub apply_immediately: bool,
+    pub timeout: Duration,
+}
 
 /// Firmware inventory and update operations.
 ///
@@ -49,9 +79,9 @@ pub trait Firmware<B: Bmc>: Send + Sync {
     async fn multipart_update(
         &self,
         cx: &OpCx<'_, B>,
-        request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, MultipartUpdateParameters>,
+        upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
-        self.standard().multipart_update(cx, request).await
+        self.standard().multipart_update(cx, upload).await
     }
 
     async fn simple_update(

@@ -38,7 +38,7 @@ pub use console::{
     EscapeSeq, NonEmptyBytes, NonEmptyBytesError, SshShellSpec,
 };
 pub use dpu::{Dpu, DpuStatus, HostPrivilegeLevel, NicMode, RshimState};
-pub use firmware::Firmware;
+pub use firmware::{Firmware, FirmwareComponent, FirmwareUpload};
 pub use lockdown::{Lockdown, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus};
 pub use power::Power;
 pub use secure_boot::{SecureBoot, SecureBootStatus};

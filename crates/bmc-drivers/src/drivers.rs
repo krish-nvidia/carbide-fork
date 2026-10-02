@@ -218,8 +218,10 @@ drivers! {
     Firmware as firmware: Firmware = firmware::StandardFirmware {
         AmiMegaRacFirmware = "ami-megarac-firmware" => firmware::MegaRacFirmware,
         DellIdracFirmware = "dell-idrac-firmware" => firmware::IdracFirmware,
+        LenovoXccFirmware = "lenovo-xcc-firmware" => firmware::XccFirmware,
         NvidiaOpenBmcFirmware = "nvidia-openbmc-firmware" => firmware::OpenBmcFirmware,
         NvidiaVikingFirmware = "nvidia-viking-firmware" => firmware::VikingFirmware,
+        SupermicroSmcFirmware = "supermicro-smc-firmware" => firmware::SmcFirmware,
     }
     Storage as storage: Storage {
         DellIdracBossStorage = "dell-idrac-boss-storage" => storage::IdracBossStorage,

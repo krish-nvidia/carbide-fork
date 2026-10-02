@@ -4,28 +4,37 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, MultipartUpdateRequest};
+use bmc_platform::{
+    DriverOutcome, Firmware, FirmwareComponent, FirmwareUpload, OpCx, PlatformError,
+};
+use nv_redfish::core::Bmc;
 use nv_redfish::update_service::MultipartUpdateParameters;
-use serde_json::Value;
 
 use crate::firmware::standard::{
-    StandardFirmware, UploadRequest, advertised_multipart_uri, update_service, upload,
+    StandardFirmware, advertised_multipart_uri, multipart_upload, update_service,
 };
+use crate::firmware::support::{chassis_target, inventory_targets};
 
-/// NVIDIA OpenBMC trays: standard multipart upload with `ForceUpdate`, since the
-/// BMC otherwise skips images matching the installed version.
+/// NVIDIA OpenBMC compute trays (GB200/GB300, Vera Rubin): the HGX component
+/// is the update target, and `ForceUpdate` keeps the BMC from skipping images
+/// that match the installed version.
 pub(crate) struct OpenBmcFirmware;
 
-/// The generated parameters type is not `Clone`, so `ForceUpdate` is set on
-/// its JSON form.
-fn forced(parameters: &MultipartUpdateParameters) -> Result<Value, PlatformError> {
-    let mut parameters =
-        serde_json::to_value(parameters).map_err(|error| PlatformError::InvalidResponse {
-            message: format!("failed to serialize update parameters: {error}"),
-        })?;
-    parameters["ForceUpdate"] = Value::Bool(true);
-    Ok(parameters)
+/// The update targets for `component`; `None` leaves the target to the image.
+async fn targets<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    component: FirmwareComponent,
+) -> Result<Option<Vec<String>>, PlatformError> {
+    Ok(match component {
+        FirmwareComponent::Unknown => None,
+        FirmwareComponent::Bmc => Some(Vec::new()),
+        FirmwareComponent::ErotBmc => Some(vec![chassis_target(cx, "HGX_ERoT_BMC_0").await?]),
+        FirmwareComponent::ErotBios => Some(inventory_targets(cx, &["EROT_BIOS_0"]).await?),
+        FirmwareComponent::HgxBmc | FirmwareComponent::Uefi => {
+            Some(vec![chassis_target(cx, "HGX_Chassis_0").await?])
+        }
+        _ => return Err(PlatformError::Unsupported),
+    })
 }
 
 #[async_trait]
@@ -37,21 +46,14 @@ impl<B: Bmc> Firmware<B> for OpenBmcFirmware {
     async fn multipart_update(
         &self,
         cx: &OpCx<'_, B>,
-        request: UploadRequest<'_>,
+        upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let service = update_service(cx).await?;
         let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
-        let parameters = forced(request.update_parameters)?;
-        upload(
-            cx,
-            MultipartUpdateRequest {
-                update_parameters: &parameters,
-                update_stream: request.update_stream,
-                oem_parts: request.oem_parts,
-                upload_timeout: request.upload_timeout,
-            },
-            &uri,
-        )
-        .await
+        let mut parameters = MultipartUpdateParameters::builder().with_force_update(true);
+        if let Some(targets) = targets(cx, upload.component).await? {
+            parameters = parameters.with_targets(targets);
+        }
+        multipart_upload(cx, upload, &parameters.build(), Vec::new(), &uri).await
     }
 }

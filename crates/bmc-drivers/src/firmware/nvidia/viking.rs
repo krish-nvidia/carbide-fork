@@ -4,17 +4,39 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
+use bmc_platform::{
+    DriverOutcome, Firmware, FirmwareComponent, FirmwareUpload, OpCx, PlatformError,
+};
 use nv_redfish::core::Bmc;
+use nv_redfish::update_service::MultipartUpdateParameters;
 
-use crate::firmware::standard::{StandardFirmware, UploadRequest, upload};
-use crate::firmware::support::upload_uri;
+use crate::firmware::standard::{StandardFirmware, multipart_upload};
+use crate::firmware::support::{inventory_targets, upload_uri};
 
 /// NVIDIA DGX Viking: its AMI firmware uploads through `upload` rather than
-/// `MultipartUpload`.
+/// `MultipartUpload`, targeting the firmware inventory entry of the component.
 pub(crate) struct VikingFirmware;
 
 const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/upload";
+
+/// The firmware inventory entry `component` updates; `None` leaves the target
+/// to the image.
+fn inventory_id(component: FirmwareComponent) -> Result<Option<String>, PlatformError> {
+    Ok(Some(match component {
+        FirmwareComponent::Unknown => return Ok(None),
+        FirmwareComponent::Bmc => "HostBMC_0".to_string(),
+        FirmwareComponent::Uefi => "HostBIOS_0".to_string(),
+        FirmwareComponent::ErotBmc => "EROT_BMC_0".to_string(),
+        FirmwareComponent::ErotBios => "EROT_BIOS_0".to_string(),
+        FirmwareComponent::CpldMid => "CPLDMID_0".to_string(),
+        FirmwareComponent::CpldMb => "CPLDMB_0".to_string(),
+        FirmwareComponent::Psu(index) => format!("PSU_{index}"),
+        FirmwareComponent::PcieSwitch(index) => format!("PCIeSwitch_{index}"),
+        FirmwareComponent::PcieRetimer(index) => format!("PCIeRetimer_{index}"),
+        FirmwareComponent::HgxBmc => "HGX_FW_BMC_0".to_string(),
+        FirmwareComponent::CpldPdb => return Err(PlatformError::Unsupported),
+    }))
+}
 
 #[async_trait]
 impl<B: Bmc> Firmware<B> for VikingFirmware {
@@ -25,9 +47,13 @@ impl<B: Bmc> Firmware<B> for VikingFirmware {
     async fn multipart_update(
         &self,
         cx: &OpCx<'_, B>,
-        request: UploadRequest<'_>,
+        upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
+        let mut parameters = MultipartUpdateParameters::builder();
+        if let Some(id) = inventory_id(upload.component)? {
+            parameters = parameters.with_targets(inventory_targets(cx, &[id.as_str()]).await?);
+        }
         let uri = upload_uri(cx, MULTIPART_UPLOAD).await?;
-        upload(cx, request, &uri).await
+        multipart_upload(cx, upload, &parameters.build(), Vec::new(), &uri).await
     }
 }

@@ -9,18 +9,17 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, Firmware, OpCx, PlatformError};
-use nv_redfish::core::{Bmc, ModificationResponse, MultipartUpdateRequest, UploadReader};
+use bmc_platform::{
+    DriverOutcome, Firmware, FirmwareUpload, OpCx, OperationReference, PlatformError,
+};
+use nv_redfish::core::{
+    Bmc, ModificationResponse, MultipartUpdateRequest, ODataId, OemMultipartPart, UploadReader,
+};
+use nv_redfish::schema::message::Message;
 use nv_redfish::schema::software_inventory::SoftwareInventory;
 use nv_redfish::schema::update_service::UpdateServiceSimpleUpdateAction;
 use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::Value;
-
-/// The multipart request as the [`Firmware`] contract receives it.
-pub(super) type UploadRequest<'a> =
-    MultipartUpdateRequest<'a, Pin<Box<dyn UploadReader>>, MultipartUpdateParameters>;
+use serde::{Deserialize, Serialize};
 
 /// Standard Redfish inventory, SimpleUpdate, and multipart upload.
 pub(crate) struct StandardFirmware;
@@ -47,15 +46,23 @@ impl<B: Bmc> Firmware<B> for StandardFirmware {
             .collect())
     }
 
-    /// Uploads through the advertised `MultipartHttpPushUri`.
+    /// Uploads through the advertised `MultipartHttpPushUri` with empty
+    /// parameters, leaving the target to the image.
     async fn multipart_update(
         &self,
         cx: &OpCx<'_, B>,
-        request: UploadRequest<'_>,
+        upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let service = update_service(cx).await?;
         let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
-        upload(cx, request, &uri).await
+        multipart_upload(
+            cx,
+            upload,
+            &MultipartUpdateParameters::default(),
+            Vec::new(),
+            &uri,
+        )
+        .await
     }
 
     /// Runs the advertised `UpdateService.SimpleUpdate` action.
@@ -94,37 +101,103 @@ pub(super) fn advertised_multipart_uri<B: Bmc>(service: &UpdateService<B>) -> Op
         .filter(|uri| !uri.trim().is_empty())
 }
 
-/// Uploads to `uri`; a 404 means the BMC does not implement multipart push.
-pub(super) async fn upload<B, V>(
+/// The message announcing the task an upload started.
+const TASK_STARTED: &str = "Task.1.0.New";
+
+/// An upload answered without `202 Accepted`: the started task is announced
+/// in `Messages`, or the body is the task itself.
+#[derive(Deserialize)]
+pub(super) struct UploadResponse {
+    #[serde(rename = "@odata.id")]
+    odata_id: Option<ODataId>,
+    #[serde(rename = "@odata.type")]
+    odata_type: Option<String>,
+    #[serde(rename = "Messages", default)]
+    messages: Vec<Message>,
+}
+
+/// The task an upload started, or completion when it started none.
+pub(super) fn upload_outcome(response: ModificationResponse<UploadResponse>) -> DriverOutcome {
+    let ModificationResponse::Entity(body) = response else {
+        return DriverOutcome::from(response);
+    };
+    let announced = body.messages.iter().find_map(|message| {
+        (message.message_id == TASK_STARTED)
+            .then(|| message.message_args.as_ref()?.first().cloned())
+            .flatten()
+    });
+    let task = body
+        .odata_type
+        .as_deref()
+        .is_some_and(|odata_type| odata_type.starts_with("#Task."));
+    match announced
+        .map(ODataId::from)
+        .or(body.odata_id.filter(|_| task))
+    {
+        Some(uri) => DriverOutcome::accepted(OperationReference::RedfishTask {
+            uri,
+            retry_after_seconds: None,
+        }),
+        None => DriverOutcome::complete(),
+    }
+}
+
+/// Uploads `upload` to `uri` with `parameters` and any OEM parts; a 404 means
+/// the BMC does not implement multipart push.
+pub(super) async fn multipart_upload<B, V>(
     cx: &OpCx<'_, B>,
-    request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, V>,
+    upload: FirmwareUpload,
+    parameters: &V,
+    oem_parts: Vec<OemMultipartPart>,
     uri: &str,
 ) -> Result<DriverOutcome, PlatformError>
 where
     B: Bmc,
     V: Serialize + Send + Sync,
 {
-    upload_response::<B, V, Value>(cx, request, uri)
-        .await
-        .map(DriverOutcome::from)
-}
-
-/// [`upload`], returning the response for drivers that read the task from its body.
-pub(super) async fn upload_response<B, V, R>(
-    cx: &OpCx<'_, B>,
-    request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, V>,
-    uri: &str,
-) -> Result<ModificationResponse<R>, PlatformError>
-where
-    B: Bmc,
-    V: Serialize + Send + Sync,
-    R: DeserializeOwned + Send + Sync,
-{
+    let request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, V> =
+        MultipartUpdateRequest {
+            update_parameters: parameters,
+            update_stream: upload.image,
+            oem_parts,
+            upload_timeout: upload.timeout,
+        };
     cx.bmc()
-        .multipart_update::<_, _, R>(uri, request)
+        .multipart_update::<_, _, UploadResponse>(uri, request)
         .await
+        .map(upload_outcome)
         .map_err(|error| match cx.map_bmc_error(error) {
             PlatformError::Bmc { status: 404, .. } => PlatformError::Unsupported,
             other => other,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn an_upload_answered_with_a_task_message_is_tracked_as_that_task() {
+        let entity = |body| {
+            ModificationResponse::Entity(
+                serde_json::from_value::<UploadResponse>(body).expect("upload response"),
+            )
+        };
+        assert_eq!(
+            upload_outcome(entity(json!({"Messages": [{
+                "MessageId": TASK_STARTED,
+                "MessageArgs": ["/redfish/v1/TaskService/Tasks/3"],
+            }]}))),
+            DriverOutcome::accepted(OperationReference::RedfishTask {
+                uri: "/redfish/v1/TaskService/Tasks/3".to_string().into(),
+                retry_after_seconds: None,
+            })
+        );
+        assert_eq!(
+            upload_outcome(entity(json!({"Messages": []}))),
+            DriverOutcome::complete()
+        );
+    }
 }

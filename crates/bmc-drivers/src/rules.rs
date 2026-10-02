@@ -55,6 +55,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("lenovo-xcc", [vendor("Lenovo")]).drivers([
             LenovoXccPower,
             LenovoXccBios,
+            LenovoXccFirmware,
             LenovoXccLockdown,
             LenovoXccAccounts,
             LenovoXccConsole,
@@ -63,6 +64,7 @@ fn built_ins() -> Vec<Rule> {
             SupermicroSmcPower,
             SupermicroSmcBmcControl,
             SupermicroSmcBios,
+            SupermicroSmcFirmware,
             SupermicroX13BootOrder,
             SupermicroSmcLockdown,
             SupermicroBmcConsole,
