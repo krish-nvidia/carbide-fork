@@ -23,6 +23,7 @@ nv-redfish = { features = [
     "bios",
     "boot-options",
     "chassis",
+    "component-integrity",
     "computer-systems",
     "ethernet-interfaces",
     "host-interfaces",

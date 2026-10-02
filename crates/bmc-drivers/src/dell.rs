@@ -9,13 +9,15 @@ use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError, Vendo
 use nv_redfish::core::{ActionError, Bmc, ModificationResponse, RedfishSettings};
 use nv_redfish::oem::dell::DellManager;
 use nv_redfish::oem::dell::attributes::{AttributesUpdate, DellAttributes, DellAttributesUpdate};
-use nv_redfish::oem::dell::schema::ActionAnnotations as DellActionAnnotations;
-use nv_redfish::oem::dell::schema::SettingsApplyTimeUpdate as DellSettingsApplyTimeUpdate;
 use nv_redfish::oem::dell::schema::dell_lc_service::GetRemoteServicesApiStatusResponseLcStatus as LcStatus;
 use nv_redfish::oem::dell::schema::oem_manager::{
     ManagerImportSystemConfigurationAction, ShareParametersUpdate, ShutdownType,
 };
 pub(crate) use nv_redfish::oem::dell::schema::settings::ApplyTime as ManagerApplyTime;
+use nv_redfish::oem::dell::schema::{
+    ActionAnnotations as DellActionAnnotations,
+    SettingsApplyTimeUpdate as DellSettingsApplyTimeUpdate,
+};
 use nv_redfish::schema::SettingsApplyTimeUpdate;
 use nv_redfish::schema::settings::ApplyTime;
 use serde_json::Value;
@@ -282,7 +284,6 @@ mod tests {
     use std::time::Duration;
 
     use nv_redfish::core::{AsyncTask, AsyncTaskLocation};
-
     use serde_json::json;
 
     use super::*;

@@ -6,7 +6,6 @@
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
-
 use serde_json::json;
 
 use crate::bios::attributes::BiosAttribute;
