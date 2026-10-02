@@ -183,6 +183,7 @@ drivers! {
         AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::MegaRacBootOrder,
         DellIdracBootOrder = "dell-idrac-boot-order" => boot_order::IdracBootOrder,
         HpeIloBootOrder = "hpe-ilo-boot-order" => boot_order::IloBootOrder,
+        LenovoXccBootOrder = "lenovo-xcc-boot-order" => boot_order::XccBootOrder,
         NvidiaBlueFieldBootOrder = "nvidia-bluefield-boot-order" => boot_order::BlueFieldBootOrder,
         NvidiaOpenBmcBootOrder = "nvidia-openbmc-boot-order" => boot_order::OpenBmcBootOrder,
         NvidiaVikingBootOrder = "nvidia-viking-boot-order" => boot_order::VikingBootOrder,
