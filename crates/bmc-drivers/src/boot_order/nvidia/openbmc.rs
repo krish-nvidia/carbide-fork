@@ -25,7 +25,8 @@ impl<B: Bmc> BootOrder<B> for OpenBmcBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        cx.system()?
+        cx.system()
+            .await?
             .set_boot_source_override(
                 override_setting
                     .boot_source_override_target

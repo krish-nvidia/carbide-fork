@@ -65,6 +65,7 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
         };
         let host_rshim = cx
             .system()
+            .await
             .map_err(no_dpu)?
             .oem_nvidia()
             .await

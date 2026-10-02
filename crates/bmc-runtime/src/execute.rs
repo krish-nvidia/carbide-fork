@@ -191,7 +191,7 @@ where
     ///
     /// The selected system and manager are resolved once for the whole drive.
     pub async fn drive(&self, outcome: DriverOutcome) -> Result<Progress, ExecuteError> {
-        let cx = self.bmc.operation_context().await?;
+        let cx = self.bmc.operation_context();
         self.drive_with(&cx, outcome).await
     }
 

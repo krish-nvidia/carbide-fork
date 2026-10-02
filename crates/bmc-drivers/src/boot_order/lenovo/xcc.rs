@@ -48,7 +48,8 @@ async fn boot_interface_mac<B: Bmc>(
         BootInterfaceSelector::InterfaceId(interface_id) => interface_id,
     };
     let interfaces = cx
-        .system()?
+        .system()
+        .await?
         .ethernet_interfaces()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
@@ -88,7 +89,8 @@ fn priority_names_adapter(value: &str, mac: &str) -> bool {
 async fn boot_settings<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<Option<LenovoBootManagerCollection<B>>, PlatformError> {
-    cx.system()?
+    cx.system()
+        .await?
         .oem_lenovo()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
@@ -234,7 +236,7 @@ async fn configure_bios_priority<B: Bmc>(
 async fn network_group_first<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<Option<Vec<String>>, PlatformError> {
-    let system = cx.system()?;
+    let system = cx.system().await?;
     let order: Vec<String> = system
         .boot_order()
         .unwrap_or_default()
@@ -313,7 +315,8 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
         match (network_group_first(cx).await, &settings) {
             (Ok(Some(order)), _) => {
                 outcome = outcome.merge(
-                    cx.system()?
+                    cx.system()
+                        .await?
                         .set_boot_order(order.into_iter().map(BootOptionReference::new).collect())
                         .await
                         .map(DriverOutcome::from)

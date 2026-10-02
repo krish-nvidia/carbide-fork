@@ -21,7 +21,8 @@ async fn aux_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Plat
 where
     B::Error: ActionError,
 {
-    cx.system()?
+    cx.system()
+        .await?
         .oem_hpe_actions()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
@@ -52,7 +53,7 @@ where
         match reset_type {
             ResetType::ForceRestart => self.standard().set(cx, ResetType::GracefulRestart).await,
             ResetType::FullPowerCycle => {
-                if standard::state(cx)? != PowerState::Off {
+                if standard::state(cx).await? != PowerState::Off {
                     return Ok(DriverOutcome::blocked(ControllerAction::Power(
                         ResetType::ForceOff,
                     )));

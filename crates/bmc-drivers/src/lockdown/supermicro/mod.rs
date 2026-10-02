@@ -48,9 +48,10 @@ async fn is_mgx_c2<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
     }))
 }
 
-fn ipmi_host_interface_supported<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+async fn ipmi_host_interface_supported<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
     let firmware = cx
-        .manager()?
+        .manager()
+        .await?
         .raw()
         .firmware_version
         .clone()
@@ -67,21 +68,24 @@ fn ipmi_host_interface_supported<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, Platf
 /// when disabled. `None` on MGX C2 firmware that does not report it.
 async fn kcs_privilege<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Option<Privilege>, PlatformError> {
     if is_mgx_c2(cx).await? {
-        if !ipmi_host_interface_supported(cx)? {
+        if !ipmi_host_interface_supported(cx).await? {
             return Ok(None);
         }
-        let enabled = cx.system()?.ipmi_host_interface_enabled().ok_or_else(|| {
-            PlatformError::InvalidResponse {
+        let enabled = cx
+            .system()
+            .await?
+            .ipmi_host_interface_enabled()
+            .ok_or_else(|| PlatformError::InvalidResponse {
                 message: "MGX C2 system does not report IPMIHostInterface".to_string(),
-            }
-        })?;
+            })?;
         return Ok(Some(if enabled {
             Privilege::Administrator
         } else {
             Privilege::Callback
         }));
     }
-    cx.manager()?
+    cx.manager()
+        .await?
         .oem_supermicro()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
@@ -114,17 +118,19 @@ async fn set_kcs_privilege<B: Bmc>(
     privilege: Privilege,
 ) -> Result<DriverOutcome, PlatformError> {
     if is_mgx_c2(cx).await? {
-        if !ipmi_host_interface_supported(cx)? {
+        if !ipmi_host_interface_supported(cx).await? {
             return Ok(DriverOutcome::complete());
         }
         return cx
-            .system()?
+            .system()
+            .await?
             .set_ipmi_host_interface_enabled(privilege == Privilege::Administrator)
             .await
             .map(DriverOutcome::from)
             .map_err(|error| cx.map_redfish_error(error));
     }
-    cx.manager()?
+    cx.manager()
+        .await?
         .oem_supermicro()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?

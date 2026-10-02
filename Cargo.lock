@@ -903,6 +903,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "version-compare 0.2.1",
 ]
 

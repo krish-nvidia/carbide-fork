@@ -148,11 +148,25 @@ impl Fixture {
 impl FixtureBmc {
     /// An operation context, with the request log cleared.
     pub(crate) async fn cx(&self) -> OpCx<'_, TestBmc> {
-        let cx = OpCx::new(self.bmc.as_ref(), &self.root, &self.identity)
-            .await
-            .expect("fixture resolves the selected system and manager");
+        let cx = OpCx::new(self.bmc.as_ref(), &self.root, &self.identity);
+        if self.identity.system.is_some() {
+            cx.system()
+                .await
+                .expect("fixture resolves the selected system");
+        }
+        if self.identity.manager.is_some() {
+            cx.manager()
+                .await
+                .expect("fixture resolves the selected manager");
+        }
         self.client.take_requests();
         cx
+    }
+
+    /// An operation context that has fetched nothing, as the runtime builds it.
+    pub(crate) fn lazy_cx(&self) -> OpCx<'_, TestBmc> {
+        self.client.take_requests();
+        OpCx::new(self.bmc.as_ref(), &self.root, &self.identity)
     }
 
     /// Every request other than `GET` issued since the last call.

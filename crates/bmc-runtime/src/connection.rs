@@ -174,6 +174,7 @@ mod tests {
                 PlatformError::Auth(AuthError::InsufficientPrivilege) => true,
             }
             "return directly" {
+                PlatformError::Auth(AuthError::PasswordChangeRequired { account_uri: None }) => false,
                 PlatformError::Unsupported => false,
                 PlatformError::Unreachable => false,
                 PlatformError::LockedDown => false,

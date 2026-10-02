@@ -29,8 +29,10 @@ pub enum AuthError {
     CredentialsUnavailable,
     #[error("BMC rejected the credentials")]
     InvalidCredentials,
+    /// The account must change its password before any other request;
+    /// `account_uri` is the account the BMC names for that change.
     #[error("BMC requires a password change")]
-    PasswordChangeRequired,
+    PasswordChangeRequired { account_uri: Option<String> },
     #[error("BMC account lacks the required privilege")]
     InsufficientPrivilege,
 }
@@ -113,7 +115,9 @@ mod tests {
             },
             PlatformError::NoDpu,
             PlatformError::NoContent,
-            PlatformError::Auth(AuthError::PasswordChangeRequired),
+            PlatformError::Auth(AuthError::PasswordChangeRequired {
+                account_uri: Some("/redfish/v1/AccountService/Accounts/2".to_string()),
+            }),
             PlatformError::Bmc {
                 status: 409,
                 message_id: Some("Base.1.0.ResourceInUse".to_string()),

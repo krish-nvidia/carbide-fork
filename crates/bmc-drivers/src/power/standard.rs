@@ -24,7 +24,7 @@ where
     }
 
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
-        state(cx).map(Some)
+        state(cx).await.map(Some)
     }
 
     /// Standard Redfish offers no AC power cycle.
@@ -51,8 +51,11 @@ where
 }
 
 /// The selected system's reported power state.
-pub(super) fn state<B: Bmc>(cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
-    cx.system()?.power_state().ok_or(PlatformError::NoContent)
+pub(super) async fn state<B: Bmc>(cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
+    cx.system()
+        .await?
+        .power_state()
+        .ok_or(PlatformError::NoContent)
 }
 
 /// Resets the selected system through its advertised `ComputerSystem.Reset` action.
@@ -64,7 +67,8 @@ where
     B::Error: ActionError,
 {
     already_satisfied_is_complete(
-        cx.system()?
+        cx.system()
+            .await?
             .reset(Some(reset_type))
             .await
             .map(DriverOutcome::from)
@@ -137,9 +141,8 @@ mod tests {
             }),
             ..PlatformIdentity::default()
         };
-        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity)
-            .await
-            .expect("selected system resolves");
+        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity);
+        cx.system().await.expect("selected system resolves");
         bmc.http_client.take_requests();
 
         let outcome = StandardPower

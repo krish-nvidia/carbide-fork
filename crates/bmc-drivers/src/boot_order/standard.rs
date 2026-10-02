@@ -56,7 +56,7 @@ async fn set_override<B: Bmc>(
     cx: &OpCx<'_, B>,
     override_setting: &BootUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    let system = cx.system()?;
+    let system = cx.system().await?;
     let body = ComputerSystemUpdate::builder()
         .with_boot(boot_source_override(override_setting))
         .build();
@@ -73,7 +73,8 @@ pub(super) async fn settings_object_override<B: Bmc>(
     cx: &OpCx<'_, B>,
     setting: &BootUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    cx.system()?
+    cx.system()
+        .await?
         .set_boot_source_override(
             setting
                 .boot_source_override_target
@@ -379,7 +380,7 @@ type BootState<'c, B> = (
 );
 
 async fn state<'c, B: Bmc>(cx: &'c OpCx<'_, B>) -> Result<BootState<'c, B>, PlatformError> {
-    let system = cx.system()?;
+    let system = cx.system().await?;
     let order = system
         .boot_order()
         .ok_or(PlatformError::Unsupported)?

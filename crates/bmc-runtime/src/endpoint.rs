@@ -23,7 +23,7 @@ use bmc_drivers::{
 };
 use bmc_platform::{
     Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, ClassifyBmcError, Console, Dpu,
-    Firmware, IpmiOps, Lockdown, OpCx, PlatformError, PlatformIdentity, Power, SecureBoot, Storage,
+    Firmware, IpmiOps, Lockdown, OpCx, PlatformIdentity, Power, SecureBoot, Storage,
 };
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use carbide_utils::redfish::{BmcAccessInfo, parse_uri_host_ip};
@@ -304,18 +304,18 @@ where
         self.service_root = service_root;
     }
 
-    /// Builds an operation context, resolving the selected system and manager once.
-    pub async fn operation_context(&self) -> Result<OpCx<'_, B>, PlatformError> {
+    /// Builds an operation context; the selected system and manager are
+    /// resolved on first use.
+    pub fn operation_context(&self) -> OpCx<'_, B> {
         let context = OpCx::new(
             self.bmc.as_ref(),
             self.service_root.as_ref(),
             self.endpoint.identity(),
-        )
-        .await?;
-        Ok(match self.ipmi.as_deref() {
+        );
+        match self.ipmi.as_deref() {
             Some(ipmi) => context.with_ipmi(ipmi),
             None => context,
-        })
+        }
     }
 }
 

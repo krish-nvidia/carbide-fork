@@ -26,7 +26,8 @@ pub(crate) use nvidia::{OpenBmcLockdown, VikingLockdown};
 pub(crate) use supermicro::{Ars121lLockdown, SmcLockdown};
 
 async fn host_interfaces<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Vec<HostInterface<B>>, PlatformError> {
-    cx.manager()?
+    cx.manager()
+        .await?
         .host_interfaces()
         .await
         .map_err(|error| cx.map_redfish_error(error))?

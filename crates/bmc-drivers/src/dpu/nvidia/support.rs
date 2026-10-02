@@ -146,6 +146,7 @@ pub(super) async fn system_oem<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<NvidiaComputerSystem<B>, PlatformError> {
     cx.system()
+        .await
         .map_err(no_dpu)?
         .oem_nvidia()
         .await
@@ -175,7 +176,7 @@ pub(super) async fn set_mode_without_oem_read<B: Bmc>(
     cx: &OpCx<'_, B>,
     mode: NicMode,
 ) -> Result<DriverOutcome, PlatformError> {
-    let system = cx.system().map_err(no_dpu)?;
+    let system = cx.system().await.map_err(no_dpu)?;
     let action = Action::<Value, ()>::new(ActionTarget::new(format!(
         "{}/Oem/Nvidia/Actions/Mode.Set",
         system.raw().odata_id
@@ -209,7 +210,8 @@ pub(super) fn host_rshim_state(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<R
 pub(super) async fn enable_bmc_rshim<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<DriverOutcome, PlatformError> {
-    cx.manager()?
+    cx.manager()
+        .await?
         .oem_nvidia()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?

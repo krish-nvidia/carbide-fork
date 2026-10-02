@@ -8,13 +8,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{Accounts, AuthError, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::account::{
     Account, AccountCollection, AccountService, AccountServiceConfig, AccountServiceUpdate,
-    ManagerAccountCreate,
+    ManagerAccountCreate, ManagerAccountUpdate,
 };
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::schema::manager_account::ManagerAccount;
+use serde::de::IgnoredAny;
 
 /// Redfish-standard account operations.
 pub(crate) struct StandardAccounts;
@@ -66,8 +67,14 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        account_by_username(cx, username)
-            .await?
+        let account = match account_by_username(cx, username).await {
+            Ok(account) => account,
+            Err(PlatformError::Auth(AuthError::PasswordChangeRequired {
+                account_uri: Some(account_uri),
+            })) => return change_required_password(cx, account_uri, password).await,
+            Err(error) => return Err(error),
+        };
+        account
             .update_password(password.to_string())
             .await
             .map(DriverOutcome::from)
@@ -147,6 +154,27 @@ pub(super) async fn apply_policy<B: Bmc>(
         .map_err(|error| cx.map_redfish_error(error))
 }
 
+/// Sets the password of the account a `PasswordChangeRequired` response
+/// named. Until that change the BMC refuses everything else, including the
+/// account-service reads a lookup needs.
+async fn change_required_password<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    account_uri: String,
+    password: &str,
+) -> Result<DriverOutcome, PlatformError> {
+    cx.bmc()
+        .update::<_, IgnoredAny>(
+            &ODataId::from(account_uri),
+            None,
+            &ManagerAccountUpdate::builder()
+                .with_password(password.to_string())
+                .build(),
+        )
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_bmc_error(error))
+}
+
 async fn account_by_username<B: Bmc>(
     cx: &OpCx<'_, B>,
     username: &str,
@@ -161,4 +189,79 @@ async fn account_by_username<B: Bmc>(
         .ok_or_else(|| PlatformError::UserNotFound {
             identifier: username.to_string(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{Method, StatusCode};
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::{Fixture, FixtureBmc, body, path};
+
+    #[tokio::test]
+    async fn factory_password_change_patches_the_account_the_bmc_names() {
+        let bmc = factory_bmc().await;
+        let cx = bmc.lazy_cx();
+
+        assert_eq!(
+            StandardAccounts
+                .change_password(&cx, "root", "new-password")
+                .await,
+            Ok(DriverOutcome::complete())
+        );
+        let writes = bmc.writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].method, Method::PATCH);
+        assert_eq!(path(&writes[0]), ACCOUNT);
+        assert_eq!(body(&writes[0]), json!({"Password": "new-password"}));
+        // AMI firmware rejects the first password change without `If-Match: *`.
+        assert_eq!(
+            writes[0]
+                .headers
+                .get("If-Match")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+    }
+
+    const ACCOUNT: &str = "/redfish/v1/AccountService/Accounts/root";
+
+    /// A BMC in factory state: every read but the service root answers
+    /// `PasswordChangeRequired` naming the account to change.
+    async fn factory_bmc() -> FixtureBmc {
+        let password_change_required = json!({"error": {
+            "code": "Base.1.18.1.GeneralError",
+            "@Message.ExtendedInfo": [{
+                "MessageId": "Base.1.18.1.PasswordChangeRequired",
+                "MessageArgs": [ACCOUNT]
+            }]
+        }});
+        Fixture::new("NVIDIA", "GB200 NVL", "System_0", "BMC_0")
+            .document(
+                "/redfish/v1",
+                json!({
+                    "@odata.id": "/redfish/v1",
+                    "Id": "RootService",
+                    "Name": "Root Service",
+                    "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                    "AccountService": {"@odata.id": "/redfish/v1/AccountService"},
+                    "Links": {"Sessions": {"@odata.id": "/redfish/v1/SessionService/Sessions"}},
+                }),
+            )
+            .respond(
+                Method::GET,
+                "/redfish/v1/Systems",
+                StatusCode::FORBIDDEN,
+                Some(password_change_required.clone()),
+            )
+            .respond(
+                Method::GET,
+                "/redfish/v1/AccountService",
+                StatusCode::FORBIDDEN,
+                Some(password_change_required),
+            )
+            .build()
+            .await
+    }
 }

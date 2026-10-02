@@ -30,7 +30,7 @@ const SYSTEM_LOCKDOWN: &str = "Lockdown.1.SystemLockdown";
 /// iDRAC may locate a new job under the manager's `Jobs`, its `Oem/Dell/Jobs`
 /// or the TaskService, but only the selected manager's `Oem/Dell/Jobs/{id}`
 /// reports the Dell `JobState`, so jobs are polled there.
-pub(crate) fn job_outcome<B: Bmc, T>(
+pub(crate) async fn job_outcome<B: Bmc, T>(
     cx: &OpCx<'_, B>,
     response: ModificationResponse<T>,
 ) -> Result<DriverOutcome, PlatformError> {
@@ -46,7 +46,8 @@ pub(crate) fn job_outcome<B: Bmc, T>(
         .and_then(|id| id.parse::<VendorJobId>().ok());
     Ok(DriverOutcome::accepted(match job_id {
         Some(job_id) => {
-            let jobs = dell_manager(cx)?
+            let jobs = dell_manager(cx)
+                .await?
                 .configuration_jobs()
                 .ok_or(PlatformError::Unsupported)?;
             OperationReference::VendorJob {
@@ -63,8 +64,9 @@ pub(crate) fn job_outcome<B: Bmc, T>(
 }
 
 /// The Dell resources the selected Manager advertises.
-fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, PlatformError> {
-    cx.manager()?
+async fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, PlatformError> {
+    cx.manager()
+        .await?
         .oem_dell()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)
@@ -72,7 +74,8 @@ fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, PlatformErro
 
 /// The selected Manager's iDRAC attributes.
 async fn manager_attributes<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellAttributes<B>, PlatformError> {
-    cx.manager()?
+    cx.manager()
+        .await?
         .oem_dell_attributes()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
@@ -98,7 +101,8 @@ where
     if system_lockdown == "Enabled" {
         return Err(PlatformError::LockedDown);
     }
-    dell_manager(cx)?
+    dell_manager(cx)
+        .await?
         .job_service()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
@@ -117,7 +121,8 @@ pub(crate) async fn require_lifecycle_controller_ready<B: Bmc>(
 where
     B::Error: ActionError,
 {
-    let response = dell_manager(cx)?
+    let response = dell_manager(cx)
+        .await?
         .lc_service()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
@@ -153,7 +158,8 @@ where
         r#"<SystemConfiguration><Component FQDD="BIOS.Setup.1-1"><Attribute Name="OldSetupPassword">{}</Attribute><Attribute Name="NewSetupPassword"></Attribute></Component></SystemConfiguration>"#,
         xml_escape(current_password)
     );
-    let response = dell_manager(cx)?
+    let response = dell_manager(cx)
+        .await?
         .import_system_configuration(&ManagerImportSystemConfigurationAction {
             redfish_annotations: DellActionAnnotations::default(),
             share_parameters: ShareParametersUpdate::builder()
@@ -165,7 +171,7 @@ where
         })
         .await
         .map_err(|error| cx.map_redfish_error(error))?;
-    job_outcome(cx, response)
+    job_outcome(cx, response).await
 }
 
 /// Escapes XML character data.
@@ -191,13 +197,14 @@ pub(crate) async fn create_bios_config_job<B: Bmc>(
         .raw()
         .settings_object()
         .ok_or(PlatformError::Unsupported)?;
-    let response = dell_manager(cx)?
+    let response = dell_manager(cx)
+        .await?
         .configuration_jobs()
         .ok_or(PlatformError::Unsupported)?
         .create_configuration_job(settings.id())
         .await
         .map_err(|error| cx.map_redfish_error(error))?;
-    job_outcome(cx, response)
+    job_outcome(cx, response).await
 }
 
 /// Stages BIOS attributes as an iDRAC configuration job applied on the next reset.
@@ -210,9 +217,8 @@ where
 {
     clear_job_queue(cx).await?;
     let body = bios_update(attributes)?.with_settings_apply_time(on_reset());
-    update_bios_settings(cx, &body)
-        .await
-        .and_then(|response| job_outcome(cx, response))
+    let response = update_bios_settings(cx, &body).await?;
+    job_outcome(cx, response).await
 }
 
 /// `@Redfish.SettingsApplyTime` for settings iDRAC applies on the next reset.
@@ -268,7 +274,7 @@ pub(crate) async fn patch_manager_attributes<B: Bmc>(
         .update(&body)
         .await
         .map_err(|error| cx.map_redfish_error(error))?;
-    job_outcome(cx, response)
+    job_outcome(cx, response).await
 }
 
 #[cfg(test)]
@@ -317,7 +323,8 @@ mod tests {
             job_outcome(
                 &cx,
                 task("/redfish/v1/Managers/iDRAC.Embedded.1/Jobs/JID_42")
-            ),
+            )
+            .await,
             Ok(DriverOutcome::accepted(OperationReference::VendorJob {
                 uri: "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/Jobs/JID_42"
                     .to_string()
@@ -327,7 +334,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            job_outcome(&cx, task("/redfish/v1/TaskService/Tasks/42")),
+            job_outcome(&cx, task("/redfish/v1/TaskService/Tasks/42")).await,
             Ok(DriverOutcome::accepted(OperationReference::RedfishTask {
                 uri: "/redfish/v1/TaskService/Tasks/42".to_string().into(),
                 retry_after_seconds: Some(7),

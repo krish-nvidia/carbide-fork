@@ -20,7 +20,8 @@ async fn ac_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platf
 where
     B::Error: ActionError,
 {
-    cx.system()?
+    cx.system()
+        .await?
         .oem_lenovo_actions()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?

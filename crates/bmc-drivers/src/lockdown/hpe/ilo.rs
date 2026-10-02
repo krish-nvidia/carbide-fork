@@ -37,7 +37,7 @@ fn kcs_writable(firmware: Option<&str>) -> bool {
 }
 
 async fn set_kcs<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
-    let manager = cx.manager()?;
+    let manager = cx.manager().await?;
     let firmware = manager.raw().firmware_version.clone().flatten();
     if !kcs_writable(firmware.as_deref()) {
         return Ok(DriverOutcome::complete());
@@ -67,7 +67,8 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
 }
 
 async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
-    cx.manager()?
+    cx.manager()
+        .await?
         .oem_hpe()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
@@ -88,7 +89,8 @@ impl<B: Bmc> Lockdown<B> for IloLockdown {
         let host = state_from_signals(&[signal(usb_boot.as_deref(), "Disabled", "Enabled")]);
 
         let virtual_nic = cx
-            .manager()?
+            .manager()
+            .await?
             .oem_hpe()
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?

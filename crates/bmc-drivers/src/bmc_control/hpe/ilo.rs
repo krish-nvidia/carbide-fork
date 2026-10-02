@@ -17,8 +17,9 @@ use crate::bmc_control::standard::StandardBmcControl;
 /// NTP servers on its `DateTime` service rather than NetworkProtocol.
 pub(crate) struct IloBmcControl;
 
-fn hpe_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<HpeManager<B>, PlatformError> {
-    cx.manager()?
+async fn hpe_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<HpeManager<B>, PlatformError> {
+    cx.manager()
+        .await?
         .oem_hpe()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)
@@ -37,7 +38,8 @@ where
         &self,
         cx: &OpCx<'_, B>,
     ) -> Result<DriverOutcome, PlatformError> {
-        hpe_manager(cx)?
+        hpe_manager(cx)
+            .await?
             .reset_to_factory_defaults()
             .await
             .map(DriverOutcome::from)
@@ -58,7 +60,8 @@ where
             servers.first().cloned().unwrap_or_default(),
             servers.get(1).cloned().unwrap_or_default(),
         ];
-        hpe_manager(cx)?
+        hpe_manager(cx)
+            .await?
             .date_time()
             .await
             .map_err(|error| cx.map_redfish_error(error))?

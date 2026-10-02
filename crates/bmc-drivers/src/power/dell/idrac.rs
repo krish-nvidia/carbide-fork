@@ -34,7 +34,7 @@ where
     }
     let staged =
         dell::stage_bios_attributes(cx, json!({"PowerCycleRequest": "FullPowerCycle"})).await?;
-    let follow_up = match standard::state(cx)? {
+    let follow_up = match standard::state(cx).await? {
         PowerState::Off => ResetType::On,
         _ => ResetType::GracefulRestart,
     };

@@ -69,9 +69,7 @@ mod tests {
     async fn state_reads_the_liteon_supply_power_states() {
         let bmc = bmc_mock::test_support::liteon_powershelf_bmc().await;
         let identity = PlatformIdentity::default();
-        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity)
-            .await
-            .expect("power shelf context resolves");
+        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity);
 
         assert_eq!(
             LiteOnPowerShelfPower.state(&cx).await,

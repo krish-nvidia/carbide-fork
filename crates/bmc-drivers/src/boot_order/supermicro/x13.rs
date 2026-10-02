@@ -38,9 +38,10 @@ struct FixedBootOrder {
 
 /// Whether the system reports a non-empty `Boot.BootOrder`; models that report
 /// none or an empty one order boot devices through `FixedBootOrder`.
-fn has_standard_boot_order<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+async fn has_standard_boot_order<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
     Ok(cx
-        .system()?
+        .system()
+        .await?
         .boot_order()
         .is_some_and(|order| !order.is_empty()))
 }
@@ -61,7 +62,8 @@ async fn fixed_boot_order<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<(SmcFixedBootOrder<B>, FixedBootOrder), PlatformError> {
     let resource = cx
-        .system()?
+        .system()
+        .await?
         .oem_supermicro()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?
@@ -171,7 +173,7 @@ impl<B: Bmc> BootOrder<B> for X13BootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
-        if !has_standard_boot_order(cx)? {
+        if !has_standard_boot_order(cx).await? {
             return Ok(fixed_status(&fixed_boot_order(cx).await?.1, selector));
         }
         match self.standard().status(cx, selector).await {
@@ -187,7 +189,7 @@ impl<B: Bmc> BootOrder<B> for X13BootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        if !has_standard_boot_order(cx)? {
+        if !has_standard_boot_order(cx).await? {
             return configure_fixed(cx, selector).await;
         }
         match self.standard().configure(cx, selector).await {

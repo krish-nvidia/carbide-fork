@@ -107,16 +107,16 @@ where
         )
         .await?;
         let body = bios_update(payload)?.with_settings_apply_time(dell::on_reset());
-        let bios_outcome = update_bios_settings(cx, &body)
-            .await
-            .and_then(|response| dell::job_outcome(cx, response))?;
+        let response = update_bios_settings(cx, &body).await?;
+        let bios_outcome = dell::job_outcome(cx, response).await?;
         Ok(manager_outcome.merge(bios_outcome))
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
         let mut attrs = bios_attributes(cx).await?;
         let dell = cx
-            .manager()?
+            .manager()
+            .await?
             .oem_dell_attributes()
             .await
             .map_err(|error| cx.map_redfish_error(error))?

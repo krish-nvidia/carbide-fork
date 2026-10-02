@@ -20,6 +20,7 @@ use nv_redfish::core::Action;
 use nv_redfish::manager::Manager;
 use nv_redfish::{Bmc, Error as RedfishError, ServiceRoot};
 use serde::{Deserialize, Serialize};
+use tokio::sync::OnceCell;
 
 use super::{ClassifyBmcError, IpmiOps};
 use crate::{DriverOutcome, PlatformError, PlatformIdentity};
@@ -29,71 +30,33 @@ use crate::{DriverOutcome, PlatformError, PlatformIdentity};
 /// `nv-redfish` is the only Redfish transport: drivers navigate through the
 /// typed `ServiceRoot` wrappers and reach OEM resources through the same
 /// authenticated `Bmc`. The ComputerSystem and Manager that exploration
-/// selected are resolved once here.
+/// selected are resolved on first use, because a factory BMC rejects every
+/// request but the first password change until that change is made.
 pub struct OpCx<'a, B: Bmc> {
     bmc: &'a B,
     service_root: &'a ServiceRoot<B>,
     identity: &'a PlatformIdentity,
     classify: fn(B::Error) -> PlatformError,
-    system: Option<ComputerSystem<B>>,
-    manager: Option<Manager<B>>,
+    system: OnceCell<Option<ComputerSystem<B>>>,
+    manager: OnceCell<Option<Manager<B>>>,
     ipmi: Option<&'a dyn IpmiOps>,
 }
 
 impl<'a, B: Bmc> OpCx<'a, B> {
-    /// Creates a context, resolving the exploration-selected system and manager.
-    ///
-    /// Fails when the identity names a resource the BMC no longer lists.
-    pub async fn new(
-        bmc: &'a B,
-        service_root: &'a ServiceRoot<B>,
-        identity: &'a PlatformIdentity,
-    ) -> Result<Self, PlatformError>
+    /// Creates a context for the exploration-selected identity.
+    pub fn new(bmc: &'a B, service_root: &'a ServiceRoot<B>, identity: &'a PlatformIdentity) -> Self
     where
         B::Error: ClassifyBmcError,
     {
-        let mut context = Self {
+        Self {
             bmc,
             service_root,
             identity,
             classify: <B::Error as ClassifyBmcError>::classify,
-            system: None,
-            manager: None,
+            system: OnceCell::new(),
+            manager: OnceCell::new(),
             ipmi: None,
-        };
-        if let Some(system) = &identity.system {
-            let systems = service_root
-                .systems()
-                .await
-                .map_err(|error| context.map_redfish_error(error))?
-                .ok_or(PlatformError::Unsupported)?
-                .members()
-                .await
-                .map_err(|error| context.map_redfish_error(error))?;
-            context.system = Some(find_selected(
-                systems,
-                |member| member.raw().id.clone(),
-                &system.id,
-                "ComputerSystem",
-            )?);
         }
-        if let Some(manager) = &identity.manager {
-            let managers = service_root
-                .managers()
-                .await
-                .map_err(|error| context.map_redfish_error(error))?
-                .ok_or(PlatformError::Unsupported)?
-                .members()
-                .await
-                .map_err(|error| context.map_redfish_error(error))?;
-            context.manager = Some(find_selected(
-                managers,
-                |member| member.raw().id.clone(),
-                &manager.id,
-                "Manager",
-            )?);
-        }
-        Ok(context)
     }
 
     /// Attaches IPMI operations for drivers that need them.
@@ -119,13 +82,65 @@ impl<'a, B: Bmc> OpCx<'a, B> {
 
     /// Returns the ComputerSystem exploration selected; `Unsupported` when the
     /// BMC manages no system (power shelves, switches).
-    pub fn system(&self) -> Result<&ComputerSystem<B>, PlatformError> {
-        self.system.as_ref().ok_or(PlatformError::Unsupported)
+    ///
+    /// Fails when the identity names a system the BMC no longer lists.
+    pub async fn system(&self) -> Result<&ComputerSystem<B>, PlatformError> {
+        self.system
+            .get_or_try_init(|| async {
+                let Some(system) = &self.identity.system else {
+                    return Ok(None);
+                };
+                let systems = self
+                    .service_root
+                    .systems()
+                    .await
+                    .map_err(|error| self.map_redfish_error(error))?
+                    .ok_or(PlatformError::Unsupported)?
+                    .members()
+                    .await
+                    .map_err(|error| self.map_redfish_error(error))?;
+                find_selected(
+                    systems,
+                    |member| member.raw().id.clone(),
+                    &system.id,
+                    "ComputerSystem",
+                )
+                .map(Some)
+            })
+            .await?
+            .as_ref()
+            .ok_or(PlatformError::Unsupported)
     }
 
     /// Returns the Manager linked to the selected system.
-    pub fn manager(&self) -> Result<&Manager<B>, PlatformError> {
-        self.manager.as_ref().ok_or(PlatformError::Unsupported)
+    ///
+    /// Fails when the identity names a manager the BMC no longer lists.
+    pub async fn manager(&self) -> Result<&Manager<B>, PlatformError> {
+        self.manager
+            .get_or_try_init(|| async {
+                let Some(manager) = &self.identity.manager else {
+                    return Ok(None);
+                };
+                let managers = self
+                    .service_root
+                    .managers()
+                    .await
+                    .map_err(|error| self.map_redfish_error(error))?
+                    .ok_or(PlatformError::Unsupported)?
+                    .members()
+                    .await
+                    .map_err(|error| self.map_redfish_error(error))?;
+                find_selected(
+                    managers,
+                    |member| member.raw().id.clone(),
+                    &manager.id,
+                    "Manager",
+                )
+                .map(Some)
+            })
+            .await?
+            .as_ref()
+            .ok_or(PlatformError::Unsupported)
     }
 
     /// Returns IPMI operations when the runtime attached them.

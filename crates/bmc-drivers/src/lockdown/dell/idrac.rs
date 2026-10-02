@@ -24,8 +24,8 @@ use crate::resources::{bios_update, selected_bios, update_bios_settings};
 pub(crate) struct IdracLockdown;
 
 /// The device lockdown pins first; the XE9680 cannot PXE boot.
-fn first_boot_device<B: Bmc>(cx: &OpCx<'_, B>) -> Result<&'static str, PlatformError> {
-    let model = cx.system()?.raw().model.clone().flatten();
+async fn first_boot_device<B: Bmc>(cx: &OpCx<'_, B>) -> Result<&'static str, PlatformError> {
+    let model = cx.system().await?.raw().model.clone().flatten();
     Ok(match model.as_deref() {
         Some("PowerEdge XE9680") => "UefiHttp",
         _ => "PXE",
@@ -55,7 +55,7 @@ async fn unlock_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platform
     }))?
     .with_settings_apply_time(dell::on_reset());
     match update_bios_settings(cx, &body).await {
-        Ok(response) => dell::job_outcome(cx, response),
+        Ok(response) => dell::job_outcome(cx, response).await,
         Err(error) if dell::is_read_only_attribute(&error) => Ok(DriverOutcome::complete()),
         Err(error) => Err(error),
     }
@@ -68,7 +68,7 @@ async fn lock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformErr
         cx,
         json!({
             "Racadm.1.Enable": "Disabled",
-            "ServerBoot.1.FirstBootDevice": first_boot_device(cx)?,
+            "ServerBoot.1.FirstBootDevice": first_boot_device(cx).await?,
             "ServerBoot.1.BootOnce": "Disabled"
         }),
         Some(ManagerApplyTime::OnReset),
@@ -89,7 +89,7 @@ async fn unlock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformE
         json!({
             "Lockdown.1.SystemLockdown": "Disabled",
             "Racadm.1.Enable": "Enabled",
-            "ServerBoot.1.FirstBootDevice": first_boot_device(cx)?,
+            "ServerBoot.1.FirstBootDevice": first_boot_device(cx).await?,
             "ServerBoot.1.BootOnce": "Disabled"
         }),
         Some(ManagerApplyTime::Immediate),
@@ -116,7 +116,8 @@ where
         ]);
 
         let attrs = cx
-            .manager()?
+            .manager()
+            .await?
             .oem_dell_attributes()
             .await
             .map_err(|error| cx.map_redfish_error(error))?

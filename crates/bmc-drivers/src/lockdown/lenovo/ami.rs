@@ -27,7 +27,8 @@ pub(crate) struct LenovoAmiLockdown;
 impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
         let config = cx
-            .manager()?
+            .manager()
+            .await?
             .oem_ami_config_bmc()
             .await
             .map_err(|error| cx.map_redfish_error(error))?
@@ -84,7 +85,8 @@ impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
             LockdownScope::Host | LockdownScope::Bmc => return Err(PlatformError::Unsupported),
         }
         let config = cx
-            .manager()?
+            .manager()
+            .await?
             .oem_ami_config_bmc()
             .await
             .map_err(|error| cx.map_redfish_error(error))?

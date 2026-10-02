@@ -28,7 +28,7 @@ pub(crate) struct Ars121lLockdown;
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for Ars121lLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let manager = cx.manager()?;
+        let manager = cx.manager().await?;
         let smc = manager
             .oem_supermicro()
             .map_err(|error| cx.map_redfish_error(error))?
@@ -64,7 +64,7 @@ impl<B: Bmc> Lockdown<B> for Ars121lLockdown {
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
         let enabled = desired == LockdownDesiredState::Enabled;
-        let manager = cx.manager()?;
+        let manager = cx.manager().await?;
         let mut outcome = DriverOutcome::complete();
         if !enabled && bmc_scope(scope) {
             outcome = outcome.merge(set_sys_lockdown(cx, manager, false).await?);

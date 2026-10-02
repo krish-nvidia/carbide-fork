@@ -41,7 +41,7 @@ async fn target<B: Bmc>(
             }}})),
         ),
         FirmwareComponent::Bmc => (
-            cx.manager()?.raw().odata_id.to_string(),
+            cx.manager().await?.raw().odata_id.to_string(),
             Some(json!({"Supermicro": {"BMC": {
                 "PreserveCfg": true,
                 "PreserveSdr": true,

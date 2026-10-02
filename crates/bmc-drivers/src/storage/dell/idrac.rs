@@ -32,7 +32,8 @@ async fn find_controller<B: Bmc>(
     controller_id: &str,
 ) -> Result<nv_redfish::computer_system::Storage<B>, PlatformError> {
     let controllers = cx
-        .system()?
+        .system()
+        .await?
         .storage_controllers()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
@@ -56,7 +57,8 @@ where
 {
     async fn boot_controller(&self, cx: &OpCx<'_, B>) -> Result<Option<String>, PlatformError> {
         let controllers = cx
-            .system()?
+            .system()
+            .await?
             .storage_controllers()
             .await
             .map_err(|error| cx.map_redfish_error(error))?
@@ -92,7 +94,7 @@ where
             .decommission_controller_drives(Some(OperationApplyTime::Immediate))
             .await
             .map_err(|error| cx.map_redfish_error(error))?;
-        job_outcome(cx, response)
+        job_outcome(cx, response).await
     }
 
     async fn create_volume(
@@ -131,7 +133,7 @@ where
             .create(&request)
             .await
             .map_err(|error| cx.map_redfish_error(error))?;
-        job_outcome(cx, response)
+        job_outcome(cx, response).await
     }
 }
 

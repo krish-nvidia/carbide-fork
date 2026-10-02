@@ -49,14 +49,18 @@ impl PlatformError {
     /// Classifies a non-success HTTP response by status and Redfish error body.
     ///
     /// 401 and 403 are authentication failures the runtime may retry after a
-    /// credential refresh. Every other status, including 409, keeps the first
-    /// `@Message.ExtendedInfo` entry, falling back to the top-level
-    /// `code`/`message`, then the raw body; drivers that know a status means
-    /// "already in the requested state" interpret it themselves.
+    /// credential refresh, except a 403 whose `@Message.ExtendedInfo` reports
+    /// `PasswordChangeRequired`, which a refresh cannot clear. Every other
+    /// status, including 409, keeps the first `@Message.ExtendedInfo` entry,
+    /// falling back to the top-level `code`/`message`, then the raw body;
+    /// drivers that know a status means "already in the requested state"
+    /// interpret it themselves.
     pub fn from_http_response(status: u16, body: &str) -> Self {
         match status {
             401 => Self::Auth(AuthError::InvalidCredentials),
-            403 => Self::Auth(AuthError::InsufficientPrivilege),
+            403 => Self::Auth(
+                password_change_required(body).unwrap_or(AuthError::InsufficientPrivilege),
+            ),
             status => {
                 let (message_id, message) = redfish_error_details(body);
                 Self::Bmc {
@@ -67,6 +71,30 @@ impl PlatformError {
             }
         }
     }
+}
+
+/// The `PasswordChangeRequired` entry of a 403 body, whose first message
+/// argument is the account URI to change.
+fn password_change_required(body: &str) -> Option<AuthError> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let error = value.get("error").unwrap_or(&value);
+    let message = error
+        .get("@Message.ExtendedInfo")?
+        .as_array()?
+        .iter()
+        .find(|message| {
+            message
+                .get("MessageId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| id.ends_with("PasswordChangeRequired"))
+        })?;
+    let account_uri = message
+        .get("MessageArgs")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|arguments| arguments.first())
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some(AuthError::PasswordChangeRequired { account_uri })
 }
 
 fn redfish_error_details(body: &str) -> (Option<String>, String) {
@@ -105,6 +133,33 @@ mod tests {
         assert_eq!(
             PlatformError::from_http_response(403, ""),
             PlatformError::Auth(AuthError::InsufficientPrivilege)
+        );
+        let password_change = |args: serde_json::Value| {
+            serde_json::json!({
+                "error": {
+                    "code": "Base.1.8.GeneralError",
+                    "@Message.ExtendedInfo": [{
+                        "MessageId": "Base.1.18.1.PasswordChangeRequired",
+                        "MessageArgs": args
+                    }]
+                }
+            })
+            .to_string()
+        };
+        assert_eq!(
+            PlatformError::from_http_response(
+                403,
+                &password_change(serde_json::json!([
+                    "/redfish/v1/AccountService/Accounts/root"
+                ]))
+            ),
+            PlatformError::Auth(AuthError::PasswordChangeRequired {
+                account_uri: Some("/redfish/v1/AccountService/Accounts/root".to_string()),
+            })
+        );
+        assert_eq!(
+            PlatformError::from_http_response(403, &password_change(serde_json::json!([]))),
+            PlatformError::Auth(AuthError::PasswordChangeRequired { account_uri: None })
         );
         let body = serde_json::json!({
             "error": {

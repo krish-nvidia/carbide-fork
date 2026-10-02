@@ -46,7 +46,7 @@ async fn host_interface<B: Bmc>(
 }
 
 async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
-    let manager = cx.manager()?;
+    let manager = cx.manager().await?;
     let lenovo = manager
         .oem_lenovo()
         .map_err(|error| cx.map_redfish_error(error))?
@@ -92,7 +92,8 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
 /// `FrontPanelUSB` is written whenever the system reports it.
 async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
     let lenovo = cx
-        .system()?
+        .system()
+        .await?
         .oem_lenovo()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
@@ -125,7 +126,7 @@ async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcom
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for XccLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let manager = cx.manager()?;
+        let manager = cx.manager().await?;
         let lenovo = manager
             .oem_lenovo()
             .map_err(|error| cx.map_redfish_error(error))?
@@ -141,7 +142,8 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
             .and_then(|interface| interface.interface_enabled());
 
         let lenovo_system = cx
-            .system()?
+            .system()
+            .await?
             .oem_lenovo()
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?;

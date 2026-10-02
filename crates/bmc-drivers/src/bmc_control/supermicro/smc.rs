@@ -26,7 +26,8 @@ where
         &self,
         cx: &OpCx<'_, B>,
     ) -> Result<DriverOutcome, PlatformError> {
-        cx.manager()?
+        cx.manager()
+            .await?
             .oem_supermicro()
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?

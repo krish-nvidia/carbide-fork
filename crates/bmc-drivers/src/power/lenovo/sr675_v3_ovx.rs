@@ -53,7 +53,7 @@ where
         reset_type: ResetType,
     ) -> Result<DriverOutcome, PlatformError> {
         match reset_type {
-            ResetType::ForceRestart => Ok(force_restart_outcome(standard::state(cx)?)),
+            ResetType::ForceRestart => Ok(force_restart_outcome(standard::state(cx).await?)),
             ResetType::FullPowerCycle => ac_power_cycle(cx).await,
             other => self.standard().set(cx, other).await,
         }

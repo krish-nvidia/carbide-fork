@@ -30,7 +30,8 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
         cx: &OpCx<'_, B>,
         request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let version = IdracVersion::from_manager(cx.manager()?).unwrap_or(IdracVersion::IDRAC9);
+        let version =
+            IdracVersion::from_manager(cx.manager().await?).unwrap_or(IdracVersion::IDRAC9);
         standard::accounts_with(cx, version.account_service_config())
             .await?
             .create_account(request)

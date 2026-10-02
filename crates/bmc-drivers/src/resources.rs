@@ -15,7 +15,8 @@ use serde_json::Value;
 
 /// Returns the BIOS resource of the selected ComputerSystem.
 pub(crate) async fn selected_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Bios<B>, PlatformError> {
-    cx.system()?
+    cx.system()
+        .await?
         .bios()
         .await
         .map_err(|error| cx.map_redfish_error(error))?

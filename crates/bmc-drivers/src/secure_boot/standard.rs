@@ -49,7 +49,8 @@ impl<B: Bmc> SecureBoot<B> for StandardSecureBoot {
 async fn secure_boot_resource<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<SecureBootResource<B>, PlatformError> {
-    cx.system()?
+    cx.system()
+        .await?
         .secure_boot()
         .await
         .map_err(|error| cx.map_redfish_error(error))?

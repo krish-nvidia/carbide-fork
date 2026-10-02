@@ -64,7 +64,8 @@ where
     }
 
     async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-        cx.manager()?
+        cx.manager()
+            .await?
             .network_protocol()
             .await
             .map_err(|error| cx.map_redfish_error(error))?
@@ -106,7 +107,8 @@ where
     B::Error: ActionError,
 {
     let redfish = cx
-        .manager()?
+        .manager()
+        .await?
         .reset(Some(reset_type))
         .await
         .map(DriverOutcome::from)
@@ -125,7 +127,8 @@ async fn reset_to_factory_defaults<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOut
 where
     B::Error: ActionError,
 {
-    cx.manager()?
+    cx.manager()
+        .await?
         .reset_to_defaults(ManagerResetToDefaultsType::ResetAll)
         .await
         .map(DriverOutcome::from)
@@ -137,7 +140,8 @@ async fn update_network_protocol<B: Bmc>(
     cx: &OpCx<'_, B>,
     body: ManagerNetworkProtocolUpdate,
 ) -> Result<DriverOutcome, PlatformError> {
-    cx.manager()?
+    cx.manager()
+        .await?
         .network_protocol()
         .await
         .map_err(|error| cx.map_redfish_error(error))?

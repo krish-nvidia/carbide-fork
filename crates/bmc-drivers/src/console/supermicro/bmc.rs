@@ -42,7 +42,8 @@ impl<B: Bmc> Console<B> for SupermicroBmcConsole {
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
         let interfaces = cx
-            .manager()?
+            .manager()
+            .await?
             .serial_interfaces()
             .await
             .map_err(|error| cx.map_redfish_error(error))?
@@ -57,7 +58,7 @@ impl<B: Bmc> Console<B> for SupermicroBmcConsole {
                 message: "the manager lists no serial interfaces".to_string(),
             })?;
 
-        let system = cx.system()?;
+        let system = cx.system().await?;
         let raw = system.raw();
         let serial = raw
             .serial_console
