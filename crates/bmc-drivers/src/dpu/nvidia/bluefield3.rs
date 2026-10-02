@@ -11,8 +11,9 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    enable_bmc_rshim, host_rshim_state, nic_mode_firmware, nic_mode_value, oem_action,
-    require_nic_mode_firmware, set_bios_host_privilege_level, system_nic_mode, system_oem,
+    bios_host_privilege_level, enable_bmc_rshim, host_rshim_state, nic_mode_firmware,
+    nic_mode_value, oem_action, require_nic_mode_firmware, restricted_host_privilege,
+    set_bios_host_privilege_level, system_nic_mode, system_oem,
 };
 
 /// BlueField-3: mode and host rshim are the system `Oem.Nvidia` properties
@@ -41,6 +42,11 @@ impl<B: Bmc> Dpu<B> for BlueField3Dpu {
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
         require_nic_mode_firmware(cx).await?;
+        if mode == NicMode::Nic
+            && bios_host_privilege_level(cx).await? == Some(HostPrivilegeLevel::Restricted)
+        {
+            return Ok(restricted_host_privilege());
+        }
         oem_action(cx, "Mode.Set", &json!({"Mode": nic_mode_value(mode)})).await
     }
 

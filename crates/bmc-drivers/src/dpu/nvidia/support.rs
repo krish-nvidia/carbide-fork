@@ -5,7 +5,10 @@
 
 //! BlueField DPU mechanics shared by the card generations.
 
-use bmc_platform::{DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, RshimState};
+use bmc_platform::{
+    ControllerAction, DriverOutcome, HostPrivilegeLevel, ManualInterventionCode, NicMode, OpCx,
+    PlatformError, RshimState,
+};
 use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::oem::nvidia::NvidiaComputerSystem;
 use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
@@ -25,6 +28,9 @@ const OEM_EXTENSION_TIMEOUT_FIRMWARE: &str = "BF-24.04-5";
 /// BMC 24.10 dropped the spaces from BIOS attribute names.
 const HOST_PRIVILEGE_LEVEL: &str = "HostPrivilegeLevel";
 const HOST_PRIVILEGE_LEVEL_WITH_SPACES: &str = "Host Privilege Level";
+
+/// The manual step a switch to NIC mode waits on while host privilege is Restricted.
+const HOST_PRIVILEGE_RESTRICTED: &str = "dpu-host-privilege-restricted";
 
 pub(super) fn no_dpu(error: PlatformError) -> PlatformError {
     match error {
@@ -208,6 +214,35 @@ pub(super) async fn enable_bmc_rshim<B: Bmc>(
         .await
         .map(DriverOutcome::from)
         .map_err(|error| cx.map_redfish_error(error))
+}
+
+/// The outcome of a switch to NIC mode requested while host privilege is
+/// Restricted: nothing is written until an operator intervenes.
+pub(super) fn restricted_host_privilege() -> DriverOutcome {
+    DriverOutcome::blocked(ControllerAction::ManualIntervention {
+        code: ManualInterventionCode::new(HOST_PRIVILEGE_RESTRICTED.to_string())
+            .expect("a non-empty literal is a valid manual-intervention code"),
+    })
+}
+
+/// The BIOS host privilege level under either attribute name; `None` when
+/// BIOS reports neither, or fails with the 500 older firmware returns in NIC mode.
+pub(super) async fn bios_host_privilege_level<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<Option<HostPrivilegeLevel>, PlatformError> {
+    let bios = match selected_bios(cx).await {
+        Ok(bios) => bios,
+        Err(error) if bios_error_reports_nic_mode(&error) => return Ok(None),
+        Err(error) => return Err(no_dpu(error)),
+    };
+    Ok([HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES]
+        .into_iter()
+        .find_map(|name| bios.attribute(name))
+        .and_then(|value| match value.str_value()? {
+            "Privileged" => Some(HostPrivilegeLevel::Privileged),
+            "Restricted" => Some(HostPrivilegeLevel::Restricted),
+            _ => None,
+        }))
 }
 
 /// Stages the host privilege level in BIOS, retrying with the spaced

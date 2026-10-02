@@ -10,11 +10,13 @@ use bmc_platform::{
 use nv_redfish::chassis::{NetworkAdapter, NetworkAdapterUpdate};
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::nvidia::network_adapter::{
-    DpuOperationMode, NvidiaNetworkAdapter, NvidiaNetworkAdapterUpdate,
+    DpuOperationMode, HostPrivilegeLevelInput, NvidiaNetworkAdapter, NvidiaNetworkAdapterUpdate,
     NvidiaNetworkAdapterUpdateExt, PrivilegeModeType,
 };
 
-use crate::dpu::nvidia::support::{enable_bmc_rshim, host_rshim_state, no_dpu};
+use crate::dpu::nvidia::support::{
+    enable_bmc_rshim, host_rshim_state, no_dpu, restricted_host_privilege,
+};
 
 /// BlueField-4: mode and host privileges live on the network adapter's
 /// `Oem.Nvidia` and change through its settings objects. There is no host
@@ -79,6 +81,17 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
         cx: &OpCx<'_, B>,
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
+        let (adapter, nvidia) = nvidia_adapter(cx).await?;
+        if mode == NicMode::Nic {
+            let level = nvidia
+                .host_privilege_config()
+                .await
+                .map_err(|error| cx.map_redfish_error(error))?
+                .and_then(|config| config.host_privilege_level());
+            if level == Some(HostPrivilegeLevelInput::Restricted) {
+                return Ok(restricted_host_privilege());
+            }
+        }
         let mode = match mode {
             NicMode::Nic => DpuOperationMode::Nic,
             NicMode::Dpu => DpuOperationMode::Dpu,
@@ -93,7 +106,6 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
             .map_err(|error| PlatformError::InvalidResponse {
                 message: format!("failed to build the DPU operation mode update: {error}"),
             })?;
-        let (adapter, _) = nvidia_adapter(cx).await?;
         adapter
             .settings()
             .await

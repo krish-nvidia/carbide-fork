@@ -11,8 +11,8 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    bios_nic_mode, enable_bmc_rshim, nic_mode_firmware, nic_mode_value, no_dpu,
-    require_nic_mode_firmware, set_bios_host_privilege_level,
+    bios_host_privilege_level, bios_nic_mode, enable_bmc_rshim, nic_mode_firmware, nic_mode_value,
+    no_dpu, require_nic_mode_firmware, restricted_host_privilege, set_bios_host_privilege_level,
 };
 use crate::resources::patch_bios_attributes;
 
@@ -39,6 +39,11 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
         require_nic_mode_firmware(cx).await?;
+        if mode == NicMode::Nic
+            && bios_host_privilege_level(cx).await? == Some(HostPrivilegeLevel::Restricted)
+        {
+            return Ok(restricted_host_privilege());
+        }
         patch_bios_attributes(cx, json!({"NicMode": nic_mode_value(mode)}))
             .await
             .map_err(no_dpu)

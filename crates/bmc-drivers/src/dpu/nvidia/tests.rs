@@ -7,10 +7,12 @@
 
 use axum::http::header::IF_MATCH;
 use axum::http::{Method, StatusCode};
+use bmc_mock::test_support::TestBmc;
 use bmc_platform::{
-    Dpu, DpuStatus, DriverOutcome, EtagMode, HostPrivilegeLevel, NicMode, PlatformError, RshimState,
+    ControllerAction, Dpu, DpuStatus, DriverOutcome, EtagMode, HostPrivilegeLevel, NicMode,
+    PlatformError, RshimState,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{BlueField3Dpu, BlueField4Dpu};
 use crate::test_support::{Fixture, body, path};
@@ -258,6 +260,72 @@ async fn bluefield3_host_privilege_retries_with_the_spaced_attribute_name() {
 }
 
 #[tokio::test]
+async fn nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
+    let restricted_bios = json!({
+        "@odata.id": BF3_BIOS,
+        "@Redfish.Settings": {"SettingsObject": {"@odata.id": BF3_BIOS_SETTINGS}},
+        "Id": "BIOS",
+        "Name": "BIOS Configuration Current Settings",
+        "Attributes": {"HostPrivilegeLevel": "Restricted", "NicMode": "DpuMode"},
+    });
+    let blocked = DriverOutcome::blocked(ControllerAction::ManualIntervention {
+        code: "dpu-host-privilege-restricted".parse().expect("valid code"),
+    });
+    struct Case {
+        name: &'static str,
+        fixture: Fixture,
+        dpu: &'static dyn Dpu<TestBmc>,
+        expected: DriverOutcome,
+        writes: Vec<Value>,
+    }
+    let cases = [
+        Case {
+            name: "BF3 restricted",
+            fixture: bluefield3("BF-26.04-8").document(BF3_BIOS, restricted_bios),
+            dpu: &BlueField3Dpu,
+            expected: blocked.clone(),
+            writes: vec![],
+        },
+        Case {
+            name: "BF3 privileged",
+            fixture: bluefield3("BF-26.04-8"),
+            dpu: &BlueField3Dpu,
+            expected: DriverOutcome::complete(),
+            writes: vec![json!({"Mode": "NicMode"})],
+        },
+        Case {
+            name: "BF4 restricted",
+            fixture: bluefield4(),
+            dpu: &BlueField4Dpu,
+            expected: blocked,
+            writes: vec![],
+        },
+    ];
+
+    for Case {
+        name,
+        fixture,
+        dpu,
+        expected,
+        writes,
+    } in cases
+    {
+        let bmc = fixture.build().await;
+        let cx = bmc.cx(EtagMode::Resource).await;
+        assert_eq!(
+            dpu.set_nic_mode(&cx, NicMode::Nic).await,
+            Ok(expected),
+            "{name}"
+        );
+        assert_eq!(
+            bmc.writes().iter().map(body).collect::<Vec<_>>(),
+            writes,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn bmc_rshim_is_enabled_through_the_manager_resource_the_dpu_links() {
     let bmc = bluefield3("BF-26.04-8").build().await;
     let cx = bmc.cx(EtagMode::Resource).await;
@@ -301,7 +369,7 @@ async fn bluefield4_mode_and_privileges_are_written_to_their_settings_objects() 
     let bmc = bluefield4().build().await;
     let cx = bmc.cx(EtagMode::Resource).await;
     BlueField4Dpu
-        .set_nic_mode(&cx, NicMode::Nic)
+        .set_nic_mode(&cx, NicMode::Dpu)
         .await
         .expect("mode update succeeds");
     BlueField4Dpu
@@ -323,7 +391,7 @@ async fn bluefield4_mode_and_privileges_are_written_to_their_settings_objects() 
             (
                 BF4_ADAPTER_SETTINGS,
                 "\"adapter-settings-1\"",
-                json!({"Oem": {"Nvidia": {"DPUOperationMode": "NIC"}}}),
+                json!({"Oem": {"Nvidia": {"DPUOperationMode": "DPU"}}}),
             ),
             (
                 BF4_PRIVILEGES_SETTINGS,
