@@ -58,6 +58,10 @@ pub enum AttributeValue {
     String(&'static str),
     /// Equivalent encodings, typically a current and a legacy spelling.
     AnyString(&'static [&'static str]),
+    /// One value per spelling family, chosen by the family the reported value
+    /// belongs to: `("Enabled", &["Disabled"])` and `("Enable", &["Disable"])`
+    /// keep a BIOS on the spelling it already uses.
+    Spelling(&'static [(&'static str, &'static [&'static str])]),
     /// A boolean value.
     Bool(bool),
     /// An integer value.
@@ -72,6 +76,9 @@ impl AttributeValue {
             Self::AnyString(expected) => actual
                 .as_str()
                 .is_some_and(|actual| expected.contains(&actual)),
+            Self::Spelling(families) => actual
+                .as_str()
+                .is_some_and(|actual| families.iter().any(|(value, _)| *value == actual)),
             Self::Bool(expected) => actual.as_bool() == Some(expected),
             Self::Integer(expected) => actual.as_i64() == Some(expected),
         }
@@ -86,6 +93,13 @@ impl AttributeValue {
         match self {
             Self::String(value) => Some(Value::String(value.to_string())),
             Self::AnyString(_) => None,
+            Self::Spelling(families) => {
+                let current = current?.as_str()?;
+                families
+                    .iter()
+                    .find(|(_, others)| others.contains(&current))
+                    .map(|(value, _)| Value::String(value.to_string()))
+            }
             Self::Bool(value) => Some(Value::Bool(value)),
             Self::Integer(value) => Some(Value::from(value)),
         }
@@ -97,6 +111,10 @@ impl fmt::Display for AttributeValue {
         match self {
             Self::String(value) => formatter.write_str(value),
             Self::AnyString(values) => write!(formatter, "any({})", values.join(",")),
+            Self::Spelling(families) => {
+                let values: Vec<&str> = families.iter().map(|(value, _)| *value).collect();
+                write!(formatter, "any({})", values.join(","))
+            }
             Self::Bool(value) => value.fmt(formatter),
             Self::Integer(value) => value.fmt(formatter),
         }
@@ -161,6 +179,18 @@ impl BiosAttribute {
         }
     }
 
+    /// Every attribute with this name prefix takes the value of the spelling
+    /// family it currently holds.
+    pub const fn prefix_spelling(
+        prefix: &'static str,
+        families: &'static [(&'static str, &'static [&'static str])],
+    ) -> Self {
+        Self {
+            name: AttributeName::Prefix(prefix),
+            value: AttributeValue::Spelling(families),
+        }
+    }
+
     /// Every attribute with this name prefix must hold a boolean.
     pub const fn prefix_bool(prefix: &'static str, value: bool) -> Self {
         Self {
@@ -203,7 +233,8 @@ pub fn desired_settings(
     Ok(attributes)
 }
 
-/// An attribute accepts several values and the BIOS currently reports none of them.
+/// An attribute accepts several values and the BIOS currently reports none of
+/// them, or a value outside every spelling family.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("BIOS attribute {attribute} accepts several values and none is currently set")]
 pub struct IndeterminateAttribute {

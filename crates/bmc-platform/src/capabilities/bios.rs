@@ -47,7 +47,7 @@ pub struct BiosDiff {
 pub struct BiosStatus {
     /// True when `differences` is empty.
     pub is_applied: bool,
-    /// Expected attributes whose pending value differs.
+    /// Expected attributes whose current value differs.
     pub differences: Vec<BiosDiff>,
 }
 
@@ -68,8 +68,20 @@ pub trait Bios<B: Bmc>: Send + Sync {
         self.standard().current(cx).await
     }
 
+    /// The attributes staged to change on the next reset.
     async fn pending(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
         self.standard().pending(cx).await
+    }
+
+    /// The attributes machine setup expects: the platform's own settings,
+    /// resolved against the current BIOS, with `overlay` (the caller's
+    /// profile for this model) layered on top.
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        self.standard().expected(cx, overlay).await
     }
 
     async fn status(

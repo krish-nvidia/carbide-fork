@@ -9,6 +9,8 @@ use nv_redfish::core::{ActionError, Bmc};
 
 use serde_json::json;
 
+use crate::bios::attributes::BiosAttribute;
+use crate::bios::attributes::dell::idrac as table;
 use crate::bios::standard::{self, StandardBios};
 use crate::dell;
 
@@ -42,6 +44,20 @@ where
 {
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
+    }
+
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        let current = standard::current(cx).await?;
+        let attributes: Vec<BiosAttribute> = table::ATTRIBUTES
+            .iter()
+            .copied()
+            .chain(table::serial_redirection(&current))
+            .collect();
+        standard::resolve(&attributes, &current, overlay)
     }
 
     async fn apply(

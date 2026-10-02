@@ -4,17 +4,33 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 
 use serde_json::json;
 
+use crate::bios::attributes::BiosAttribute;
+use crate::bios::attributes::lenovo::{ami, gb300};
 use crate::bios::standard::{self, StandardBios};
 use crate::resources::{patch_bios_attributes, selected_bios};
 
 /// AMI MegaRAC (including Lenovo AMI-based systems) names the UEFI
-/// administrator password `SETUP001`.
-pub(crate) struct MegaRacBios;
+/// administrator password `SETUP001`; the model decides the attributes machine
+/// setup expects.
+pub(crate) struct MegaRacBios {
+    attributes: &'static [BiosAttribute],
+}
+
+impl MegaRacBios {
+    /// AMI MegaRAC BIOS, including Lenovo HS350x-class systems.
+    pub(crate) const AMI: Self = Self {
+        attributes: ami::ATTRIBUTES,
+    };
+    /// Lenovo GB300, whose values are prefixed with their attribute id.
+    pub(crate) const LENOVO_GB300: Self = Self {
+        attributes: gb300::ATTRIBUTES,
+    };
+}
 
 const UEFI_PASSWORD_NAME: &str = "SETUP001";
 
@@ -28,6 +44,14 @@ where
 {
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
+    }
+
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        standard::expected(cx, self.attributes, overlay).await
     }
 
     async fn change_uefi_password(
@@ -102,7 +126,7 @@ mod tests {
                 .await;
             let cx = bmc.cx().await;
 
-            MegaRacBios
+            MegaRacBios::AMI
                 .clear_tpm(&cx)
                 .await
                 .expect("TPM clear is staged");

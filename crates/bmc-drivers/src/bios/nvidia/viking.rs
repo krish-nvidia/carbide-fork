@@ -4,11 +4,12 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc, EntityTypeRef};
 
 use serde_json::json;
 
+use crate::bios::attributes::nvidia::viking as table;
 use crate::bios::standard::{self, StandardBios};
 use crate::resources::patch_bios_attributes;
 
@@ -61,6 +62,14 @@ where
 {
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
+    }
+
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        standard::expected(cx, table::ATTRIBUTES, overlay).await
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {

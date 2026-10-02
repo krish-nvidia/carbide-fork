@@ -16,6 +16,9 @@ pub const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::string("NetworkStackSettings_IPv6PXESupport", "Disabled"),
     BiosAttribute::string("BootModes_InfiniteBootRetry", "Enabled"),
     BiosAttribute::string("BootModes_PreventOSChangesToBootOrder", "Enabled"),
+    // Only older systems still have a legacy BIOS mode.
+    BiosAttribute::string("LegacyBIOS_NonOnboardPXE", "Disabled"),
+    BiosAttribute::string("LegacyBIOS_LegacyBIOS", "Disabled"),
 ];
 
 /// Attribute that enables infinite boot retries, when the platform has one.

@@ -4,16 +4,32 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
-use crate::bios::standard::StandardBios;
+use crate::bios::attributes::BiosAttribute;
+use crate::bios::attributes::supermicro::{gb300, x13};
+use crate::bios::standard::{self, StandardBios};
 use crate::resources::{bios_attributes, bios_update, selected_bios};
 
 /// Supermicro BIOS behavior: a TPM clear is a pending operation written to the
 /// current BIOS resource, under a `PendingOperation*` name that varies by board.
-pub(crate) struct SmcBios;
+/// The model decides the attributes machine setup expects.
+pub(crate) struct SmcBios {
+    attributes: &'static [BiosAttribute],
+}
+
+impl SmcBios {
+    /// Supermicro hosts, whose attribute names carry a registry suffix.
+    pub(crate) const X13: Self = Self {
+        attributes: x13::ATTRIBUTES,
+    };
+    /// Supermicro GB300 NVL compute trays.
+    pub(crate) const GB300: Self = Self {
+        attributes: gb300::ATTRIBUTES,
+    };
+}
 
 #[async_trait]
 impl<B: Bmc> Bios<B> for SmcBios
@@ -22,6 +38,14 @@ where
 {
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
+    }
+
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        standard::expected(cx, self.attributes, overlay).await
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -69,7 +93,7 @@ mod tests {
                 .await;
             let cx = bmc.cx().await;
 
-            let result = SmcBios.clear_tpm(&cx).await;
+            let result = SmcBios::X13.clear_tpm(&cx).await;
             let writes = bmc.writes();
             match expected {
                 Some(expected) => {

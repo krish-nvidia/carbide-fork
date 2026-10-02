@@ -16,7 +16,10 @@ pub const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::prefix_string("IPv4PXESupport", "Disabled"),
     BiosAttribute::prefix_string("IPv6HTTPSupport", "Disabled"),
     BiosAttribute::prefix_string("IPv6PXESupport", "Disabled"),
-    BiosAttribute::prefix_any_string("SecurityDeviceSupport", &["Enabled", "Enable"]),
+    BiosAttribute::prefix_spelling(
+        "SecurityDeviceSupport",
+        &[("Enabled", &["Disabled"]), ("Enable", &["Disable"])],
+    ),
 ];
 
 /// Attribute that enables infinite boot retries, when the platform has one.

@@ -118,6 +118,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("nvidia-gbx00-wiwynn", [vendor("Wiwynn")])
             .drivers(OPENBMC_TRAY)
             .drivers([
+                NvidiaGbx00Bios,
                 NvidiaOpenBmcPower,
                 NvidiaOpenBmcFirmware,
                 NvidiaOpenBmcAccounts,
@@ -130,6 +131,7 @@ fn built_ins() -> Vec<Rule> {
         )
         .drivers(OPENBMC_TRAY)
         .drivers([
+            NvidiaGbx00Bios,
             NvidiaOpenBmcPower,
             NvidiaOpenBmcFirmware,
             NvidiaOpenBmcAccounts,
@@ -142,6 +144,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("nvidia-vera", [product(&["VR NVL72"])])
             .drivers(OPENBMC_TRAY)
             .drivers([
+                NvidiaVeraRubinBios,
                 NvidiaOpenBmcPower,
                 NvidiaOpenBmcFirmware,
                 NvidiaOpenBmcAccounts,
@@ -150,7 +153,7 @@ fn built_ins() -> Vec<Rule> {
         // GH200 firmware updates take the caller's parameters unchanged.
         Rule::new("nvidia-gh", [product(&["P3809"])])
             .drivers(OPENBMC_TRAY)
-            .drivers([NvidiaGh200Power, NvidiaGh200Accounts])
+            .drivers([NvidiaGh200Bios, NvidiaGh200Power, NvidiaGh200Accounts])
             .unsupported([Capability::Attestation]),
         Rule::new(
             "bluefield",
@@ -235,7 +238,7 @@ fn built_ins() -> Vec<Rule> {
                 contains(IdentityField::ChassisModel, "GB300"),
             ],
         )
-        .drivers([AmiMegaRacBios, LenovoGb300Lockdown, LenovoGb300Console]),
+        .drivers([LenovoGb300Bios, LenovoGb300Lockdown, LenovoGb300Console]),
         // DGX Viking runs AMI firmware and identifies itself by its system and
         // manager ids.
         Rule::new(
@@ -265,6 +268,7 @@ fn built_ins() -> Vec<Rule> {
                 contains(IdentityField::SystemModel, "GB300"),
             ],
         )
+        .drivers([SupermicroGb300Bios])
         .unsupported([Capability::SecureBoot]),
         // A standard ForceRestart can hang on this SKU at exactly this firmware pair.
         Rule::new(
@@ -280,11 +284,7 @@ fn built_ins() -> Vec<Rule> {
 }
 
 /// The drivers every NVIDIA OpenBMC tray shares, GH200 included.
-const OPENBMC_TRAY: [Driver; 3] = [
-    NvidiaOpenBmcBios,
-    NvidiaOpenBmcBootOrder,
-    NvidiaOpenBmcLockdown,
-];
+const OPENBMC_TRAY: [Driver; 2] = [NvidiaOpenBmcBootOrder, NvidiaOpenBmcLockdown];
 
 fn vendor(value: &str) -> IdentityMatcher {
     IdentityMatcher::new(
@@ -454,6 +454,26 @@ mod tests {
             gb_platform.drivers.get(Capability::Console),
             &CapabilitySelection::Unsupported
         );
+        assert_eq!(
+            gb_platform.drivers.get(Capability::Bios),
+            &driver(NvidiaGbx00Bios)
+        );
+        let mut supermicro_gb300 = identity("Supermicro", Some("GB NVL"));
+        supermicro_gb300.system = Some(SystemIdentity {
+            id: "1".to_string(),
+            manufacturer: Some("Supermicro".to_string()),
+            model: Some("ARS-121GL-NB2B-GB300".to_string()),
+            ..SystemIdentity::default()
+        });
+        let supermicro_gb300 = resolve(&rules, &supermicro_gb300);
+        assert_eq!(
+            supermicro_gb300.drivers.get(Capability::Bios),
+            &driver(SupermicroGb300Bios)
+        );
+        assert_eq!(
+            supermicro_gb300.drivers.get(Capability::SecureBoot),
+            &CapabilitySelection::Unsupported
+        );
 
         let mut viking = identity("AMI", None);
         viking.system = Some(SystemIdentity {
@@ -539,6 +559,10 @@ mod tests {
             &CapabilitySelection::Standard
         );
         assert_eq!(
+            gh200.drivers.get(Capability::Bios),
+            &driver(NvidiaGh200Bios)
+        );
+        assert_eq!(
             nvswitch.drivers.get(Capability::Bios),
             &driver(NvidiaSwitchBios)
         );
@@ -595,11 +619,14 @@ mod tests {
             model: Some("NVIDIA GB300".to_string()),
             ..ChassisIdentity::default()
         }];
+        let lenovo_gb300 = resolve(&rules, &lenovo_gb300);
         assert_eq!(
-            resolve(&rules, &lenovo_gb300)
-                .drivers
-                .get(Capability::Lockdown),
+            lenovo_gb300.drivers.get(Capability::Lockdown),
             &driver(LenovoGb300Lockdown)
+        );
+        assert_eq!(
+            lenovo_gb300.drivers.get(Capability::Bios),
+            &driver(LenovoGb300Bios)
         );
     }
 

@@ -4,12 +4,13 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 
 use serde_json::json;
 
-use crate::bios::standard::StandardBios;
+use crate::bios::attributes::hpe::ilo as table;
+use crate::bios::standard::{self, StandardBios};
 use crate::resources::patch_bios_attributes;
 
 /// HPE iLO BIOS behavior: staged settings are left in place rather than
@@ -23,6 +24,14 @@ where
 {
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
+    }
+
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        standard::expected(cx, table::ATTRIBUTES, overlay).await
     }
 
     async fn clear_pending(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {

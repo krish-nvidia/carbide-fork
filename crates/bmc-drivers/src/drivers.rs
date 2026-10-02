@@ -169,15 +169,19 @@ drivers! {
         SupermicroSmcBmcControl = "supermicro-smc-bmc-control" => bmc_control::SmcBmcControl,
     }
     Bios as bios: Bios = bios::StandardBios {
-        AmiMegaRacBios = "ami-megarac-bios" => bios::MegaRacBios,
+        AmiMegaRacBios = "ami-megarac-bios" => bios::MegaRacBios::AMI,
         DellIdracBios = "dell-idrac-bios" => bios::IdracBios,
         HpeIloBios = "hpe-ilo-bios" => bios::IloBios,
+        LenovoGb300Bios = "lenovo-gb300-bios" => bios::MegaRacBios::LENOVO_GB300,
         LenovoXccBios = "lenovo-xcc-bios" => bios::XccBios,
         NvidiaBlueFieldBios = "nvidia-bluefield-bios" => bios::BlueFieldBios,
-        NvidiaOpenBmcBios = "nvidia-openbmc-bios" => bios::OpenBmcBios,
+        NvidiaGbx00Bios = "nvidia-gbx00-bios" => bios::OpenBmcBios::GBX00,
+        NvidiaGh200Bios = "nvidia-gh200-bios" => bios::OpenBmcBios::GH200,
         NvidiaSwitchBios = "nvidia-switch-bios" => bios::SwitchBios,
+        NvidiaVeraRubinBios = "nvidia-vera-rubin-bios" => bios::OpenBmcBios::VERA_RUBIN,
         NvidiaVikingBios = "nvidia-viking-bios" => bios::VikingBios,
-        SupermicroSmcBios = "supermicro-smc-bios" => bios::SmcBios,
+        SupermicroGb300Bios = "supermicro-gb300-bios" => bios::SmcBios::GB300,
+        SupermicroSmcBios = "supermicro-smc-bios" => bios::SmcBios::X13,
     }
     BootOrder as boot_order: BootOrder = boot_order::StandardBootOrder {
         AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::MegaRacBootOrder,

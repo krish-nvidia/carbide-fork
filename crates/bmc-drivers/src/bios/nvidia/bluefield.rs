@@ -8,7 +8,8 @@ use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, Platform
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
-use crate::bios::standard::{StandardBios, differences};
+use crate::bios::attributes::nvidia::bluefield as table;
+use crate::bios::standard::{self, StandardBios, differences};
 use crate::resources::patch_bios_attributes;
 
 /// NVIDIA BlueField: the DPU BIOS exposes no `ResetBios` or `ChangePassword`
@@ -81,6 +82,14 @@ where
 {
     fn standard(&self) -> &dyn Bios<B> {
         &StandardBios
+    }
+
+    async fn expected(
+        &self,
+        cx: &OpCx<'_, B>,
+        overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        standard::expected(cx, table::ATTRIBUTES, overlay).await
     }
 
     async fn status(

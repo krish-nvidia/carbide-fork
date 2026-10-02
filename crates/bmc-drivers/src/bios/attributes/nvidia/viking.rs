@@ -9,6 +9,7 @@ pub const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::string("AcpiSpcrBaudRate", "115200"),
     BiosAttribute::string("BaudRate0", "115200"),
     BiosAttribute::string("SriovSupport", "Enabled"),
+    BiosAttribute::string("SRIOVEnable", "Enable"),
     BiosAttribute::string("VTdSupport", "Enable"),
     BiosAttribute::string("Ipv4Http", "Enabled"),
     BiosAttribute::string("Ipv4Pxe", "Disabled"),

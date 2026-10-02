@@ -32,6 +32,14 @@ where
         Err(PlatformError::Unsupported)
     }
 
+    async fn expected(
+        &self,
+        _cx: &OpCx<'_, B>,
+        _overlay: &BiosSettings,
+    ) -> Result<BiosSettings, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
     async fn status(
         &self,
         _cx: &OpCx<'_, B>,
