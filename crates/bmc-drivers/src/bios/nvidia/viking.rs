@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc, EntityTypeRef};
 
+use serde_json::json;
+
 use crate::bios::standard::{self, StandardBios};
+use crate::resources::patch_bios_attributes;
 
 /// NVIDIA DGX Viking: AMI firmware naming the password `AdminPassword`; BIOS
 /// defaults are restored by clearing the host BIOS NVRAM through the
@@ -62,6 +65,14 @@ where
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         clear_nvram(cx).await
+    }
+
+    async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        patch_bios_attributes(
+            cx,
+            json!({"TpmOperation": "TPM Clear", "TpmSupport": "Enable"}),
+        )
+        .await
     }
 
     /// Viking firmware does not support reverting staged settings.

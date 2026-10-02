@@ -4,7 +4,7 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{BootOrder, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{BootInterfaceSelector, BootOrder, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::hpe::server_boot_settings::HpeServerBootSettingsUpdate;
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
@@ -45,7 +45,32 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
         };
         set_persistent_boot_first(cx, category).await
     }
+
+    /// iLO refuses boot-order changes while the host is in POST; that refusal
+    /// is not an error, and the next status read shows whether the order holds.
+    async fn configure(
+        &self,
+        cx: &OpCx<'_, B>,
+        selector: &BootInterfaceSelector,
+    ) -> Result<DriverOutcome, PlatformError> {
+        match self.standard().configure(cx, selector).await {
+            Err(PlatformError::Bmc {
+                message_id,
+                message,
+                ..
+            }) if message_id
+                .as_deref()
+                .is_some_and(|id| id.ends_with(UNABLE_TO_MODIFY_DURING_POST))
+                || message.contains(UNABLE_TO_MODIFY_DURING_POST) =>
+            {
+                Ok(DriverOutcome::complete())
+            }
+            result => result,
+        }
+    }
 }
+
+const UNABLE_TO_MODIFY_DURING_POST: &str = "UnableToModifyDuringSystemPOST";
 
 /// Moves every persistent boot entry naming `category` to the front.
 async fn set_persistent_boot_first<B: Bmc>(

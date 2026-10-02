@@ -12,9 +12,10 @@ use nv_redfish::core::Bmc;
 use nv_redfish::oem::supermicro::SmcFixedBootOrder;
 use nv_redfish::oem::supermicro::fixed_boot_order::SmcFixedBootOrderUpdate;
 use nv_redfish::resource::ResetType;
+use nv_redfish::schema::computer_system::BootUpdate;
 use serde_json::json;
 
-use crate::boot_order::standard::{StandardBootOrder, selector_matches};
+use crate::boot_order::standard::{StandardBootOrder, selector_matches, uefi_by_default};
 use crate::resources::{patch_bios_attributes, selected_bios};
 
 /// Supermicro X13 boot behavior.
@@ -33,6 +34,15 @@ const HARD_DISK: &str = "UEFI Hard Disk";
 struct FixedBootOrder {
     fixed_boot_order: Vec<String>,
     uefi_network: Vec<String>,
+}
+
+/// Whether the system reports a non-empty `Boot.BootOrder`; models that report
+/// none or an empty one order boot devices through `FixedBootOrder`.
+fn has_standard_boot_order<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+    Ok(cx
+        .system()?
+        .boot_order()
+        .is_some_and(|order| !order.is_empty()))
 }
 
 /// Whether the standard path failed because this model has no `Boot.BootOrder`:
@@ -161,6 +171,9 @@ impl<B: Bmc> BootOrder<B> for X13BootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
+        if !has_standard_boot_order(cx)? {
+            return Ok(fixed_status(&fixed_boot_order(cx).await?.1, selector));
+        }
         match self.standard().status(cx, selector).await {
             Err(error) if boot_order_unavailable(&error) => {
                 Ok(fixed_status(&fixed_boot_order(cx).await?.1, selector))
@@ -174,11 +187,24 @@ impl<B: Bmc> BootOrder<B> for X13BootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
+        if !has_standard_boot_order(cx)? {
+            return configure_fixed(cx, selector).await;
+        }
         match self.standard().configure(cx, selector).await {
             Err(PlatformError::MissingBootOption { .. }) => enable_http_boot(cx).await,
             Err(error) if boot_order_unavailable(&error) => configure_fixed(cx, selector).await,
             result => result,
         }
+    }
+
+    async fn set_override(
+        &self,
+        cx: &OpCx<'_, B>,
+        override_setting: &BootUpdate,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .set_override(cx, &uefi_by_default(override_setting))
+            .await
     }
 }
 

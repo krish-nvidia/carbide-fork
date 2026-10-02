@@ -117,4 +117,9 @@ pub trait Bios<B: Bmc>: Send + Sync {
             .clear_uefi_password(cx, current_password)
             .await
     }
+
+    /// Requests that the BIOS clear the TPM on the next boot.
+    async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().clear_tpm(cx).await
+    }
 }

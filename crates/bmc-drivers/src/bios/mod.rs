@@ -12,6 +12,7 @@ mod hpe;
 mod lenovo;
 mod nvidia;
 mod standard;
+mod supermicro;
 
 pub(crate) use ami::MegaRacBios;
 pub(crate) use dell::IdracBios;
@@ -19,3 +20,4 @@ pub(crate) use hpe::IloBios;
 pub(crate) use lenovo::XccBios;
 pub(crate) use nvidia::{BlueFieldBios, OpenBmcBios, SwitchBios, VikingBios};
 pub(crate) use standard::StandardBios;
+pub(crate) use supermicro::SmcBios;

@@ -7,10 +7,13 @@ use async_trait::async_trait;
 use bmc_platform::{Bios, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 
+use serde_json::json;
+
 use crate::bios::standard::StandardBios;
+use crate::resources::patch_bios_attributes;
 
 /// HPE iLO BIOS behavior: staged settings are left in place rather than
-/// reverted.
+/// reverted, and the TPM is cleared through BIOS attributes.
 pub(crate) struct IloBios;
 
 #[async_trait]
@@ -24,5 +27,13 @@ where
 
     async fn clear_pending(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         Ok(DriverOutcome::complete())
+    }
+
+    async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        patch_bios_attributes(
+            cx,
+            json!({"Tpm2Operation": "Clear", "TpmVisibility": "Visible"}),
+        )
+        .await
     }
 }

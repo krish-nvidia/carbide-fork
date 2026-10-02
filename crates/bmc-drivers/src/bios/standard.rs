@@ -29,6 +29,11 @@ where
         self
     }
 
+    /// Redfish has no standard TPM clear.
+    async fn clear_tpm(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
     async fn current(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
         Ok(BiosSettings {
             attributes: bios_attributes(&selected_bios(cx).await?.raw()),

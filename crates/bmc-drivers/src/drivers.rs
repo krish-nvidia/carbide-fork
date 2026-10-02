@@ -177,12 +177,15 @@ drivers! {
         NvidiaOpenBmcBios = "nvidia-openbmc-bios" => bios::OpenBmcBios,
         NvidiaSwitchBios = "nvidia-switch-bios" => bios::SwitchBios,
         NvidiaVikingBios = "nvidia-viking-bios" => bios::VikingBios,
+        SupermicroSmcBios = "supermicro-smc-bios" => bios::SmcBios,
     }
     BootOrder as boot_order: BootOrder = boot_order::StandardBootOrder {
+        AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::MegaRacBootOrder,
         DellIdracBootOrder = "dell-idrac-boot-order" => boot_order::IdracBootOrder,
         HpeIloBootOrder = "hpe-ilo-boot-order" => boot_order::IloBootOrder,
         NvidiaBlueFieldBootOrder = "nvidia-bluefield-boot-order" => boot_order::BlueFieldBootOrder,
         NvidiaOpenBmcBootOrder = "nvidia-openbmc-boot-order" => boot_order::OpenBmcBootOrder,
+        NvidiaVikingBootOrder = "nvidia-viking-boot-order" => boot_order::VikingBootOrder,
         SupermicroX13BootOrder = "supermicro-x13-boot-order" => boot_order::X13BootOrder,
     }
     SecureBoot as secure_boot: SecureBoot = secure_boot::StandardSecureBoot {

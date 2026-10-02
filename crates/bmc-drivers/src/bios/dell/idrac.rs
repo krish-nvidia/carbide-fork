@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 
+use serde_json::json;
+
 use crate::bios::standard::{self, StandardBios};
 use crate::dell;
 
@@ -70,6 +72,11 @@ where
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
         change_password(cx, current_password, new_password).await
+    }
+
+    async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        dell::stage_bios_attributes(cx, json!({"TpmSecurity": "On", "Tpm2Hierarchy": "Clear"}))
+            .await
     }
 
     async fn clear_uefi_password(

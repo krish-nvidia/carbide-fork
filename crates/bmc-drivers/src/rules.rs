@@ -62,6 +62,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("supermicro", [vendor("Supermicro")]).drivers([
             SupermicroSmcPower,
             SupermicroSmcBmcControl,
+            SupermicroSmcBios,
             SupermicroX13BootOrder,
             SupermicroSmcLockdown,
             SupermicroBmcConsole,
@@ -69,6 +70,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("ami-megarac", [vendor("AMI")]).drivers([
             AmiMegaRacBmcControl,
             AmiMegaRacBios,
+            AmiMegaRacBootOrder,
             AmiMegaRacLockdown,
             AmiMegaRacConsole,
         ]),
@@ -80,6 +82,7 @@ fn built_ins() -> Vec<Rule> {
             .drivers([
                 AmiMegaRacBmcControl,
                 AmiMegaRacBios,
+                AmiMegaRacBootOrder,
                 LenovoAmiLockdown,
                 AmiMegaRacFirmware,
                 LenovoAmiConsole,
@@ -244,6 +247,7 @@ fn built_ins() -> Vec<Rule> {
             NvidiaVikingPower,
             AmiMegaRacBmcControl,
             NvidiaVikingBios,
+            NvidiaVikingBootOrder,
             NvidiaVikingLockdown,
             NvidiaVikingAccounts,
             NvidiaVikingFirmware,
