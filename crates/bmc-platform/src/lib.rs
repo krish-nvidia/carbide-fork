@@ -54,4 +54,4 @@ pub use operation::{
     OperationReference, VendorJobId, VendorJobIdError,
 };
 pub use selection::{Capability, UnknownCapability};
-pub use transport::{ClassifyBmcError, EtagMode, Fetched, IpmiOps, OpCx};
+pub use transport::{ClassifyBmcError, Fetched, IpmiOps, OpCx};

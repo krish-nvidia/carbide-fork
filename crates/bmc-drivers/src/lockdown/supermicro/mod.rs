@@ -140,7 +140,7 @@ async fn set_kcs_privilege<B: Bmc>(
 
 #[cfg(test)]
 mod tests {
-    use bmc_platform::{EtagMode, Lockdown, LockdownDesiredState, LockdownScope};
+    use bmc_platform::{Lockdown, LockdownDesiredState, LockdownScope};
     use serde_json::json;
 
     use super::SmcLockdown;
@@ -201,7 +201,7 @@ mod tests {
                 )
                 .build()
                 .await;
-            let cx = bmc.cx(EtagMode::Resource).await;
+            let cx = bmc.cx().await;
 
             SmcLockdown
                 .set(&cx, LockdownScope::Host, LockdownDesiredState::Enabled)

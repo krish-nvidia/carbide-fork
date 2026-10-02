@@ -11,7 +11,7 @@
 //! it only keeps the file readable. Tests prove every rule names a compiled
 //! driver of the right capability.
 
-use bmc_platform::{Capability, EtagMode, IdentityField, IdentityMatcher, MatchPattern};
+use bmc_platform::{Capability, IdentityField, IdentityMatcher, MatchPattern};
 
 use crate::drivers::Driver::{self, *};
 use crate::selection::{Rule, RuleError, Rules};
@@ -65,15 +65,12 @@ fn built_ins() -> Vec<Rule> {
             SupermicroSmcLockdown,
             SupermicroBmcConsole,
         ]),
-        // AMI MegaRAC requires `If-Match` but rejects the ETag it served.
-        Rule::new("ami-megarac", [vendor("AMI")])
-            .drivers([
-                AmiMegaRacBmcControl,
-                AmiMegaRacBios,
-                AmiMegaRacLockdown,
-                AmiMegaRacConsole,
-            ])
-            .etag(EtagMode::Wildcard),
+        Rule::new("ami-megarac", [vendor("AMI")]).drivers([
+            AmiMegaRacBmcControl,
+            AmiMegaRacBios,
+            AmiMegaRacLockdown,
+            AmiMegaRacConsole,
+        ]),
         // Lenovo HS350x-class trays run AMI firmware behind a Lenovo service
         // root; the extra OEM-key matcher outranks the plain XCC vendor
         // rule. The AMI firmware takes the standard lockout policy and
@@ -86,8 +83,7 @@ fn built_ins() -> Vec<Rule> {
                 AmiMegaRacFirmware,
                 LenovoAmiConsole,
             ])
-            .standard([Capability::Accounts, Capability::Power])
-            .etag(EtagMode::Wildcard),
+            .standard([Capability::Accounts, Capability::Power]),
         // Power shelves have no ServiceRoot vendor; their chassis manufacturer
         // identifies them.
         Rule::new("delta-power-shelf", [chassis_manufacturer("Delta")])
@@ -194,17 +190,15 @@ fn built_ins() -> Vec<Rule> {
         )
         .drivers([AmiMegaRacBios, LenovoGb300Lockdown, LenovoGb300Console]),
         // DGX Viking runs AMI firmware and identifies itself by its system id.
-        Rule::new("nvidia-viking", [exact(IdentityField::SystemId, "DGX")])
-            .drivers([
-                NvidiaVikingPower,
-                AmiMegaRacBmcControl,
-                NvidiaVikingBios,
-                NvidiaVikingLockdown,
-                NvidiaVikingAccounts,
-                NvidiaVikingFirmware,
-                NvidiaVikingConsole,
-            ])
-            .etag(EtagMode::Wildcard),
+        Rule::new("nvidia-viking", [exact(IdentityField::SystemId, "DGX")]).drivers([
+            NvidiaVikingPower,
+            AmiMegaRacBmcControl,
+            NvidiaVikingBios,
+            NvidiaVikingLockdown,
+            NvidiaVikingAccounts,
+            NvidiaVikingFirmware,
+            NvidiaVikingConsole,
+        ]),
         // A standard ForceRestart can hang on this SKU at exactly this firmware pair.
         Rule::new(
             "lenovo-sr675-v3-ovx",
@@ -373,7 +367,6 @@ mod tests {
         let rules = built_in_rules();
 
         let gb_platform = resolve(&rules, &identity("Supermicro", Some("GB NVL")));
-        assert_eq!(gb_platform.etag_mode, EtagMode::Resource);
         assert_eq!(
             gb_platform.drivers.get(Capability::Power),
             &driver(NvidiaOpenBmcPower)
@@ -389,7 +382,6 @@ mod tests {
             ..SystemIdentity::default()
         });
         let viking = resolve(&rules, &viking);
-        assert_eq!(viking.etag_mode, EtagMode::Wildcard);
         assert_eq!(
             viking.drivers.get(Capability::Accounts),
             &driver(NvidiaVikingAccounts)
@@ -456,7 +448,6 @@ mod tests {
         let mut lenovo_ami = identity("Lenovo", None);
         lenovo_ami.service_root.oem_keys = vec!["Ami".to_string()];
         let lenovo_ami = resolve(&rules, &lenovo_ami);
-        assert_eq!(lenovo_ami.etag_mode, EtagMode::Wildcard);
         assert_eq!(
             lenovo_ami.drivers.get(Capability::Lockdown),
             &driver(LenovoAmiLockdown)

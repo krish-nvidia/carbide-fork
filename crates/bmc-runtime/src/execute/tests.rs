@@ -23,8 +23,8 @@ use bmc_drivers::{
 };
 use bmc_mock::test_support::{TestBmc, dell_poweredge_r750_bmc};
 use bmc_platform::{
-    Capability, ControllerAction, DriverOutcome, EtagMode, ManualInterventionCode, OpCx,
-    OperationReference, PlatformError, PlatformIdentity, Power, SystemIdentity,
+    Capability, ControllerAction, DriverOutcome, ManualInterventionCode, OpCx, OperationReference,
+    PlatformError, PlatformIdentity, Power, SystemIdentity,
 };
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use mac_address::MacAddress;
@@ -114,7 +114,6 @@ async fn harness(outcomes: Vec<DriverOutcome>) -> (ConnectedBmc<TestBmc>, &'stat
         ResolvedSelection {
             drivers: DriverMap::filled(CapabilitySelection::Unsupported)
                 .with(Capability::Power, CapabilitySelection::Standard),
-            etag_mode: EtagMode::default(),
             matched_rules: Vec::new(),
             hash: Rules::new(Vec::new())
                 .expect("empty rules are valid")

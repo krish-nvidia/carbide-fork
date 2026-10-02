@@ -12,8 +12,8 @@ use std::fmt;
 
 use blake3::{Hash, Hasher};
 use bmc_platform::{
-    Capability, EtagMode, IdentityField, IdentityMatcher, MatchPattern, PlatformIdentity,
-    Precedence, derived_precedence,
+    Capability, IdentityField, IdentityMatcher, MatchPattern, PlatformIdentity, Precedence,
+    derived_precedence,
 };
 use carbide_utils::has_duplicates;
 use serde::de::{MapAccess, Visitor};
@@ -155,9 +155,6 @@ pub struct Rule {
     /// The capabilities this rule decides.
     #[serde(default)]
     pub selections: BTreeMap<Capability, CapabilitySelection>,
-    /// The `If-Match` convention this rule's firmware needs, when it deviates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub etag_mode: Option<EtagMode>,
     #[serde(skip)]
     deployment_override: bool,
 }
@@ -169,7 +166,6 @@ impl Rule {
             id: id.into(),
             matchers: matchers.into_iter().collect(),
             selections: BTreeMap::new(),
-            etag_mode: None,
             deployment_override: false,
         }
     }
@@ -201,12 +197,6 @@ impl Rule {
         for capability in capabilities {
             self.select(capability, CapabilitySelection::Unsupported);
         }
-        self
-    }
-
-    /// Declares the `If-Match` convention this rule's firmware needs.
-    pub const fn etag(mut self, mode: EtagMode) -> Self {
-        self.etag_mode = Some(mode);
         self
     }
 
@@ -279,7 +269,7 @@ impl Rules {
             if rule.id.trim().is_empty() {
                 return Err(RuleError::EmptyId);
             }
-            if rule.selections.is_empty() && rule.etag_mode.is_none() {
+            if rule.selections.is_empty() {
                 return Err(RuleError::EmptyRule {
                     id: rule.id.clone(),
                 });
@@ -404,22 +394,8 @@ impl Rules {
             });
         }
 
-        let etag_mode = best(
-            matching
-                .iter()
-                .copied()
-                .filter(|rule| rule.etag_mode.is_some()),
-        )
-        .map_err(|(precedence, ids)| SelectionError::AmbiguousEtagMode {
-            precedence,
-            rule_ids: ids,
-        })?
-        .and_then(|rule| rule.etag_mode)
-        .unwrap_or_default();
-
         Ok(ResolvedSelection {
             drivers,
-            etag_mode,
             matched_rules,
             hash: self.hash,
         })
@@ -455,7 +431,7 @@ pub enum RuleError {
     #[error("rule ids must be unique")]
     DuplicateId,
     /// A rule decides nothing.
-    #[error("rule {id} selects no capability and declares no quirk")]
+    #[error("rule {id} selects no capability")]
     EmptyRule { id: String },
     /// A matcher contains an empty comparison value.
     #[error("rule {id} has an empty pattern for {field:?}")]
@@ -488,12 +464,6 @@ pub enum SelectionError {
         /// Canonically ordered identifiers of the tied rules.
         rule_ids: Vec<String>,
     },
-    /// Several matching rules declare an `If-Match` mode at the same rank.
-    #[error("ambiguous If-Match mode at precedence {precedence:?}: {rule_ids:?}")]
-    AmbiguousEtagMode {
-        precedence: Precedence,
-        rule_ids: Vec<String>,
-    },
 }
 
 /// The rule that decided one capability.
@@ -509,9 +479,6 @@ pub struct MatchedRule {
 pub struct ResolvedSelection {
     /// The selected complete driver map.
     pub drivers: DriverMap,
-    /// The `If-Match` convention PATCH requests carry on this BMC.
-    #[serde(default)]
-    pub etag_mode: EtagMode,
     /// Which rule decided each capability, in capability order; capabilities
     /// using the compiled default are absent.
     pub matched_rules: Vec<MatchedRule>,

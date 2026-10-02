@@ -79,8 +79,6 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
-    use bmc_platform::EtagMode;
-
     use super::*;
     use crate::test_support::Fixture;
 
@@ -119,7 +117,7 @@ mod tests {
             )
             .build()
             .await;
-        let cx = bmc.cx(EtagMode::Resource).await;
+        let cx = bmc.cx().await;
         let expected = BiosSettings {
             attributes: BTreeMap::from([
                 ("HostPrivilegeLevel".to_string(), json!("Restricted")),

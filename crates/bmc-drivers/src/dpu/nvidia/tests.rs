@@ -9,8 +9,8 @@ use axum::http::header::IF_MATCH;
 use axum::http::{Method, StatusCode};
 use bmc_mock::test_support::TestBmc;
 use bmc_platform::{
-    ControllerAction, Dpu, DpuStatus, DriverOutcome, EtagMode, HostPrivilegeLevel, NicMode,
-    PlatformError, RshimState,
+    ControllerAction, Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, PlatformError,
+    RshimState,
 };
 use serde_json::{Value, json};
 
@@ -205,7 +205,7 @@ fn bluefield4() -> Fixture {
 async fn bluefield3_status_reads_the_system_oem_body_on_supported_firmware() {
     for (firmware, nic_mode) in [("BF-26.04-8", Some(NicMode::Dpu)), ("BF-23.09-9", None)] {
         let bmc = bluefield3(firmware).build().await;
-        let cx = bmc.cx(EtagMode::Resource).await;
+        let cx = bmc.cx().await;
         assert_eq!(
             BlueField3Dpu.status(&cx).await,
             Ok(DpuStatus {
@@ -240,7 +240,7 @@ async fn bluefield3_host_privilege_retries_with_the_spaced_attribute_name() {
             );
         }
         let bmc = fixture.build().await;
-        let cx = bmc.cx(EtagMode::Resource).await;
+        let cx = bmc.cx().await;
 
         let result = BlueField3Dpu
             .set_host_privilege_level(&cx, HostPrivilegeLevel::Restricted)
@@ -311,7 +311,7 @@ async fn nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
     } in cases
     {
         let bmc = fixture.build().await;
-        let cx = bmc.cx(EtagMode::Resource).await;
+        let cx = bmc.cx().await;
         assert_eq!(
             dpu.set_nic_mode(&cx, NicMode::Nic).await,
             Ok(expected),
@@ -328,7 +328,7 @@ async fn nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
 #[tokio::test]
 async fn bmc_rshim_is_enabled_through_the_manager_resource_the_dpu_links() {
     let bmc = bluefield3("BF-26.04-8").build().await;
-    let cx = bmc.cx(EtagMode::Resource).await;
+    let cx = bmc.cx().await;
     assert_eq!(
         BlueField3Dpu.enable_bmc_rshim(&cx).await,
         Ok(DriverOutcome::complete())
@@ -343,7 +343,7 @@ async fn bmc_rshim_is_enabled_through_the_manager_resource_the_dpu_links() {
     );
 
     let bmc = bluefield4().build().await;
-    let cx = bmc.cx(EtagMode::Resource).await;
+    let cx = bmc.cx().await;
     assert_eq!(
         BlueField4Dpu.enable_bmc_rshim(&cx).await,
         Err(PlatformError::Unsupported)
@@ -354,7 +354,7 @@ async fn bmc_rshim_is_enabled_through_the_manager_resource_the_dpu_links() {
 #[tokio::test]
 async fn bluefield4_status_reads_the_network_adapter() {
     let bmc = bluefield4().build().await;
-    let cx = bmc.cx(EtagMode::Resource).await;
+    let cx = bmc.cx().await;
     assert_eq!(
         BlueField4Dpu.status(&cx).await,
         Ok(DpuStatus {
@@ -367,7 +367,7 @@ async fn bluefield4_status_reads_the_network_adapter() {
 #[tokio::test]
 async fn bluefield4_mode_and_privileges_are_written_to_their_settings_objects() {
     let bmc = bluefield4().build().await;
-    let cx = bmc.cx(EtagMode::Resource).await;
+    let cx = bmc.cx().await;
     BlueField4Dpu
         .set_nic_mode(&cx, NicMode::Dpu)
         .await

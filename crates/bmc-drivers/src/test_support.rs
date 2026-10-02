@@ -15,7 +15,7 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bmc_mock::test_support::TestBmc;
 use bmc_mock::test_support::axum_http_client::{AxumRouterHttpClient, RecordedRequest};
-use bmc_platform::{EtagMode, ManagerIdentity, OpCx, PlatformIdentity, SystemIdentity};
+use bmc_platform::{ManagerIdentity, OpCx, PlatformIdentity, SystemIdentity};
 use nv_redfish::ServiceRoot;
 use nv_redfish::bmc_http::{BmcCredentials, CacheSettings, HttpBmc};
 use serde_json::{Value, json};
@@ -146,9 +146,9 @@ impl Fixture {
 }
 
 impl FixtureBmc {
-    /// An operation context under `etag_mode`, with the request log cleared.
-    pub(crate) async fn cx(&self, etag_mode: EtagMode) -> OpCx<'_, TestBmc> {
-        let cx = OpCx::new(self.bmc.as_ref(), &self.root, &self.identity, etag_mode)
+    /// An operation context, with the request log cleared.
+    pub(crate) async fn cx(&self) -> OpCx<'_, TestBmc> {
+        let cx = OpCx::new(self.bmc.as_ref(), &self.root, &self.identity)
             .await
             .expect("fixture resolves the selected system and manager");
         self.client.take_requests();

@@ -4,8 +4,8 @@
  */
 
 use bmc_platform::{
-    Capability, ChassisIdentity, EtagMode, FirmwareVersionRange, FirmwareVersionRangeError,
-    IdentityField, IdentityMatcher, ManagerIdentity, MatchPattern, Precedence, ServiceRootIdentity,
+    Capability, ChassisIdentity, FirmwareVersionRange, FirmwareVersionRangeError, IdentityField,
+    IdentityMatcher, ManagerIdentity, MatchPattern, Precedence, ServiceRootIdentity,
     SystemIdentity,
 };
 use carbide_test_support::value_scenarios;
@@ -312,39 +312,6 @@ fn more_matchers_win_within_one_precedence() {
         resolved.drivers.get(Capability::Power),
         &CapabilitySelection::Unsupported
     );
-}
-
-#[test]
-fn etag_mode_comes_from_the_narrowest_rule_that_declares_one() {
-    let rules = Rules::new(vec![
-        rule("broad", [vendor("NVIDIA")]).etag(EtagMode::Wildcard),
-        rule("narrow", [model("GB300")]),
-    ])
-    .expect("rules are valid");
-    let resolved = rules
-        .resolve(&identity(), &defaults())
-        .expect("rules resolve");
-    assert_eq!(resolved.rule_for(Capability::Power), Some("narrow"));
-    assert_eq!(resolved.etag_mode, EtagMode::Wildcard);
-
-    let silent = Rules::new(vec![rule("broad", [vendor("NVIDIA")])]).expect("rules are valid");
-    assert_eq!(
-        silent
-            .resolve(&identity(), &defaults())
-            .expect("rules resolve")
-            .etag_mode,
-        EtagMode::Resource
-    );
-
-    let tied = Rules::new(vec![
-        rule("a", [model("GB300")]).etag(EtagMode::Wildcard),
-        rule("b", [model("GB300")]).etag(EtagMode::Resource),
-    ])
-    .expect("rules are valid");
-    assert!(matches!(
-        tied.resolve(&identity(), &defaults()),
-        Err(SelectionError::Ambiguous { .. })
-    ));
 }
 
 #[test]

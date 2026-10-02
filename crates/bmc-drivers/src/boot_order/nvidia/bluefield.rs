@@ -49,7 +49,6 @@ impl<B: Bmc> BootOrder<B> for BlueFieldBootOrder {
 #[cfg(test)]
 mod tests {
     use axum::http::header::IF_MATCH;
-    use bmc_platform::EtagMode;
     use nv_redfish::schema::computer_system::{BootSource, BootSourceOverrideEnabled};
     use serde_json::json;
 
@@ -73,7 +72,7 @@ mod tests {
             )
             .build()
             .await;
-        let cx = bmc.cx(EtagMode::Resource).await;
+        let cx = bmc.cx().await;
 
         BlueFieldBootOrder
             .set_override(

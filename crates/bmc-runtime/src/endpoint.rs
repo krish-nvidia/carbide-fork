@@ -23,8 +23,7 @@ use bmc_drivers::{
 };
 use bmc_platform::{
     Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, ClassifyBmcError, Console, Dpu,
-    EtagMode, Firmware, IpmiOps, Lockdown, OpCx, PlatformError, PlatformIdentity, Power,
-    SecureBoot, Storage,
+    Firmware, IpmiOps, Lockdown, OpCx, PlatformError, PlatformIdentity, Power, SecureBoot, Storage,
 };
 use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 use carbide_utils::redfish::{BmcAccessInfo, parse_uri_host_ip};
@@ -132,11 +131,6 @@ impl BmcRef {
     /// Returns the identity and resource ids selected during exploration.
     pub const fn identity(&self) -> &PlatformIdentity {
         &self.identity
-    }
-
-    /// Returns the `If-Match` convention the selected rule declared.
-    pub const fn etag_mode(&self) -> EtagMode {
-        self.selection.etag_mode
     }
 
     /// Returns the complete driver map persisted during exploration.
@@ -316,7 +310,6 @@ where
             self.bmc.as_ref(),
             self.service_root.as_ref(),
             self.endpoint.identity(),
-            self.endpoint.etag_mode(),
         )
         .await?;
         Ok(match self.ipmi.as_deref() {
@@ -340,7 +333,6 @@ mod tests {
     fn selection(drivers: DriverMap) -> ResolvedSelection {
         ResolvedSelection {
             drivers,
-            etag_mode: EtagMode::default(),
             matched_rules: Vec::new(),
             hash: Rules::new(Vec::new())
                 .expect("empty rules are valid")

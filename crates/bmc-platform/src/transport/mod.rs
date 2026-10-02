@@ -17,12 +17,10 @@
 
 mod context;
 mod errors;
-mod etag;
 mod fetched;
 mod ipmi;
 
 pub use context::OpCx;
 pub use errors::ClassifyBmcError;
-pub use etag::EtagMode;
 pub use fetched::Fetched;
 pub use ipmi::IpmiOps;

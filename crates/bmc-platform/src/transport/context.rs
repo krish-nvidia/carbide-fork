@@ -21,7 +21,7 @@ use nv_redfish::manager::Manager;
 use nv_redfish::{Bmc, Error as RedfishError, ServiceRoot};
 use serde::{Deserialize, Serialize};
 
-use super::{ClassifyBmcError, EtagMode, IpmiOps};
+use super::{ClassifyBmcError, IpmiOps};
 use crate::{DriverOutcome, PlatformError, PlatformIdentity};
 
 /// Runtime-owned operation context supplied to a stateless driver.
@@ -34,7 +34,6 @@ pub struct OpCx<'a, B: Bmc> {
     bmc: &'a B,
     service_root: &'a ServiceRoot<B>,
     identity: &'a PlatformIdentity,
-    etag_mode: EtagMode,
     classify: fn(B::Error) -> PlatformError,
     system: Option<ComputerSystem<B>>,
     manager: Option<Manager<B>>,
@@ -49,7 +48,6 @@ impl<'a, B: Bmc> OpCx<'a, B> {
         bmc: &'a B,
         service_root: &'a ServiceRoot<B>,
         identity: &'a PlatformIdentity,
-        etag_mode: EtagMode,
     ) -> Result<Self, PlatformError>
     where
         B::Error: ClassifyBmcError,
@@ -58,7 +56,6 @@ impl<'a, B: Bmc> OpCx<'a, B> {
             bmc,
             service_root,
             identity,
-            etag_mode,
             classify: <B::Error as ClassifyBmcError>::classify,
             system: None,
             manager: None,
@@ -129,11 +126,6 @@ impl<'a, B: Bmc> OpCx<'a, B> {
     /// Returns the Manager linked to the selected system.
     pub fn manager(&self) -> Result<&Manager<B>, PlatformError> {
         self.manager.as_ref().ok_or(PlatformError::Unsupported)
-    }
-
-    /// Returns the `If-Match` convention of this BMC.
-    pub const fn etag_mode(&self) -> EtagMode {
-        self.etag_mode
     }
 
     /// Returns IPMI operations when the runtime attached them.

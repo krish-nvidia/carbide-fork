@@ -171,7 +171,6 @@ pub(crate) async fn patch_manager_attributes<B: Bmc>(
 mod tests {
     use std::time::Duration;
 
-    use bmc_platform::EtagMode;
     use nv_redfish::core::{AsyncTask, AsyncTaskLocation};
 
     use serde_json::json;
@@ -208,7 +207,7 @@ mod tests {
         )
         .build()
         .await;
-        let cx = bmc.cx(EtagMode::Resource).await;
+        let cx = bmc.cx().await;
 
         assert_eq!(
             job_outcome(
@@ -282,7 +281,7 @@ mod tests {
             )
             .build()
             .await;
-            let cx = bmc.cx(EtagMode::Resource).await;
+            let cx = bmc.cx().await;
 
             assert_eq!(clear_job_queue(&cx).await, expected, "{system_lockdown}");
             let writes = bmc.writes();

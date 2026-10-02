@@ -122,7 +122,7 @@ fn already_satisfied_is_complete(
 
 #[cfg(test)]
 mod tests {
-    use bmc_platform::{EtagMode, PlatformIdentity, SystemIdentity};
+    use bmc_platform::{PlatformIdentity, SystemIdentity};
     use serde_json::json;
 
     use super::*;
@@ -137,14 +137,9 @@ mod tests {
             }),
             ..PlatformIdentity::default()
         };
-        let cx = OpCx::new(
-            bmc.bmc.as_ref(),
-            bmc.service_root.as_ref(),
-            &identity,
-            EtagMode::default(),
-        )
-        .await
-        .expect("selected system resolves");
+        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity)
+            .await
+            .expect("selected system resolves");
         bmc.http_client.take_requests();
 
         let outcome = StandardPower
