@@ -30,6 +30,7 @@ mod error;
 mod identity;
 mod matcher;
 mod operation;
+mod quirk;
 mod selection;
 mod transport;
 
@@ -54,5 +55,6 @@ pub use operation::{
     ControllerAction, DriverOutcome, ManualInterventionCode, ManualInterventionCodeError,
     OperationReference, VendorJobId, VendorJobIdError,
 };
+pub use quirk::Quirk;
 pub use selection::Capability;
 pub use transport::{ClassifyBmcError, Fetched, IpmiOps, OpCx};

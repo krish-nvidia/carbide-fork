@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use bmc_platform::{
     Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+    Quirk,
 };
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
@@ -20,7 +21,9 @@ use crate::resources::{attribute_map, patch_bios_attributes};
 ///
 /// BMC 24.10 dropped the spaces from some attribute names, so expected values
 /// take whichever spelling the BIOS reports. Until the UEFI finishes POST the
-/// BIOS reports neither, so the attributes show as missing.
+/// BIOS reports neither, so the attributes show as missing and are written
+/// under the spelling [`Quirk::BlueFieldSpacedBiosAttributeNames`] selects,
+/// retrying with the other spelling when the BMC rejects it.
 pub(crate) struct BlueFieldBios;
 
 /// Attributes reported either without or with spaces, depending on firmware.
@@ -46,26 +49,58 @@ fn unspaced(mut settings: BiosSettings) -> BiosSettings {
 }
 
 /// `expected` with each renamed attribute under the spaced name when `current`
-/// reports that spelling.
-fn reported_spellings(current: &BiosSettings, mut expected: BiosSettings) -> BiosSettings {
+/// reports that spelling, or reports neither on firmware that spaces them.
+fn reported_spellings(
+    current: &BiosSettings,
+    mut expected: BiosSettings,
+    firmware_spaced: bool,
+) -> BiosSettings {
     for (unspaced, spaced) in RENAMED {
-        if current.attributes.contains_key(spaced)
-            && let Some(value) = expected.attributes.remove(unspaced)
-        {
+        let reports_spaced = current.attributes.contains_key(spaced)
+            || (firmware_spaced && !current.attributes.contains_key(unspaced));
+        if reports_spaced && let Some(value) = expected.attributes.remove(unspaced) {
             expected.attributes.insert(spaced.to_string(), value);
         }
     }
     expected
 }
 
+/// `settings` with each renamed attribute under its other spelling.
+fn respelled(mut settings: BiosSettings) -> BiosSettings {
+    for (unspaced, spaced) in RENAMED {
+        if let Some(value) = settings.attributes.remove(unspaced) {
+            settings.attributes.insert(spaced.to_string(), value);
+        } else if let Some(value) = settings.attributes.remove(spaced) {
+            settings.attributes.insert(unspaced.to_string(), value);
+        }
+    }
+    settings
+}
+
+/// Whether the BMC's error names a renamed attribute `written` carries.
+fn rejects_spelling(written: &BiosSettings, message: &str) -> bool {
+    RENAMED
+        .iter()
+        .flat_map(|(unspaced, spaced)| [unspaced, spaced])
+        .any(|key| written.attributes.contains_key(*key) && message.contains(key))
+}
+
 /// The table and `profile`, normalized to unspaced names, then renamed to the
 /// spelling `current` reports.
-fn expected_settings(current: &BiosSettings, profile: &BiosSettings) -> BiosSettings {
+fn expected_settings<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    current: &BiosSettings,
+    profile: &BiosSettings,
+) -> BiosSettings {
     let expected = with_profile(
         desired_settings(ATTRIBUTES, &unspaced(current.clone())),
         &unspaced(profile.clone()),
     );
-    reported_spellings(current, expected)
+    reported_spellings(
+        current,
+        expected,
+        cx.has_quirk(Quirk::BlueFieldSpacedBiosAttributeNames),
+    )
 }
 
 #[async_trait]
@@ -84,7 +119,13 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
-        stage(cx, &expected_settings(&current, profile)).await
+        let expected = expected_settings(cx, &current, profile);
+        match stage(cx, &expected).await {
+            Err(PlatformError::Bmc { message, .. }) if rejects_spelling(&expected, &message) => {
+                stage(cx, &respelled(expected)).await
+            }
+            result => result,
+        }
     }
 
     async fn status(
@@ -94,7 +135,7 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let current = current_settings(cx).await?;
-        Ok(compare(&current, &expected_settings(&current, profile)))
+        Ok(compare(&current, &expected_settings(cx, &current, profile)))
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -122,13 +163,21 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use axum::http::{Method, StatusCode};
+
     use super::*;
-    use crate::test_support::{Fixture, FixtureBmc};
+    use crate::test_support::{Fixture, FixtureBmc, body};
 
     const BIOS: &str = "/redfish/v1/Systems/Bluefield/Bios";
     const SETTINGS: &str = "/redfish/v1/Systems/Bluefield/Bios/Settings";
 
     async fn bluefield(attributes: serde_json::Value) -> FixtureBmc {
+        bluefield_fixture(attributes).build().await
+    }
+
+    fn bluefield_fixture(attributes: serde_json::Value) -> Fixture {
         Fixture::new("Nvidia", "BlueField-3 DPU", "Bluefield", "Bluefield_BMC")
             .document(
                 "/redfish/v1/Systems/Bluefield",
@@ -158,8 +207,61 @@ mod tests {
                     "Attributes": {},
                 }),
             )
-            .build()
-            .await
+    }
+
+    #[tokio::test]
+    async fn apply_before_post_writes_the_firmware_spelling_and_retries_the_other() {
+        let unspaced = json!({"Attributes": {
+            "HostPrivilegeLevel": "Restricted",
+            "InternalCPUModel": "Embedded",
+        }});
+        let spaced = json!({"Attributes": {
+            "Host Privilege Level": "Restricted",
+            "Internal CPU Model": "Embedded",
+        }});
+        let rejection = json!({"error": {"@Message.ExtendedInfo": [{
+            "MessageId": "Base.1.15.PropertyUnknown",
+            "Message": "The property HostPrivilegeLevel is not in the list of valid properties for the resource.",
+        }]}});
+        let no_quirks = BTreeSet::new();
+        let spaced_firmware = BTreeSet::from([Quirk::BlueFieldSpacedBiosAttributeNames]);
+
+        for (scenario, quirks, rejects, expected) in [
+            (
+                "spaced firmware",
+                &spaced_firmware,
+                false,
+                vec![spaced.clone()],
+            ),
+            (
+                "unspaced name rejected",
+                &no_quirks,
+                true,
+                vec![unspaced.clone(), spaced.clone()],
+            ),
+        ] {
+            let mut fixture = bluefield_fixture(json!({}));
+            if rejects {
+                fixture = fixture.respond(
+                    Method::PATCH,
+                    SETTINGS,
+                    StatusCode::BAD_REQUEST,
+                    Some(rejection.clone()),
+                );
+            }
+            let bmc = fixture.build().await;
+            let cx = bmc.cx().await.with_quirks(quirks);
+
+            let result = BlueFieldBios
+                .apply(&cx, &BiosSettings::default(), None)
+                .await;
+            assert_eq!(result.is_ok(), !rejects, "{scenario}");
+            assert_eq!(
+                bmc.writes().iter().map(body).collect::<Vec<_>>(),
+                expected,
+                "{scenario}"
+            );
+        }
     }
 
     #[tokio::test]

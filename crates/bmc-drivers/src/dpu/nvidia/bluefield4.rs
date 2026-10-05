@@ -5,7 +5,8 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, RshimState,
+    ControllerAction, Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, ManualInterventionCode,
+    NicMode, OpCx, PlatformError, RshimState,
 };
 use nv_redfish::chassis::{NetworkAdapter, NetworkAdapterUpdate};
 use nv_redfish::core::Bmc;
@@ -14,16 +15,27 @@ use nv_redfish::oem::nvidia::network_adapter::{
     NvidiaNetworkAdapterUpdateExt, PrivilegeModeType,
 };
 
-use crate::dpu::nvidia::support::{
-    enable_bmc_rshim, host_rshim_state, no_dpu, restricted_host_privilege,
-};
+use crate::dpu::nvidia::support::{enable_bmc_rshim, host_rshim_state};
 
 /// BlueField-4: mode and host privileges live on the network adapter's
 /// `Oem.Nvidia` and change through its settings objects. There is no host
 /// rshim control, and BMC rshim is available only where the manager links it.
+/// A switch to NIC mode waits for an operator while host privilege is
+/// Restricted.
 pub(crate) struct BlueField4Dpu;
 
-/// The first network adapter carrying an `Oem.Nvidia` extension.
+/// The manual step a switch to NIC mode waits on while host privilege is Restricted.
+const HOST_PRIVILEGE_RESTRICTED: &str = "dpu-host-privilege-restricted";
+
+fn restricted_host_privilege() -> DriverOutcome {
+    DriverOutcome::blocked(ControllerAction::ManualIntervention {
+        code: ManualInterventionCode::new(HOST_PRIVILEGE_RESTRICTED.to_string())
+            .expect("a non-empty literal is a valid manual-intervention code"),
+    })
+}
+
+/// The first network adapter carrying an `Oem.Nvidia` extension; the
+/// controls are unsupported on a BMC without one.
 async fn nvidia_adapter<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<(NetworkAdapter<B>, NvidiaNetworkAdapter<B>), PlatformError> {
@@ -32,7 +44,7 @@ async fn nvidia_adapter<B: Bmc>(
         .chassis()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::NoDpu)?
+        .ok_or(PlatformError::Unsupported)?
         .members()
         .await
         .map_err(|error| cx.map_redfish_error(error))?;
@@ -51,7 +63,7 @@ async fn nvidia_adapter<B: Bmc>(
             }
         }
     }
-    Err(PlatformError::NoDpu)
+    Err(PlatformError::Unsupported)
 }
 
 #[async_trait]
@@ -65,8 +77,7 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
         };
         let host_rshim = cx
             .system()
-            .await
-            .map_err(no_dpu)?
+            .await?
             .oem_nvidia()
             .await
             .map_err(|error| cx.map_redfish_error(error))?

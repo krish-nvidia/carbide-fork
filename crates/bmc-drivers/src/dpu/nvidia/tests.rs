@@ -5,12 +5,14 @@
 
 //! BlueField drivers against documents trimmed from recorded BF3 and BF4 BMCs.
 
+use std::collections::BTreeSet;
+
 use axum::http::header::IF_MATCH;
 use axum::http::{Method, StatusCode};
 use bmc_mock::test_support::TestBmc;
 use bmc_platform::{
     ControllerAction, Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, PlatformError,
-    RshimState,
+    Quirk, RshimState,
 };
 use serde_json::{Value, json};
 
@@ -203,23 +205,35 @@ fn bluefield4() -> Fixture {
 }
 
 #[tokio::test]
-async fn bluefield3_status_reads_the_system_oem_body_on_supported_firmware() {
-    for (firmware, nic_mode) in [("BF-26.04-8", Some(NicMode::Dpu)), ("BF-23.09-9", None)] {
-        let bmc = bluefield3(firmware).build().await;
-        let cx = bmc.cx().await;
+async fn bluefield3_status_reads_the_mode_only_once_firmware_supports_it() {
+    let cases = [
+        ("supported firmware", BTreeSet::new(), Some(NicMode::Dpu)),
+        (
+            "pre-NIC-mode firmware",
+            BTreeSet::from([Quirk::BlueFieldNicModeUnreadable]),
+            None,
+        ),
+    ];
+    for (name, quirks, nic_mode) in cases {
+        let bmc = bluefield3("BF-26.04-8").build().await;
+        let cx = bmc.cx().await.with_quirks(&quirks);
         assert_eq!(
             BlueField3Dpu.status(&cx).await,
             Ok(DpuStatus {
                 nic_mode,
                 host_rshim: Some(RshimState::Disabled),
             }),
-            "{firmware}"
+            "{name}"
         );
     }
 }
 
 #[tokio::test]
 async fn bluefield3_avoids_the_oem_resource_on_firmware_where_it_times_out() {
+    let quirks = BTreeSet::from([
+        Quirk::BlueFieldNicModeBiosError,
+        Quirk::BlueFieldOemTimeoutInNicMode,
+    ]);
     let nic_mode_bios_error = json!({"Attributes": {"NicMode": "NicMode"}});
     let bmc = bluefield3("BF-24.04-5")
         .respond(
@@ -236,7 +250,7 @@ async fn bluefield3_avoids_the_oem_resource_on_firmware_where_it_times_out() {
         )
         .build()
         .await;
-    let cx = bmc.cx().await;
+    let cx = bmc.cx().await.with_quirks(&quirks);
 
     assert_eq!(
         BlueField3Dpu.status(&cx).await,
@@ -249,27 +263,61 @@ async fn bluefield3_avoids_the_oem_resource_on_firmware_where_it_times_out() {
         BlueField3Dpu.set_nic_mode(&cx, NicMode::Dpu).await,
         Ok(DriverOutcome::complete())
     );
-    let writes = bmc.writes();
-    assert_eq!(writes.len(), 1);
     assert_eq!(
-        path(&writes[0]),
-        format!("{BF3_SYSTEM_OEM}/Actions/Mode.Set")
+        BlueField3Dpu
+            .set_host_rshim(&cx, RshimState::Disabled)
+            .await,
+        Ok(DriverOutcome::complete())
     );
-    assert_eq!(body(&writes[0]), json!({"Mode": "DpuMode"}));
+    let writes = bmc.writes();
+    assert_eq!(
+        writes
+            .iter()
+            .map(|write| (path(write).to_string(), body(write)))
+            .collect::<Vec<_>>(),
+        [
+            (
+                format!("{BF3_SYSTEM_OEM}/Actions/Mode.Set"),
+                json!({"Mode": "DpuMode"})
+            ),
+            (
+                format!("{BF3_SYSTEM_OEM}/Actions/HostRshim.Set"),
+                json!({"HostRshim": "Disabled"})
+            ),
+        ]
+    );
 }
 
 #[tokio::test]
-async fn bluefield3_host_privilege_retries_with_the_spaced_attribute_name() {
+async fn bluefield3_host_privilege_uses_the_firmware_spelling_and_retries_the_other() {
     let rejection = json!({"error": {"@Message.ExtendedInfo": [{
         "MessageId": "Base.1.15.PropertyUnknown",
         "Message": "The property HostPrivilegeLevel is not in the list of valid properties for the resource.",
     }]}});
     let unspaced = json!({"Attributes": {"HostPrivilegeLevel": "Restricted"}});
     let spaced = json!({"Attributes": {"Host Privilege Level": "Restricted"}});
+    let no_quirks = BTreeSet::new();
+    let spaced_firmware = BTreeSet::from([Quirk::BlueFieldSpacedBiosAttributeNames]);
 
-    for (rejects_unspaced, expected_bodies) in [
-        (false, vec![unspaced.clone()]),
-        (true, vec![unspaced.clone(), spaced.clone()]),
+    for (scenario, quirks, rejects_unspaced, expected_bodies) in [
+        (
+            "unspaced firmware",
+            &no_quirks,
+            false,
+            vec![unspaced.clone()],
+        ),
+        (
+            "unspaced name rejected",
+            &no_quirks,
+            true,
+            vec![unspaced.clone(), spaced.clone()],
+        ),
+        (
+            "spaced firmware",
+            &spaced_firmware,
+            false,
+            vec![spaced.clone()],
+        ),
     ] {
         let mut fixture = bluefield3("BF-24.07-14");
         if rejects_unspaced {
@@ -281,27 +329,27 @@ async fn bluefield3_host_privilege_retries_with_the_spaced_attribute_name() {
             );
         }
         let bmc = fixture.build().await;
-        let cx = bmc.cx().await;
+        let cx = bmc.cx().await.with_quirks(quirks);
 
         let result = BlueField3Dpu
             .set_host_privilege_level(&cx, HostPrivilegeLevel::Restricted)
             .await;
-        assert_eq!(result.is_ok(), !rejects_unspaced, "{rejects_unspaced}");
+        assert_eq!(result.is_ok(), !rejects_unspaced, "{scenario}");
         let writes = bmc.writes();
         assert!(
             writes.iter().all(|write| path(write) == BF3_BIOS_SETTINGS),
-            "{rejects_unspaced}"
+            "{scenario}"
         );
         assert_eq!(
             writes.iter().map(body).collect::<Vec<_>>(),
             expected_bodies,
-            "{rejects_unspaced}"
+            "{scenario}"
         );
     }
 }
 
 #[tokio::test]
-async fn nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
+async fn only_bf4_nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
     let restricted_bios = json!({
         "@odata.id": BF3_BIOS,
         "@Redfish.Settings": {"SettingsObject": {"@odata.id": BF3_BIOS_SETTINGS}},
@@ -323,13 +371,6 @@ async fn nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
         Case {
             name: "BF3 restricted",
             fixture: bluefield3("BF-26.04-8").document(BF3_BIOS, restricted_bios),
-            dpu: &BlueField3Dpu,
-            expected: blocked.clone(),
-            writes: vec![],
-        },
-        Case {
-            name: "BF3 privileged",
-            fixture: bluefield3("BF-26.04-8"),
             dpu: &BlueField3Dpu,
             expected: DriverOutcome::complete(),
             writes: vec![json!({"Mode": "NicMode"})],

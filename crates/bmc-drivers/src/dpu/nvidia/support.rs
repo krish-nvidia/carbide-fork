@@ -6,43 +6,20 @@
 //! BlueField DPU mechanics shared by the card generations.
 
 use bmc_platform::{
-    ControllerAction, DriverOutcome, HostPrivilegeLevel, ManualInterventionCode, NicMode, OpCx,
-    PlatformError, RshimState,
+    DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, Quirk, RshimState,
 };
+use nv_redfish::computer_system::Bios;
 use nv_redfish::core::Bmc;
-use nv_redfish::core::action::{Action, ActionTarget};
 use nv_redfish::oem::nvidia::NvidiaComputerSystem;
 use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
 use serde_json::{Value, json};
-use version_compare::Cmp;
 
 use crate::resources::{attribute_map, patch_bios_attributes, selected_bios};
 
-/// NIC mode is readable and switchable through Redfish from this BMC firmware onward.
-const NIC_MODE_MINIMUM_FIRMWARE: &str = "BF-23.10-5";
-/// Before this BMC firmware, reading BIOS on a DPU in NIC mode fails with a
-/// 500 whose body still carries the BIOS attributes.
-const NIC_MODE_BIOS_ERROR_FIXED_FIRMWARE: &str = "BF-24.07-14";
-/// On this BMC firmware the system `Oem/Nvidia` resource times out on a DPU in NIC mode.
-const OEM_EXTENSION_TIMEOUT_FIRMWARE: &str = "BF-24.04-5";
-
-/// BMC 24.10 dropped the spaces from BIOS attribute names.
+/// BMC 24.10 dropped the spaces from BIOS attribute names; see
+/// [`Quirk::BlueFieldSpacedBiosAttributeNames`].
 const HOST_PRIVILEGE_LEVEL: &str = "HostPrivilegeLevel";
 const HOST_PRIVILEGE_LEVEL_WITH_SPACES: &str = "Host Privilege Level";
-
-/// The manual step a switch to NIC mode waits on while host privilege is Restricted.
-const HOST_PRIVILEGE_RESTRICTED: &str = "dpu-host-privilege-restricted";
-
-pub(super) fn no_dpu(error: PlatformError) -> PlatformError {
-    match error {
-        PlatformError::InvalidResponse { .. } => PlatformError::NoDpu,
-        other => other,
-    }
-}
-
-fn compare(version: &str, reference: &str) -> Option<Cmp> {
-    version_compare::compare(version, reference).ok()
-}
 
 fn parse_mode(value: &str) -> Option<NicMode> {
     match value.replace('"', "").as_str() {
@@ -59,51 +36,8 @@ pub(super) fn nic_mode_value(mode: NicMode) -> &'static str {
     }
 }
 
-/// The version of the firmware inventory entry named `BMC_Firmware`.
-async fn bmc_firmware_version<B: Bmc>(cx: &OpCx<'_, B>) -> Result<String, PlatformError> {
-    cx.service_root()
-        .update_service()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::NoContent)?
-        .firmware_inventories()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::NoContent)?
-        .into_iter()
-        .map(|inventory| inventory.raw())
-        .find(|inventory| inventory.odata_id.to_string().contains("BMC_Firmware"))
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: "BlueField BMC firmware inventory was not found".to_string(),
-        })?
-        .version
-        .clone()
-        .flatten()
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: "BlueField BMC firmware inventory has no version".to_string(),
-        })
-}
-
-/// The BMC firmware version, or `None` when it predates NIC-mode support.
-pub(super) async fn nic_mode_firmware<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<Option<String>, PlatformError> {
-    let version = bmc_firmware_version(cx).await?;
-    Ok((compare(&version, NIC_MODE_MINIMUM_FIRMWARE) != Some(Cmp::Lt)).then_some(version))
-}
-
-/// Fails with `Unsupported` when the BMC firmware predates NIC-mode support.
-pub(super) async fn require_nic_mode_firmware<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<(), PlatformError> {
-    nic_mode_firmware(cx)
-        .await?
-        .map(drop)
-        .ok_or(PlatformError::Unsupported)
-}
-
 /// Whether a failed BIOS read is the NIC-mode 500 whose body reports NIC mode.
-fn bios_error_reports_nic_mode(error: &PlatformError) -> bool {
+pub(super) fn bios_error_reports_nic_mode(error: &PlatformError) -> bool {
     let PlatformError::Bmc {
         status: 500,
         message,
@@ -119,25 +53,26 @@ fn bios_error_reports_nic_mode(error: &PlatformError) -> bool {
         == Some(NicMode::Nic)
 }
 
-/// Reads `NicMode` from the BIOS attributes.
-pub(super) async fn bios_nic_mode<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    firmware: &str,
-) -> Result<NicMode, PlatformError> {
+fn reported_nic_mode<B: Bmc>(bios: &Bios<B>) -> Result<NicMode, PlatformError> {
+    bios.attribute("NicMode")
+        .and_then(|value| value.str_value().and_then(parse_mode))
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: "BlueField BIOS does not report NicMode".to_string(),
+        })
+}
+
+/// Reads `NicMode` from the BIOS attributes, reading NIC mode out of the 500
+/// that firmware with [`Quirk::BlueFieldNicModeBiosError`] answers with.
+pub(super) async fn bios_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> Result<NicMode, PlatformError> {
     match selected_bios(cx).await {
-        Ok(bios) => bios
-            .attribute("NicMode")
-            .and_then(|value| value.str_value().and_then(parse_mode))
-            .ok_or_else(|| PlatformError::InvalidResponse {
-                message: "BlueField BIOS does not report NicMode".to_string(),
-            }),
+        Ok(bios) => reported_nic_mode(&bios),
         Err(error)
-            if compare(firmware, NIC_MODE_BIOS_ERROR_FIXED_FIRMWARE) == Some(Cmp::Lt)
+            if cx.has_quirk(Quirk::BlueFieldNicModeBiosError)
                 && bios_error_reports_nic_mode(&error) =>
         {
             Ok(NicMode::Nic)
         }
-        Err(error) => Err(no_dpu(error)),
+        Err(error) => Err(error),
     }
 }
 
@@ -146,55 +81,20 @@ pub(super) async fn system_oem<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<NvidiaComputerSystem<B>, PlatformError> {
     cx.system()
-        .await
-        .map_err(no_dpu)?
+        .await?
         .oem_nvidia()
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)
 }
 
-/// Whether `firmware` is the BMC release whose system `Oem.Nvidia` resource
-/// times out in NIC mode.
-pub(super) fn oem_times_out_in_nic_mode(firmware: &str) -> bool {
-    compare(firmware, OEM_EXTENSION_TIMEOUT_FIRMWARE) == Some(Cmp::Eq)
-}
-
-/// Whether a BIOS read fails while reporting NIC mode, which on the firmware
-/// whose OEM resource times out must answer before that resource is read.
-pub(super) async fn bios_reports_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> bool {
-    selected_bios(cx)
-        .await
-        .err()
-        .is_some_and(|error| bios_error_reports_nic_mode(&error))
-}
-
-/// Switches the BlueField-3 mode on the firmware whose `Oem.Nvidia` resource
-/// times out in NIC mode, where the advertised action cannot be read; the
-/// action is posted to the target that firmware serves.
-pub(super) async fn set_mode_without_oem_read<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    mode: NicMode,
-) -> Result<DriverOutcome, PlatformError> {
-    let system = cx.system().await.map_err(no_dpu)?;
-    let action = Action::<Value, ()>::new(ActionTarget::new(format!(
-        "{}/Oem/Nvidia/Actions/Mode.Set",
-        system.raw().odata_id
-    )));
-    cx.action(&action, &json!({"Mode": nic_mode_value(mode)}))
-        .await
-}
-
-/// The BlueField-3 mode: the system `Oem.Nvidia` mode, falling back to BIOS.
-pub(super) async fn system_nic_mode<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    firmware: &str,
-    oem: &NvidiaComputerSystem<B>,
-) -> Result<NicMode, PlatformError> {
-    match oem.mode() {
-        Some(Mode::NicMode) => Ok(NicMode::Nic),
-        Some(Mode::DpuMode) => Ok(NicMode::Dpu),
-        Some(Mode::UnsupportedValue) | None => bios_nic_mode(cx, firmware).await,
+/// The mode the system `Oem.Nvidia` resource reports; BlueField-3 falls
+/// back to BIOS without one.
+pub(super) fn oem_nic_mode(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<NicMode> {
+    match oem.mode()? {
+        Mode::NicMode => Some(NicMode::Nic),
+        Mode::DpuMode => Some(NicMode::Dpu),
+        Mode::UnsupportedValue => None,
     }
 }
 
@@ -221,37 +121,8 @@ pub(super) async fn enable_bmc_rshim<B: Bmc>(
         .map_err(|error| cx.map_redfish_error(error))
 }
 
-/// The outcome of a switch to NIC mode requested while host privilege is
-/// Restricted: nothing is written until an operator intervenes.
-pub(super) fn restricted_host_privilege() -> DriverOutcome {
-    DriverOutcome::blocked(ControllerAction::ManualIntervention {
-        code: ManualInterventionCode::new(HOST_PRIVILEGE_RESTRICTED.to_string())
-            .expect("a non-empty literal is a valid manual-intervention code"),
-    })
-}
-
-/// The BIOS host privilege level under either attribute name; `None` when
-/// BIOS reports neither, or fails with the 500 older firmware returns in NIC mode.
-pub(super) async fn bios_host_privilege_level<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<Option<HostPrivilegeLevel>, PlatformError> {
-    let bios = match selected_bios(cx).await {
-        Ok(bios) => bios,
-        Err(error) if bios_error_reports_nic_mode(&error) => return Ok(None),
-        Err(error) => return Err(no_dpu(error)),
-    };
-    Ok([HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES]
-        .into_iter()
-        .find_map(|name| bios.attribute(name))
-        .and_then(|value| match value.str_value()? {
-            "Privileged" => Some(HostPrivilegeLevel::Privileged),
-            "Restricted" => Some(HostPrivilegeLevel::Restricted),
-            _ => None,
-        }))
-}
-
-/// Stages the host privilege level in BIOS, retrying with the spaced
-/// attribute name when the BMC rejects the current one.
+/// Stages the host privilege level in BIOS under the spelling the firmware
+/// uses, retrying with the other spelling when the BMC rejects it.
 pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
     cx: &OpCx<'_, B>,
     level: HostPrivilegeLevel,
@@ -260,38 +131,22 @@ pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
         HostPrivilegeLevel::Privileged => "Privileged",
         HostPrivilegeLevel::Restricted => "Restricted",
     };
-    match patch_bios_attributes(cx, &attribute_map([(HOST_PRIVILEGE_LEVEL, json!(value))])).await {
-        Err(PlatformError::Bmc { message, .. }) if message.contains(HOST_PRIVILEGE_LEVEL) => {
-            patch_bios_attributes(
-                cx,
-                &attribute_map([(HOST_PRIVILEGE_LEVEL_WITH_SPACES, json!(value))]),
-            )
-            .await
+    let (key, other_key) = if cx.has_quirk(Quirk::BlueFieldSpacedBiosAttributeNames) {
+        (HOST_PRIVILEGE_LEVEL_WITH_SPACES, HOST_PRIVILEGE_LEVEL)
+    } else {
+        (HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES)
+    };
+    match patch_bios_attributes(cx, &attribute_map([(key, json!(value))])).await {
+        Err(PlatformError::Bmc { message, .. }) if message.contains(key) => {
+            patch_bios_attributes(cx, &attribute_map([(other_key, json!(value))])).await
         }
-        result => result.map_err(no_dpu),
+        result => result,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use carbide_test_support::value_scenarios;
-
     use super::*;
-
-    #[test]
-    fn firmware_gates_compare_like_libredfish() {
-        value_scenarios!(run = |version| compare(version, NIC_MODE_MINIMUM_FIRMWARE) == Some(Cmp::Lt);
-            "predates NIC-mode support" {
-                "BF-23.09-9" => true,
-                "BF-23.10-4" => true,
-            }
-            "supports NIC mode" {
-                "BF-23.10-5" => false,
-                "BF-24.10-7" => false,
-                "BF-26.04-8" => false,
-            }
-        );
-    }
 
     #[test]
     fn only_a_500_carrying_nic_mode_counts_as_nic_mode() {

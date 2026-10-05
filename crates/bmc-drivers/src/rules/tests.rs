@@ -7,6 +7,10 @@ use Capability::{
     Accounts, Attestation, Bios, BmcControl, BootOrder, Console, Dpu, Firmware, Lockdown, Power,
     SecureBoot,
 };
+use Quirk::{
+    BlueFieldNicModeBiosError, BlueFieldNicModeUnreadable, BlueFieldOemTimeoutInNicMode,
+    BlueFieldSpacedBiosAttributeNames, SupermicroIpmiHostInterface, SupermicroMgxC2,
+};
 use bmc_platform::{
     ChassisIdentity, ManagerIdentity, PlatformIdentity, ServiceRootIdentity, SystemIdentity,
 };
@@ -156,6 +160,31 @@ fn bluefield2() -> PlatformIdentity {
             ..ChassisIdentity::default()
         },
     )
+}
+
+fn bluefield3() -> PlatformIdentity {
+    identity("Nvidia", Some("BlueField-3 DPU"))
+}
+
+/// A Supermicro system whose NVIDIA processor module reports `model` and
+/// `part_number`.
+fn mgx_c2(model: Option<&str>, part_number: Option<&str>) -> PlatformIdentity {
+    with_chassis(
+        identity("Supermicro", None),
+        ChassisIdentity {
+            id: "PG535".to_string(),
+            manufacturer: Some("NVIDIA".to_string()),
+            model: model.map(str::to_string),
+            part_number: part_number.map(str::to_string),
+        },
+    )
+}
+
+fn with_manager_firmware(mut platform: PlatformIdentity, firmware: &str) -> PlatformIdentity {
+    if let Some(manager) = platform.manager.as_mut() {
+        manager.firmware = Some(firmware.to_string());
+    }
+    platform
 }
 
 /// Lenovo SR675 V3 OVX at manager firmware 9.10 and the given BIOS version.
@@ -344,5 +373,99 @@ fn narrower_identity_outranks_broader_rules() {
                 case.scenario
             );
         }
+    }
+}
+
+#[test]
+fn firmware_and_model_resolve_to_their_quirks() {
+    struct Case {
+        scenario: &'static str,
+        identity: PlatformIdentity,
+        expect: Vec<Quirk>,
+    }
+    let cases = [
+        Case {
+            scenario: "BlueField-3 just before NIC-mode firmware",
+            identity: with_manager_firmware(bluefield3(), "BF-23.10-4"),
+            expect: vec![
+                BlueFieldNicModeUnreadable,
+                BlueFieldSpacedBiosAttributeNames,
+            ],
+        },
+        Case {
+            scenario: "BlueField-3 on the first NIC-mode firmware",
+            identity: with_manager_firmware(bluefield3(), "BF-23.10-5"),
+            expect: vec![BlueFieldNicModeBiosError, BlueFieldSpacedBiosAttributeNames],
+        },
+        Case {
+            scenario: "BlueField-3 on the firmware whose OEM resource times out",
+            identity: with_manager_firmware(bluefield3(), "BF-24.04-5"),
+            expect: vec![
+                BlueFieldNicModeBiosError,
+                BlueFieldOemTimeoutInNicMode,
+                BlueFieldSpacedBiosAttributeNames,
+            ],
+        },
+        Case {
+            scenario: "BlueField-3 on the last firmware answering BIOS reads with a 500",
+            identity: with_manager_firmware(bluefield3(), "BF-24.07-13"),
+            expect: vec![BlueFieldNicModeBiosError, BlueFieldSpacedBiosAttributeNames],
+        },
+        Case {
+            scenario: "BlueField-3 once BIOS reads succeed in NIC mode",
+            identity: with_manager_firmware(bluefield3(), "BF-24.07-14"),
+            expect: vec![BlueFieldSpacedBiosAttributeNames],
+        },
+        Case {
+            scenario: "BlueField-3 once BIOS attribute names lost their spaces",
+            identity: with_manager_firmware(bluefield3(), "BF-24.10-10"),
+            expect: vec![],
+        },
+        Case {
+            scenario: "BlueField-2 before NIC-mode firmware",
+            identity: with_manager_firmware(bluefield2(), "BF-23.09-9"),
+            expect: vec![
+                BlueFieldNicModeUnreadable,
+                BlueFieldSpacedBiosAttributeNames,
+            ],
+        },
+        Case {
+            scenario: "BlueField-2 sharing the BlueField-3 BMC product on the OEM-timeout firmware",
+            identity: with_manager_firmware(bluefield2(), "BF-24.04-5"),
+            expect: vec![
+                BlueFieldNicModeBiosError,
+                BlueFieldOemTimeoutInNicMode,
+                BlueFieldSpacedBiosAttributeNames,
+            ],
+        },
+        Case {
+            scenario: "BlueField-2 once BIOS reads succeed in NIC mode",
+            identity: with_manager_firmware(bluefield2(), "BF-24.07-14"),
+            expect: vec![BlueFieldSpacedBiosAttributeNames],
+        },
+        Case {
+            scenario: "MGX C2 by processor module model on firmware exposing IPMIHostInterface",
+            identity: with_manager_firmware(mgx_c2(Some("PG535-A00"), None), "01.05.01"),
+            expect: vec![SupermicroMgxC2, SupermicroIpmiHostInterface],
+        },
+        Case {
+            scenario: "MGX C2 by processor module part number on older firmware",
+            identity: with_manager_firmware(mgx_c2(None, Some("699-2G535-0200-310")), "01.04.09"),
+            expect: vec![SupermicroMgxC2],
+        },
+        Case {
+            scenario: "MGX C2 whose manager reports no firmware",
+            identity: mgx_c2(Some("PG535-A00"), None),
+            expect: vec![SupermicroMgxC2],
+        },
+    ];
+
+    for case in cases {
+        assert_eq!(
+            resolve(&case.identity).quirks,
+            case.expect.into_iter().collect(),
+            "{}",
+            case.scenario
+        );
     }
 }

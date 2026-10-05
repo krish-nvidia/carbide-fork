@@ -203,6 +203,26 @@ fn rule_validation_rejects_malformed_declarations() {
             },
         ),
         (
+            invalid(IdentityMatcher::version_below(
+                IdentityField::SystemModel,
+                "2.0",
+            )),
+            RuleError::VersionRangeOnNonFirmwareField {
+                id: "invalid".to_string(),
+                field: IdentityField::SystemModel,
+            },
+        ),
+        (
+            invalid(IdentityMatcher::version_at_least(
+                IdentityField::ManagerFirmware,
+                "not a version",
+            )),
+            RuleError::InvalidVersion {
+                id: "invalid".to_string(),
+                field: IdentityField::ManagerFirmware,
+            },
+        ),
+        (
             invalid(model("")),
             RuleError::EmptyPattern {
                 id: "invalid".to_string(),

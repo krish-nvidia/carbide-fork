@@ -5,14 +5,14 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, RshimState,
+    Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, Quirk,
+    RshimState,
 };
 use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    bios_host_privilege_level, bios_nic_mode, enable_bmc_rshim, nic_mode_firmware, nic_mode_value,
-    no_dpu, require_nic_mode_firmware, restricted_host_privilege, set_bios_host_privilege_level,
+    bios_nic_mode, enable_bmc_rshim, nic_mode_value, set_bios_host_privilege_level,
 };
 use crate::resources::{attribute_map, patch_bios_attributes};
 
@@ -21,11 +21,11 @@ pub(crate) struct BlueField2Dpu;
 
 #[async_trait]
 impl<B: Bmc> Dpu<B> for BlueField2Dpu {
-    /// The mode is unknown on BMC firmware that predates NIC-mode support.
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
-        let nic_mode = match nic_mode_firmware(cx).await? {
-            Some(firmware) => Some(bios_nic_mode(cx, &firmware).await?),
-            None => None,
+        let nic_mode = if cx.has_quirk(Quirk::BlueFieldNicModeUnreadable) {
+            None
+        } else {
+            Some(bios_nic_mode(cx).await?)
         };
         Ok(DpuStatus {
             nic_mode,
@@ -38,18 +38,14 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
         cx: &OpCx<'_, B>,
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
-        require_nic_mode_firmware(cx).await?;
-        if mode == NicMode::Nic
-            && bios_host_privilege_level(cx).await? == Some(HostPrivilegeLevel::Restricted)
-        {
-            return Ok(restricted_host_privilege());
+        if cx.has_quirk(Quirk::BlueFieldNicModeUnreadable) {
+            return Err(PlatformError::Unsupported);
         }
         patch_bios_attributes(
             cx,
             &attribute_map([("NicMode", json!(nic_mode_value(mode)))]),
         )
         .await
-        .map_err(no_dpu)
     }
 
     /// There is nothing to change, so every requested state is complete.

@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+use std::collections::BTreeSet;
+
 use nv_redfish::computer_system::ComputerSystem;
 use nv_redfish::core::Action;
 use nv_redfish::manager::Manager;
@@ -23,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 use super::{ClassifyBmcError, IpmiOps};
-use crate::{DriverOutcome, PlatformError, PlatformIdentity};
+use crate::{DriverOutcome, PlatformError, PlatformIdentity, Quirk};
 
 /// Runtime-owned operation context supplied to a stateless driver.
 ///
@@ -40,7 +42,10 @@ pub struct OpCx<'a, B: Bmc> {
     system: OnceCell<Option<ComputerSystem<B>>>,
     manager: OnceCell<Option<Manager<B>>>,
     ipmi: Option<&'a dyn IpmiOps>,
+    quirks: &'a BTreeSet<Quirk>,
 }
+
+static NO_QUIRKS: BTreeSet<Quirk> = BTreeSet::new();
 
 impl<'a, B: Bmc> OpCx<'a, B> {
     /// Creates a context for the exploration-selected identity.
@@ -56,6 +61,7 @@ impl<'a, B: Bmc> OpCx<'a, B> {
             system: OnceCell::new(),
             manager: OnceCell::new(),
             ipmi: None,
+            quirks: &NO_QUIRKS,
         }
     }
 
@@ -63,6 +69,17 @@ impl<'a, B: Bmc> OpCx<'a, B> {
     pub fn with_ipmi(mut self, ipmi: &'a dyn IpmiOps) -> Self {
         self.ipmi = Some(ipmi);
         self
+    }
+
+    /// Attaches the firmware quirks selection found for this BMC.
+    pub fn with_quirks(mut self, quirks: &'a BTreeSet<Quirk>) -> Self {
+        self.quirks = quirks;
+        self
+    }
+
+    /// Whether selection found `quirk` for this BMC.
+    pub fn has_quirk(&self, quirk: Quirk) -> bool {
+        self.quirks.contains(&quirk)
     }
 
     /// Returns the authenticated transport used to construct `service_root`.

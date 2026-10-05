@@ -147,6 +147,10 @@ pub enum MatchPattern {
     OneOf(Vec<String>),
     /// Requires a parseable version within inclusive validated bounds.
     FirmwareVersionRange(FirmwareVersionRange),
+    /// Requires a parseable version at or above this one.
+    VersionAtLeast(String),
+    /// Requires a parseable version below this one.
+    VersionBelow(String),
 }
 
 impl MatchPattern {
@@ -157,9 +161,30 @@ impl MatchPattern {
             | Self::ExactAsciiCaseInsensitive(value)
             | Self::Prefix(value)
             | Self::Contains(value)
-            | Self::ContainsAsciiCaseInsensitive(value) => Some(value),
+            | Self::ContainsAsciiCaseInsensitive(value)
+            | Self::VersionAtLeast(value)
+            | Self::VersionBelow(value) => Some(value),
             Self::OneOf(values) => values.first().map(String::as_str),
             Self::FirmwareVersionRange(range) => Some(range.minimum()),
+        }
+    }
+
+    /// Whether this pattern compares versions, which only firmware and BIOS
+    /// version fields carry.
+    pub const fn is_version_pattern(&self) -> bool {
+        matches!(
+            self,
+            Self::FirmwareVersionRange(_) | Self::VersionAtLeast(_) | Self::VersionBelow(_)
+        )
+    }
+
+    /// Whether an open version bound parses; other patterns have no bound to check.
+    pub fn has_parseable_bound(&self) -> bool {
+        match self {
+            Self::VersionAtLeast(version) | Self::VersionBelow(version) => {
+                Version::from(version).is_some()
+            }
+            _ => true,
         }
     }
 
@@ -175,8 +200,17 @@ impl MatchPattern {
                 .contains(&value.to_ascii_lowercase()),
             Self::OneOf(values) => values.iter().any(|value| candidate == value),
             Self::FirmwareVersionRange(range) => range.contains(candidate),
+            Self::VersionAtLeast(minimum) => {
+                version_order(candidate, minimum).is_some_and(|order| order != Cmp::Lt)
+            }
+            Self::VersionBelow(bound) => version_order(candidate, bound) == Some(Cmp::Lt),
         }
     }
+}
+
+/// How `candidate` orders against `reference`; `None` when either does not parse.
+fn version_order(candidate: &str, reference: &str) -> Option<Cmp> {
+    Some(Version::from(candidate)?.compare(Version::from(reference)?))
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -230,6 +264,16 @@ impl IdentityMatcher {
     /// `field` contains `value`.
     pub fn contains(field: IdentityField, value: &str) -> Self {
         Self::new(field, MatchPattern::Contains(value.to_string()))
+    }
+
+    /// The version in `field` is at least `version`.
+    pub fn version_at_least(field: IdentityField, version: &str) -> Self {
+        Self::new(field, MatchPattern::VersionAtLeast(version.to_string()))
+    }
+
+    /// The version in `field` is below `version`.
+    pub fn version_below(field: IdentityField, version: &str) -> Self {
+        Self::new(field, MatchPattern::VersionBelow(version.to_string()))
     }
 
     /// `field` contains `value`, ignoring ASCII case.

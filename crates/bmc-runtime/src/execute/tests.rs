@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -103,6 +104,7 @@ async fn harness(outcomes: Vec<DriverOutcome>) -> (ConnectedBmc<TestBmc>, &'stat
             drivers: DriverMap::filled(CapabilitySelection::Unsupported)
                 .with(Capability::Power, CapabilitySelection::Standard),
             matched_rules: Vec::new(),
+            quirks: BTreeSet::new(),
             hash: Rules::new(Vec::new())
                 .expect("empty rules are valid")
                 .hash(),

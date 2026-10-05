@@ -240,7 +240,8 @@ where
             self.bmc.as_ref(),
             self.service_root.as_ref(),
             self.endpoint.identity(),
-        );
+        )
+        .with_quirks(&self.endpoint.selection().quirks);
         match self.ipmi.as_deref() {
             Some(ipmi) => context.with_ipmi(ipmi),
             None => context,
@@ -250,6 +251,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use bmc_drivers::CapabilitySelection;
     use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 
@@ -263,6 +266,7 @@ mod tests {
         ResolvedSelection {
             drivers,
             matched_rules: Vec::new(),
+            quirks: BTreeSet::new(),
             hash: Rules::new(Vec::new())
                 .expect("empty rules are valid")
                 .hash(),

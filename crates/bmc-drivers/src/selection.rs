@@ -7,12 +7,12 @@
 //! one BMC, and the hash that ties a persisted map to the rules that
 //! produced it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use blake3::{Hash, Hasher};
 use bmc_platform::{
-    Capability, IdentityField, IdentityMatcher, MatchPattern, PlatformIdentity, Precedence,
+    Capability, IdentityField, IdentityMatcher, MatchPattern, PlatformIdentity, Precedence, Quirk,
     derived_precedence,
 };
 use carbide_utils::has_duplicates;
@@ -157,6 +157,10 @@ pub struct Rule {
     /// The capabilities this rule decides.
     #[serde(default)]
     pub selections: BTreeMap<Capability, CapabilitySelection>,
+    /// Firmware quirks this rule's BMCs have, added to those of every other
+    /// matching rule.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub quirks: BTreeSet<Quirk>,
     #[serde(skip)]
     deployment_override: bool,
 }
@@ -168,8 +172,15 @@ impl Rule {
             id: id.into(),
             matchers: matchers.into_iter().collect(),
             selections: BTreeMap::new(),
+            quirks: BTreeSet::new(),
             deployment_override: false,
         }
+    }
+
+    /// Adds firmware quirks; unlike drivers, every matching rule's quirks apply.
+    pub fn quirks(mut self, quirks: impl IntoIterator<Item = Quirk>) -> Self {
+        self.quirks.extend(quirks);
+        self
     }
 
     /// Selects each driver for the capability it implements.
@@ -271,7 +282,7 @@ impl Rules {
             if rule.id.trim().is_empty() {
                 return Err(RuleError::EmptyId);
             }
-            if rule.selections.is_empty() {
+            if rule.selections.is_empty() && rule.quirks.is_empty() {
                 return Err(RuleError::EmptyRule {
                     id: rule.id.clone(),
                 });
@@ -298,13 +309,19 @@ impl Rules {
                         field: matcher.field,
                     });
                 }
-                if matches!(matcher.pattern, MatchPattern::FirmwareVersionRange(_))
+                if matcher.pattern.is_version_pattern()
                     && !matches!(
                         matcher.field,
                         IdentityField::ManagerFirmware | IdentityField::SystemBiosVersion
                     )
                 {
                     return Err(RuleError::VersionRangeOnNonFirmwareField {
+                        id: rule.id.clone(),
+                        field: matcher.field,
+                    });
+                }
+                if !matcher.pattern.has_parseable_bound() {
+                    return Err(RuleError::InvalidVersion {
                         id: rule.id.clone(),
                         field: matcher.field,
                     });
@@ -399,6 +416,10 @@ impl Rules {
         Ok(ResolvedSelection {
             drivers,
             matched_rules,
+            quirks: matching
+                .iter()
+                .flat_map(|rule| rule.quirks.iter().copied())
+                .collect(),
             hash: self.hash,
         })
     }
@@ -433,8 +454,11 @@ pub enum RuleError {
     #[error("rule ids must be unique")]
     DuplicateId,
     /// A rule decides nothing.
-    #[error("rule {id} selects no capability")]
+    #[error("rule {id} selects no capability and adds no quirk")]
     EmptyRule { id: String },
+    /// A version bound does not parse as a version.
+    #[error("rule {id} has an unparseable version bound for {field:?}")]
+    InvalidVersion { id: String, field: IdentityField },
     /// A matcher contains an empty comparison value.
     #[error("rule {id} has an empty pattern for {field:?}")]
     EmptyPattern { id: String, field: IdentityField },
@@ -484,6 +508,10 @@ pub struct ResolvedSelection {
     /// Which rule decided each capability, in capability order; capabilities
     /// using the compiled default are absent.
     pub matched_rules: Vec<MatchedRule>,
+    /// Firmware quirks of every matching rule; selections stored before
+    /// quirks existed have none.
+    #[serde(default)]
+    pub quirks: BTreeSet<Quirk>,
     /// Hash of the rule set used for this decision.
     pub hash: SelectionHash,
 }

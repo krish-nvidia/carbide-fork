@@ -60,11 +60,11 @@ const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::string("HttpDev1TlsMode", "None").required(),
     BiosAttribute::string("PxeDev1EnDis", "Disabled").required(),
     INFINITE_BOOT,
-    // Read-only and already `Uefi` on iDRAC 10, which leaves nothing to write.
-    BiosAttribute::string("BootMode", "Uefi"),
 ];
 
 const INFINITE_BOOT: BiosAttribute = BiosAttribute::string("BootSeqRetry", "Enabled").required();
+
+const BOOT_MODE: &str = "BootMode";
 
 /// The hierarchy reads back `Enabled` once the clear has run.
 fn tpm_clear() -> BiosSettings {
@@ -109,12 +109,21 @@ fn expected_settings(
 
 /// The expected settings plus the boot order iDRAC builds at the next reset,
 /// led by `nic_slot`; boot order status checks the order that results.
+///
+/// `BootMode` is written only when reported as something other than `Uefi`:
+/// iDRAC 10 reports it read-only as `Uefi`, and status does not check it.
 fn staged_settings(current: &BiosSettings, profile: &BiosSettings, nic_slot: &str) -> BiosSettings {
-    let boot_order = settings([
+    let mut writes = settings([
         ("SetBootOrderEn", json!(nic_slot)),
         ("SetBootOrderDis", json!("")),
     ]);
-    with_profile(boot_order, &expected_settings(current, profile, nic_slot))
+    let boot_mode = current.attributes.get(BOOT_MODE).and_then(Value::as_str);
+    if boot_mode.is_some_and(|mode| mode != "Uefi") {
+        writes
+            .attributes
+            .insert(BOOT_MODE.to_string(), json!("Uefi"));
+    }
+    with_profile(writes, &expected_settings(current, profile, nic_slot))
 }
 
 /// Changes the UEFI password inside a configuration job, which iDRAC requires
@@ -226,6 +235,24 @@ mod tests {
         assert_eq!(
             staged.attributes["HttpDev1Interface"],
             json!("NIC.Slot.7-1-1")
+        );
+    }
+
+    #[test]
+    fn boot_mode_is_written_only_when_it_is_not_already_uefi() {
+        value_scenarios!(run = |boot_mode: Option<&str>| {
+            let current: BiosSettings = serde_json::from_value(json!({
+                "attributes": boot_mode.map_or_else(|| json!({}), |mode| json!({"BootMode": mode})),
+            }))
+            .expect("settings");
+            staged_settings(&current, &BiosSettings::default(), "NIC.Slot.7-1-1")
+                .attributes
+                .get(BOOT_MODE)
+                .cloned()
+        };
+            "iDRAC 9 in legacy mode" { Some("Bios") => Some(json!("Uefi")) }
+            "already Uefi, read-only on iDRAC 10" { Some("Uefi") => None }
+            "not reported" { None => None }
         );
     }
 

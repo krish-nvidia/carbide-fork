@@ -11,7 +11,9 @@
 //! it only keeps the file readable. Tests prove every rule names a compiled
 //! driver of the right capability.
 
-use bmc_platform::{Capability, IdentityField, IdentityMatcher as Match};
+use bmc_platform::{
+    Capability, FirmwareVersionRange, IdentityField, IdentityMatcher as Match, MatchPattern, Quirk,
+};
 
 use crate::drivers::Driver::*;
 use crate::selection::{Rule, RuleError, Rules};
@@ -30,6 +32,23 @@ pub fn built_in_rules() -> Rules {
 /// built-in rule and can never be shadowed by one.
 pub fn rules_with_overrides(overrides: &str) -> Result<Rules, RuleError> {
     Rules::with_overrides(built_ins(), overrides)
+}
+
+/// The products of BlueField-3 BMCs; BlueField-2 cards are told apart by
+/// their chassis model.
+const BLUEFIELD3_PRODUCTS: &[&str] = &["Nvidia-BMCMezz", "BlueField-3 DPU"];
+
+/// The model prefix and part-number fragment of the NVIDIA processor module
+/// in Supermicro MGX C2 systems.
+const MGX_C2_MODEL_PREFIX: &str = "PG535";
+const MGX_C2_PART_NUMBER: &str = "2G535";
+
+/// Any chassis manufactured by NVIDIA.
+fn nvidia_chassis() -> Match {
+    Match::new(
+        IdentityField::ChassisManufacturer,
+        MatchPattern::ExactAsciiCaseInsensitive("NVIDIA".to_string()),
+    )
 }
 
 #[allow(clippy::vec_init_then_push)] // rustfmt strips blank lines between `vec!` elements.
@@ -384,6 +403,157 @@ fn built_ins() -> Vec<Rule> {
             ],
         )
         .drivers([LenovoSr675V3OvxPower]),
+    );
+
+    // ---- Quirk rules: every matching rule's quirks apply ----
+
+    // BlueField BMC firmware before BF-23.10-5 cannot read or switch NIC mode
+    // through Redfish.
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield3-nic-mode-unreadable",
+            [
+                Match::product(BLUEFIELD3_PRODUCTS),
+                Match::version_below(IdentityField::ManagerFirmware, "BF-23.10-5"),
+            ],
+        )
+        .quirks([Quirk::BlueFieldNicModeUnreadable]),
+    );
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield2-nic-mode-unreadable",
+            [
+                Match::contains_any_case(IdentityField::ChassisModel, "BlueField 2"),
+                Match::version_below(IdentityField::ManagerFirmware, "BF-23.10-5"),
+            ],
+        )
+        .quirks([Quirk::BlueFieldNicModeUnreadable]),
+    );
+
+    // BlueField BMC firmware from BF-23.10-5 until BF-24.07-14 answers a BIOS
+    // read in NIC mode with a 500 that still reports NIC mode.
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield3-nic-mode-bios-error",
+            [
+                Match::product(BLUEFIELD3_PRODUCTS),
+                Match::version_at_least(IdentityField::ManagerFirmware, "BF-23.10-5"),
+                Match::version_below(IdentityField::ManagerFirmware, "BF-24.07-14"),
+            ],
+        )
+        .quirks([Quirk::BlueFieldNicModeBiosError]),
+    );
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield2-nic-mode-bios-error",
+            [
+                Match::contains_any_case(IdentityField::ChassisModel, "BlueField 2"),
+                Match::version_at_least(IdentityField::ManagerFirmware, "BF-23.10-5"),
+                Match::version_below(IdentityField::ManagerFirmware, "BF-24.07-14"),
+            ],
+        )
+        .quirks([Quirk::BlueFieldNicModeBiosError]),
+    );
+
+    // On BF-24.04-5 the BlueField-3 system Oem/Nvidia resource times out on a
+    // DPU in NIC mode. BlueField-2 cards sharing the BMC product match too,
+    // but their driver never reads that resource.
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield3-oem-timeout",
+            [
+                Match::product(BLUEFIELD3_PRODUCTS),
+                Match::new(
+                    IdentityField::ManagerFirmware,
+                    MatchPattern::FirmwareVersionRange(
+                        FirmwareVersionRange::new(
+                            "BF-24.04-5".to_string(),
+                            "BF-24.04-5".to_string(),
+                        )
+                        .expect("a single version is a valid range"),
+                    ),
+                ),
+            ],
+        )
+        .quirks([Quirk::BlueFieldOemTimeoutInNicMode]),
+    );
+
+    // BlueField BMC firmware before 24.10 spells some BIOS attributes with spaces.
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield3-spaced-bios-attribute-names",
+            [
+                Match::product(BLUEFIELD3_PRODUCTS),
+                Match::version_below(IdentityField::ManagerFirmware, "BF-24.10"),
+            ],
+        )
+        .quirks([Quirk::BlueFieldSpacedBiosAttributeNames]),
+    );
+    rules.push(
+        Rule::new(
+            "nvidia-bluefield2-spaced-bios-attribute-names",
+            [
+                Match::contains_any_case(IdentityField::ChassisModel, "BlueField 2"),
+                Match::version_below(IdentityField::ManagerFirmware, "BF-24.10"),
+            ],
+        )
+        .quirks([Quirk::BlueFieldSpacedBiosAttributeNames]),
+    );
+
+    // Supermicro MGX C2 systems carry an NVIDIA PG535 processor module, known
+    // by its model or its part number. Their BMC exposes the system
+    // IPMIHostInterface from firmware 01.05.01.
+    rules.push(
+        Rule::new(
+            "supermicro-mgx-c2",
+            [
+                Match::vendor("Supermicro"),
+                nvidia_chassis(),
+                Match::new(
+                    IdentityField::ChassisModel,
+                    MatchPattern::Prefix(MGX_C2_MODEL_PREFIX.to_string()),
+                ),
+            ],
+        )
+        .quirks([Quirk::SupermicroMgxC2]),
+    );
+    rules.push(
+        Rule::new(
+            "supermicro-mgx-c2-by-part-number",
+            [
+                Match::vendor("Supermicro"),
+                nvidia_chassis(),
+                Match::contains(IdentityField::ChassisPartNumber, MGX_C2_PART_NUMBER),
+            ],
+        )
+        .quirks([Quirk::SupermicroMgxC2]),
+    );
+    rules.push(
+        Rule::new(
+            "supermicro-mgx-c2-ipmi-host-interface",
+            [
+                Match::vendor("Supermicro"),
+                nvidia_chassis(),
+                Match::new(
+                    IdentityField::ChassisModel,
+                    MatchPattern::Prefix(MGX_C2_MODEL_PREFIX.to_string()),
+                ),
+                Match::version_at_least(IdentityField::ManagerFirmware, "01.05.01"),
+            ],
+        )
+        .quirks([Quirk::SupermicroIpmiHostInterface]),
+    );
+    rules.push(
+        Rule::new(
+            "supermicro-mgx-c2-by-part-number-ipmi-host-interface",
+            [
+                Match::vendor("Supermicro"),
+                nvidia_chassis(),
+                Match::contains(IdentityField::ChassisPartNumber, MGX_C2_PART_NUMBER),
+                Match::version_at_least(IdentityField::ManagerFirmware, "01.05.01"),
+            ],
+        )
+        .quirks([Quirk::SupermicroIpmiHostInterface]),
     );
 
     rules
