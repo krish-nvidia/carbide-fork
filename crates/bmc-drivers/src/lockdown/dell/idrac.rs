@@ -70,37 +70,29 @@ async fn unlock_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platform
 /// System lockdown takes effect at once and rejects later writes, so the
 /// other restrictions are staged first.
 async fn lock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    let restrictions = dell::patch_manager_attributes(
-        cx,
-        json!({
-            "Racadm.1.Enable": "Disabled",
-            "ServerBoot.1.FirstBootDevice": first_boot_device(cx).await?,
-            "ServerBoot.1.BootOnce": "Disabled"
-        }),
-        Some(ManagerApplyTime::OnReset),
-    )
-    .await?;
-    let lockdown = dell::patch_manager_attributes(
-        cx,
-        json!({"Lockdown.1.SystemLockdown": "Enabled"}),
-        Some(ManagerApplyTime::OnReset),
-    )
-    .await?;
+    let boot_device = first_boot_device(cx).await?;
+    let restriction_attributes = attribute_map([
+        ("Racadm.1.Enable", json!("Disabled")),
+        ("ServerBoot.1.FirstBootDevice", json!(boot_device)),
+        ("ServerBoot.1.BootOnce", json!("Disabled")),
+    ]);
+    let lockdown_attributes = attribute_map([("Lockdown.1.SystemLockdown", json!("Enabled"))]);
+    let on_reset = Some(ManagerApplyTime::OnReset);
+    let restrictions =
+        dell::patch_manager_attributes(cx, &restriction_attributes, on_reset).await?;
+    let lockdown = dell::patch_manager_attributes(cx, &lockdown_attributes, on_reset).await?;
     Ok(restrictions.merge(lockdown))
 }
 
 async fn unlock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    dell::patch_manager_attributes(
-        cx,
-        json!({
-            "Lockdown.1.SystemLockdown": "Disabled",
-            "Racadm.1.Enable": "Enabled",
-            "ServerBoot.1.FirstBootDevice": first_boot_device(cx).await?,
-            "ServerBoot.1.BootOnce": "Disabled"
-        }),
-        Some(ManagerApplyTime::Immediate),
-    )
-    .await
+    let boot_device = first_boot_device(cx).await?;
+    let attributes = attribute_map([
+        ("Lockdown.1.SystemLockdown", json!("Disabled")),
+        ("Racadm.1.Enable", json!("Enabled")),
+        ("ServerBoot.1.FirstBootDevice", json!(boot_device)),
+        ("ServerBoot.1.BootOnce", json!("Disabled")),
+    ]);
+    dell::patch_manager_attributes(cx, &attributes, Some(ManagerApplyTime::Immediate)).await
 }
 
 #[async_trait]

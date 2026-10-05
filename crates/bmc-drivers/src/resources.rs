@@ -34,7 +34,7 @@ pub(crate) async fn bios_settings<B: Bmc>(
         .ok_or(PlatformError::Unsupported)
 }
 
-/// BIOS attribute values keyed by name, from `(name, value)` pairs.
+/// Attribute values keyed by name, from `(name, value)` pairs.
 pub(crate) fn attribute_map<const N: usize>(
     entries: [(&str, Value); N],
 ) -> BTreeMap<String, Value> {
@@ -126,12 +126,12 @@ pub(crate) fn dynamic_properties(
                         .map(EdmPrimitiveType::Integer)
                         .or_else(|| number.as_f64().map(EdmPrimitiveType::Decimal))
                         .ok_or_else(|| PlatformError::InvalidResponse {
-                            message: format!("BIOS attribute {key} is out of range: {number}"),
+                            message: format!("attribute {key} is out of range: {number}"),
                         })?,
                 ),
                 Value::Array(_) | Value::Object(_) => {
                     return Err(PlatformError::InvalidResponse {
-                        message: format!("BIOS attribute {key} is not a primitive value"),
+                        message: format!("attribute {key} is not a primitive value"),
                     });
                 }
             };

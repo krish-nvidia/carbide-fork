@@ -58,15 +58,11 @@ where
                 }
                 _ => "Enabled",
             };
-            return dell::patch_manager_attributes(
-                cx,
-                json!({
-                    "ServerBoot.1.FirstBootDevice": device,
-                    "ServerBoot.1.BootOnce": boot_once
-                }),
-                None,
-            )
-            .await;
+            let attributes = attribute_map([
+                ("ServerBoot.1.FirstBootDevice", json!(device)),
+                ("ServerBoot.1.BootOnce", json!(boot_once)),
+            ]);
+            return dell::patch_manager_attributes(cx, &attributes, None).await;
         }
         let uri = override_setting
             .http_boot_uri

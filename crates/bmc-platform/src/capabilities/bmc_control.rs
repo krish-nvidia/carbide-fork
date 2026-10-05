@@ -15,12 +15,44 @@
  * limitations under the License.
  */
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use nv_redfish::core::Bmc;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{DriverOutcome, OpCx, PlatformError};
 
-/// BMC reset, factory-default, and time-configuration mutations.
+/// BMC manager attribute names and values, such as Dell iDRAC attributes.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagerSettings {
+    /// Manager attribute values by attribute name.
+    pub attributes: BTreeMap<String, Value>,
+}
+
+/// One manager attribute whose reported value differs from the expectation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagerSettingsDiff {
+    /// Attribute name.
+    pub key: String,
+    /// Value NICo wants.
+    pub expected: Value,
+    /// Value the BMC reports; `None` when the BMC does not expose the attribute.
+    pub actual: Option<Value>,
+}
+
+/// Whether the platform's manager settings are applied, with every difference.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagerSettingsStatus {
+    /// True when `differences` is empty.
+    pub is_applied: bool,
+    /// Expected attributes whose current value differs.
+    pub differences: Vec<ManagerSettingsDiff>,
+}
+
+/// BMC reset, factory defaults, time configuration, IPMI over LAN, and
+/// manager settings.
 ///
 /// Every operation defaults to delegating to [`Self::standard`], so a driver
 /// implements only the operations its platform deviates on.
@@ -66,5 +98,24 @@ pub trait BmcControl<B: Bmc>: Send + Sync {
         enabled: bool,
     ) -> Result<DriverOutcome, PlatformError> {
         self.standard().set_ipmi_over_lan(cx, enabled).await
+    }
+
+    /// Writes the manager settings the platform needs for provisioning, plus
+    /// `profile`, which takes precedence.
+    async fn apply_settings(
+        &self,
+        cx: &OpCx<'_, B>,
+        profile: &ManagerSettings,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard().apply_settings(cx, profile).await
+    }
+
+    /// Checks the manager settings the platform needs for provisioning;
+    /// profile values are written by [`Self::apply_settings`] but not checked.
+    async fn settings_status(
+        &self,
+        cx: &OpCx<'_, B>,
+    ) -> Result<ManagerSettingsStatus, PlatformError> {
+        self.standard().settings_status(cx).await
     }
 }

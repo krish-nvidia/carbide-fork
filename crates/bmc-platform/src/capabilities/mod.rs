@@ -31,7 +31,7 @@ mod storage;
 pub use accounts::Accounts;
 pub use attestation::{Attestation, EvidenceProgress};
 pub use bios::{Bios, BiosDiff, BiosSettings, BiosStatus};
-pub use bmc_control::BmcControl;
+pub use bmc_control::{BmcControl, ManagerSettings, ManagerSettingsDiff, ManagerSettingsStatus};
 pub use boot_order::{BootInterfaceSelector, BootOrder, BootOrderStatus};
 pub use console::{
     Console, ConsoleFallback, ConsoleSpec, ConsoleSpecError, ConsoleState, ConsoleStatus,

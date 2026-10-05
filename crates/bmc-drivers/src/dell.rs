@@ -247,22 +247,39 @@ pub(crate) fn is_read_only_attribute(error: &PlatformError) -> bool {
     )
 }
 
-/// Writes iDRAC manager attributes, given as a JSON object, applied at
-/// `apply_time` when given.
+/// The values of `names` the selected Manager's iDRAC attributes report;
+/// unreported attributes are omitted and null ones are `Value::Null`.
+pub(crate) async fn manager_attribute_values<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    names: &[&str],
+) -> Result<BTreeMap<String, Value>, PlatformError> {
+    let attributes = manager_attributes(cx).await?;
+    Ok(names
+        .iter()
+        .filter_map(|name| {
+            let attribute = attributes.attribute(name)?;
+            let value = attribute
+                .str_value()
+                .map(Value::from)
+                .or_else(|| attribute.bool_value().map(Value::from))
+                .or_else(|| attribute.integer_value().map(Value::from))
+                .or_else(|| attribute.decimal_value().map(Value::from))
+                .unwrap_or(Value::Null);
+            Some((name.to_string(), value))
+        })
+        .collect())
+}
+
+/// Writes iDRAC manager attributes, applied at `apply_time` when given.
 pub(crate) async fn patch_manager_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
-    attributes: Value,
+    attributes: &BTreeMap<String, Value>,
     apply_time: Option<ManagerApplyTime>,
 ) -> Result<DriverOutcome, PlatformError> {
-    let Value::Object(attributes) = attributes else {
-        return Err(PlatformError::InvalidResponse {
-            message: "iDRAC attributes must be a JSON object".to_string(),
-        });
-    };
     let mut body = DellAttributesUpdate::builder()
         .with_attributes(
             AttributesUpdate::builder()
-                .with_dynamic_properties(dynamic_properties(&attributes.into_iter().collect())?)
+                .with_dynamic_properties(dynamic_properties(attributes)?)
                 .build(),
         )
         .build();

@@ -98,19 +98,15 @@ where
             payload.insert("RedirAfterBoot".to_string(), json!("Enabled"));
         }
         dell::clear_job_queue(cx).await?;
-        let manager_outcome = dell::patch_manager_attributes(
-            cx,
-            json!({
-                "SerialRedirection.1.Enable": "Enabled",
-                "IPMISOL.1.Enable": "Enabled",
-                "IPMISOL.1.BaudRate": "115200",
-                "IPMISOL.1.MinPrivilege": "Administrator",
-                "SSH.1.Enable": "Enabled",
-                "IPMILan.1.Enable": "Enabled"
-            }),
-            None,
-        )
-        .await?;
+        let manager_attributes = attribute_map([
+            ("SerialRedirection.1.Enable", json!("Enabled")),
+            ("IPMISOL.1.Enable", json!("Enabled")),
+            ("IPMISOL.1.BaudRate", json!("115200")),
+            ("IPMISOL.1.MinPrivilege", json!("Administrator")),
+            ("SSH.1.Enable", json!("Enabled")),
+            ("IPMILan.1.Enable", json!("Enabled")),
+        ]);
+        let manager_outcome = dell::patch_manager_attributes(cx, &manager_attributes, None).await?;
         let body = bios_update(&payload)?.with_settings_apply_time(dell::on_reset());
         let response = update_bios_settings(cx, &body).await?;
         let bios_outcome = dell::job_outcome(cx, response).await?;

@@ -6,7 +6,9 @@
 //! Standard Redfish manager control.
 
 use async_trait::async_trait;
-use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    BmcControl, DriverOutcome, ManagerSettings, ManagerSettingsStatus, OpCx, PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::manager::{ManagerNetworkProtocolUpdate, ManagerResetToDefaultsType};
 use nv_redfish::resource::ResetType;
@@ -58,9 +60,9 @@ where
         .await
     }
 
-    /// Redfish has no standard time-zone setting.
+    /// Redfish has no standard time-zone setting, so there is nothing to change.
     async fn set_utc_timezone(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        Err(PlatformError::Unsupported)
+        Ok(DriverOutcome::complete())
     }
 
     async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
@@ -94,6 +96,29 @@ where
                 .build(),
         )
         .await
+    }
+
+    /// Redfish has no standard manager attributes, so only an empty profile applies.
+    async fn apply_settings(
+        &self,
+        _cx: &OpCx<'_, B>,
+        profile: &ManagerSettings,
+    ) -> Result<DriverOutcome, PlatformError> {
+        if profile.attributes.is_empty() {
+            Ok(DriverOutcome::complete())
+        } else {
+            Err(PlatformError::Unsupported)
+        }
+    }
+
+    async fn settings_status(
+        &self,
+        _cx: &OpCx<'_, B>,
+    ) -> Result<ManagerSettingsStatus, PlatformError> {
+        Ok(ManagerSettingsStatus {
+            is_applied: true,
+            differences: Vec::new(),
+        })
     }
 }
 
