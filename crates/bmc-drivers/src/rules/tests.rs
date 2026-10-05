@@ -231,7 +231,7 @@ fn narrower_identity_outranks_broader_rules() {
                 (Power, driver(NvidiaOpenBmcPower)),
                 (Lockdown, driver(NvidiaOpenBmcLockdown)),
                 (BmcControl, Standard),
-                (Console, Unsupported),
+                (Console, driver(NvidiaOpenBmcConsole)),
                 (Bios, driver(NvidiaGbx00Bios)),
             ],
         },

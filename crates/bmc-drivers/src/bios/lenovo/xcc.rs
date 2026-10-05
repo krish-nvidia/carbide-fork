@@ -24,14 +24,9 @@ pub(crate) struct XccBios;
 const UEFI_PASSWORD_NAME: &str = "UefiAdminPassword";
 
 /// Virtualization is checked by [`require_virtualization_attribute`] since
-/// each CPU vendor reports only its own attribute.
+/// each CPU vendor reports only its own attribute. Serial console attributes
+/// belong to the console capability.
 const ATTRIBUTES: &[BiosAttribute] = &[
-    BiosAttribute::string("DevicesandIOPorts_COMPort1", "Enabled"),
-    BiosAttribute::string("DevicesandIOPorts_ConsoleRedirection", "Enabled"),
-    BiosAttribute::string("DevicesandIOPorts_SerialPortSharing", "Enabled"),
-    BiosAttribute::string("DevicesandIOPorts_SPRedirection", "Enabled"),
-    BiosAttribute::string("DevicesandIOPorts_COMPortActiveAfterBoot", "Enabled"),
-    BiosAttribute::string("DevicesandIOPorts_SerialPortAccessMode", "Shared"),
     BiosAttribute::string("Processors_IntelVirtualizationTechnology", "Enabled"),
     BiosAttribute::string("Processors_SVMMode", "Enabled"),
     BiosAttribute::string("BootModes_SystemBootMode", "UEFIMode").required(),

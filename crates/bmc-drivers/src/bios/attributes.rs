@@ -43,8 +43,8 @@ impl From<AttributeValue> for Value {
 
 /// One BIOS attribute NICo expects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct BiosAttribute {
-    pub(super) name: &'static str,
+pub(crate) struct BiosAttribute {
+    pub(crate) name: &'static str,
     pub(super) value: AttributeValue,
     /// Whether a BIOS that does not report the attribute is missing a setting,
     /// rather than lacking it by design.
@@ -70,6 +70,16 @@ impl BiosAttribute {
         Self {
             required: true,
             ..self
+        }
+    }
+
+    /// The expected value of an attribute declared with [`Self::string`].
+    pub(crate) const fn text(self) -> &'static str {
+        match self.value {
+            AttributeValue::String(value) => value,
+            AttributeValue::Bool(_) | AttributeValue::Integer(_) => {
+                panic!("BIOS attribute is not a string")
+            }
         }
     }
     const fn new(name: &'static str, value: AttributeValue) -> Self {

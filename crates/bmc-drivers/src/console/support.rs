@@ -18,20 +18,35 @@ pub(super) const SSH_PORT: NonZeroU16 = NonZeroU16::new(22).expect("22 is nonzer
 pub(super) const DPU_SSH_PORT: NonZeroU16 = NonZeroU16::new(2200).expect("2200 is nonzero");
 pub(super) const IPMI_PORT: NonZeroU16 = NonZeroU16::new(623).expect("623 is nonzero");
 
-/// One BIOS attribute the console depends on.
+/// One attribute the console depends on.
 ///
-/// `enabled[0]` is also the value `setup` writes, so the expectation table is
-/// the single description of the console configuration. Values spelled
-/// `true`/`false` are written as booleans, which is how those BIOSes report them.
+/// `enabled[0]` is also the value `setup` writes, so the table is the single
+/// description of the console configuration. Values spelled `true`/`false`
+/// are written as booleans, which is how those BIOSes report them.
 #[derive(Clone, Copy)]
 pub(super) struct AttrExpectation {
     pub(super) key: &'static str,
     pub(super) enabled: &'static [&'static str],
     pub(super) disabled: &'static [&'static str],
-    /// Older firmware omits the attribute: it is then neither checked nor written.
-    pub(super) optional: bool,
+    /// Written only when the BIOS reports the attribute.
+    optional: bool,
+    /// Status reads it; a write-only attribute is set but not reported back
+    /// meaningfully.
+    checked: bool,
 }
 
+impl AttrExpectation {
+    /// Written only when the BIOS reports the attribute.
+    pub(super) const fn optional(self) -> Self {
+        Self {
+            optional: true,
+            ..self
+        }
+    }
+}
+
+/// An attribute status checks; an empty `disabled` accepts any value as
+/// disabled.
 pub(super) const fn attr(
     key: &'static str,
     enabled: &'static [&'static str],
@@ -42,19 +57,21 @@ pub(super) const fn attr(
         enabled,
         disabled,
         optional: false,
+        checked: true,
     }
 }
 
-pub(super) const fn optional_attr(
+/// An attribute `setup` writes as `value` but status does not check.
+pub(super) const fn write_only(
     key: &'static str,
-    enabled: &'static [&'static str],
-    disabled: &'static [&'static str],
+    value: &'static [&'static str],
 ) -> AttrExpectation {
     AttrExpectation {
         key,
-        enabled,
-        disabled,
-        optional: true,
+        enabled: value,
+        disabled: &[],
+        optional: false,
+        checked: false,
     }
 }
 
@@ -66,54 +83,43 @@ fn attr_value(text: &str) -> Value {
     }
 }
 
-/// Writes each attribute's first enabled value plus `write_only` values, so
-/// the expectation table is the single description of the console setup.
+/// Writes each attribute's first enabled value, skipping optional attributes
+/// the BIOS does not report.
 pub(super) async fn setup_bios_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
     attrs: &[AttrExpectation],
-    write_only: &[(&str, &str)],
 ) -> Result<DriverOutcome, PlatformError> {
     let current = bios_attributes(cx).await?;
     let attributes: BTreeMap<String, Value> = attrs
         .iter()
         .filter(|attr| !attr.optional || current.contains_key(attr.key))
         .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
-        .chain(
-            write_only
-                .iter()
-                .map(|(key, value)| ((*key).to_string(), attr_value(value))),
-        )
         .collect();
     patch_bios_attributes(cx, &attributes).await
 }
 
+/// Rates the checked attributes `attrs` reports: enabled when every one
+/// holds an enabled value, disabled when every one holds a disabled value,
+/// partial otherwise. Unreported attributes are skipped.
 pub(super) fn attr_status(
     attrs: &BTreeMap<String, Value>,
     expected: &[AttrExpectation],
 ) -> ConsoleStatus {
     let mut enabled = true;
     let mut disabled = true;
-    let mut observed = 0;
     let mut message = Vec::new();
-    for expectation in expected {
-        let value = attrs.get(expectation.key);
-        if value.is_none() && expectation.optional {
-            continue;
-        }
-        observed += 1;
-        let value = match value {
+    for expectation in expected.iter().filter(|attr| attr.checked) {
+        let value = match attrs.get(expectation.key) {
             Some(Value::String(value)) => value.clone(),
             Some(Value::Bool(value)) => value.to_string(),
-            _ => "<missing>".to_string(),
+            _ => continue,
         };
         message.push(format!("{}={value}", expectation.key));
         enabled &= expectation.enabled.contains(&value.as_str());
         disabled &=
             expectation.disabled.is_empty() || expectation.disabled.contains(&value.as_str());
     }
-    let state = if observed == 0 {
-        ConsoleState::Partial
-    } else if enabled {
+    let state = if enabled {
         ConsoleState::Enabled
     } else if disabled {
         ConsoleState::Disabled
@@ -160,24 +166,43 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_status_preserves_partial_and_missing_values() {
-        let expected = [attr("a", &["on"], &["off"]), attr("b", &["on"], &["off"])];
-        assert_eq!(
-            attr_status(&attrs(&[("a", "on"), ("b", "on")]), &expected).state,
-            ConsoleState::Enabled
-        );
-        assert_eq!(
-            attr_status(&attrs(&[("a", "off"), ("b", "off")]), &expected).state,
-            ConsoleState::Disabled
-        );
-        assert_eq!(
-            attr_status(&attrs(&[("a", "on"), ("b", "off")]), &expected).state,
-            ConsoleState::Partial
-        );
-        assert_eq!(
-            attr_status(&attrs(&[("a", "on")]), &expected).state,
-            ConsoleState::Partial
-        );
+    fn status_rates_only_reported_checked_attributes() {
+        let expected = [
+            attr("a", &["on"], &["off"]),
+            attr("b", &["on"], &["off"]),
+            write_only("c", &["on"]),
+        ];
+        let cases = [
+            (
+                "all enabled",
+                attrs(&[("a", "on"), ("b", "on")]),
+                ConsoleState::Enabled,
+            ),
+            (
+                "all disabled",
+                attrs(&[("a", "off"), ("b", "off")]),
+                ConsoleState::Disabled,
+            ),
+            (
+                "mixed",
+                attrs(&[("a", "on"), ("b", "off")]),
+                ConsoleState::Partial,
+            ),
+            (
+                "one unreported",
+                attrs(&[("a", "on")]),
+                ConsoleState::Enabled,
+            ),
+            ("nothing reported", attrs(&[]), ConsoleState::Enabled),
+            (
+                "write-only differs",
+                attrs(&[("a", "on"), ("b", "on"), ("c", "off")]),
+                ConsoleState::Enabled,
+            ),
+        ];
+        for (name, reported, state) in cases {
+            assert_eq!(attr_status(&reported, &expected).state, state, "{name}");
+        }
     }
 
     #[test]

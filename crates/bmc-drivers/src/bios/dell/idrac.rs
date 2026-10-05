@@ -28,12 +28,30 @@ pub(crate) struct IdracBios;
 /// iDRAC exposes the UEFI administrator password as `SetupPassword`.
 const UEFI_PASSWORD_NAME: &str = "SetupPassword";
 
+// Serial redirection settings, which console status also checks. A BIOS
+// whose `SerialPortAddress` starts with `Serial1` takes the newer values and
+// redirects automatically on COM2.
+pub(crate) const FAIL_SAFE_BAUD: BiosAttribute =
+    BiosAttribute::string("FailSafeBaud", "115200").required();
+pub(crate) const CON_TERM_TYPE: BiosAttribute =
+    BiosAttribute::string("ConTermType", "Vt100Vt220").required();
+pub(crate) const REDIR_AFTER_BOOT: BiosAttribute =
+    BiosAttribute::string("RedirAfterBoot", "Enabled");
+pub(crate) const NEWER_SERIAL_COMM: BiosAttribute =
+    BiosAttribute::string("SerialComm", "OnConRedirAuto").required();
+pub(crate) const OLDER_SERIAL_COMM: BiosAttribute =
+    BiosAttribute::string("SerialComm", "OnConRedir").required();
+pub(crate) const NEWER_SERIAL_PORT_ADDRESS: BiosAttribute =
+    BiosAttribute::string("SerialPortAddress", "Serial1Com2Serial2Com1").required();
+pub(crate) const OLDER_SERIAL_PORT_ADDRESS: BiosAttribute =
+    BiosAttribute::string("SerialPortAddress", "Com1").required();
+
 const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::string("InBandManageabilityInterface", "Disabled").required(),
     BiosAttribute::string("UefiVariableAccess", "Standard").required(),
-    BiosAttribute::string("FailSafeBaud", "115200").required(),
-    BiosAttribute::string("ConTermType", "Vt100Vt220").required(),
-    BiosAttribute::string("RedirAfterBoot", "Enabled"),
+    FAIL_SAFE_BAUD,
+    CON_TERM_TYPE,
+    REDIR_AFTER_BOOT,
     BiosAttribute::string("SriovGlobalEnable", "Enabled").required(),
     BiosAttribute::string("TpmSecurity", "On").required(),
     BiosAttribute::string("Tpm2Hierarchy", "Enabled").required(),
@@ -56,25 +74,17 @@ fn tpm_clear() -> BiosSettings {
     ])
 }
 
-/// Serial redirection in the format the BIOS uses: a `SerialPortAddress`
-/// starting with `Serial1` marks the newer BIOS, which redirects
-/// automatically on COM2.
+/// Serial redirection in the format the BIOS uses.
 fn serial_redirection(current: &BiosSettings) -> [BiosAttribute; 2] {
     let newer = current
         .attributes
-        .get("SerialPortAddress")
+        .get(OLDER_SERIAL_PORT_ADDRESS.name)
         .and_then(Value::as_str)
         .is_some_and(|address| address.starts_with("Serial1"));
     if newer {
-        [
-            BiosAttribute::string("SerialComm", "OnConRedirAuto").required(),
-            BiosAttribute::string("SerialPortAddress", "Serial1Com2Serial2Com1").required(),
-        ]
+        [NEWER_SERIAL_COMM, NEWER_SERIAL_PORT_ADDRESS]
     } else {
-        [
-            BiosAttribute::string("SerialComm", "OnConRedir").required(),
-            BiosAttribute::string("SerialPortAddress", "Com1").required(),
-        ]
+        [OLDER_SERIAL_COMM, OLDER_SERIAL_PORT_ADDRESS]
     }
 }
 

@@ -11,8 +11,8 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 
 use crate::console::support::{
-    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, optional_attr,
-    setup_bios_attributes, spec_error,
+    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, setup_bios_attributes,
+    spec_error,
 };
 
 /// Lenovo XClarity Controller console, reached through the `console 1` shell command.
@@ -35,16 +35,19 @@ const ATTRS: &[AttrExpectation] = &[
         &["Shared"],
         &["Disabled"],
     ),
-    optional_attr(
+    // Only older systems have these.
+    attr(
         "DevicesandIOPorts_SPRedirection",
         &["Enabled"],
         &["Disabled"],
-    ),
-    optional_attr(
+    )
+    .optional(),
+    attr(
         "DevicesandIOPorts_COMPortActiveAfterBoot",
         &["Enabled"],
         &["Disabled"],
-    ),
+    )
+    .optional(),
 ];
 
 fn xcc_spec() -> Result<ConsoleSpec, PlatformError> {
@@ -67,7 +70,7 @@ fn xcc_spec() -> Result<ConsoleSpec, PlatformError> {
 #[async_trait]
 impl<B: Bmc> Console<B> for XccConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS, &[]).await
+        setup_bios_attributes(cx, ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {

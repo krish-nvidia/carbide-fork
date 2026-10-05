@@ -3,60 +3,72 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use bmc_platform::{
-    Console, ConsoleSpec, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx, PlatformError,
+    Console, ConsoleSpec, ConsoleState, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx,
+    PlatformError,
 };
 use nv_redfish::core::{ActionError, Bmc};
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use crate::bios::dell::idrac::{
+    CON_TERM_TYPE, FAIL_SAFE_BAUD, NEWER_SERIAL_COMM, NEWER_SERIAL_PORT_ADDRESS, OLDER_SERIAL_COMM,
+    OLDER_SERIAL_PORT_ADDRESS, REDIR_AFTER_BOOT,
+};
 use crate::console::support::{
-    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, optional_attr, spec_error,
+    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, spec_error,
 };
 use crate::dell;
-use crate::resources::{attribute_map, bios_update, update_bios_settings};
 
 /// Dell iDRAC console driver.
 ///
 /// Serial redirection is split between BIOS attributes and iDRAC manager
 /// attributes, and the console is reached through the `racadm` SSH shell.
+/// iDRAC holds one pending BIOS job, so BIOS setup stages the serial BIOS
+/// attributes with the rest; console setup writes only the iDRAC attributes.
 pub(crate) struct IdracConsole;
 
-const ATTRS: &[AttrExpectation] = &[
+/// The serial BIOS settings BIOS setup stages, accepting either BIOS
+/// generation's values and the COM-specific redirection modes, plus the
+/// external serial connector BIOS setup leaves alone.
+const BIOS_ATTRS: &[AttrExpectation] = &[
     attr(
-        "SerialComm",
+        OLDER_SERIAL_COMM.name,
         &[
-            "OnConRedir",
-            "OnConRedirAuto",
+            OLDER_SERIAL_COMM.text(),
+            NEWER_SERIAL_COMM.text(),
             "OnConRedirCom1",
             "OnConRedirCom2",
         ],
         &["Off"],
     ),
     attr(
-        "SerialPortAddress",
-        &["Com1", "Serial1Com2Serial2Com1"],
+        REDIR_AFTER_BOOT.name,
+        &[REDIR_AFTER_BOOT.text()],
+        &["Disabled"],
+    ),
+    attr(
+        OLDER_SERIAL_PORT_ADDRESS.name,
+        &[
+            OLDER_SERIAL_PORT_ADDRESS.text(),
+            NEWER_SERIAL_PORT_ADDRESS.text(),
+        ],
         &[],
     ),
     attr("ExtSerialConnector", &["Serial1"], &[]),
-    attr("FailSafeBaud", &["115200"], &[]),
-    attr("ConTermType", &["Vt100Vt220"], &[]),
-    optional_attr("RedirAfterBoot", &["Enabled"], &["Disabled"]),
-    attr("SSH.1.Enable", &["Enabled"], &["Disabled"]),
-    attr("SerialRedirection.1.Enable", &["Enabled"], &["Disabled"]),
-    attr("IPMISOL.1.Enable", &["Enabled"], &["Disabled"]),
-    attr("IPMISOL.1.BaudRate", &["115200"], &[]),
-    attr("IPMISOL.1.MinPrivilege", &["Administrator"], &[]),
-    attr("IPMILan.1.Enable", &["Enabled"], &["Disabled"]),
+    attr(FAIL_SAFE_BAUD.name, &[FAIL_SAFE_BAUD.text()], &[]),
+    attr(CON_TERM_TYPE.name, &[CON_TERM_TYPE.text()], &[]),
 ];
 
-const MANAGER_ATTRS: [&str; 6] = [
-    "SSH.1.Enable",
-    "SerialRedirection.1.Enable",
-    "IPMISOL.1.Enable",
-    "IPMISOL.1.BaudRate",
-    "IPMISOL.1.MinPrivilege",
-    "IPMILan.1.Enable",
+const MANAGER_ATTRS: &[AttrExpectation] = &[
+    attr("SerialRedirection.1.Enable", &["Enabled"], &["Disabled"]),
+    attr("IPMISOL.1.BaudRate", &["115200"], &[]),
+    attr("IPMISOL.1.Enable", &["Enabled"], &["Disabled"]),
+    attr("IPMISOL.1.MinPrivilege", &["Administrator"], &[]),
+    attr("SSH.1.Enable", &["Enabled"], &["Disabled"]),
+    attr("IPMILan.1.Enable", &["Enabled"], &["Disabled"]),
 ];
 
 fn dell_spec() -> Result<ConsoleSpec, PlatformError> {
@@ -70,67 +82,50 @@ fn dell_spec() -> Result<ConsoleSpec, PlatformError> {
     .map_err(spec_error)
 }
 
+/// The iDRAC attributes, every one of which iDRAC must report.
+async fn manager_attributes<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<BTreeMap<String, Value>, PlatformError> {
+    let names: Vec<&str> = MANAGER_ATTRS.iter().map(|attr| attr.key).collect();
+    let attributes = dell::manager_attribute_values(cx, &names).await?;
+    if let Some(missing) = names.iter().find(|name| !attributes.contains_key(**name)) {
+        return Err(PlatformError::InvalidResponse {
+            message: format!("iDRAC attributes do not report {missing}"),
+        });
+    }
+    Ok(attributes)
+}
+
+/// Enabled when both halves are enabled, disabled when both are disabled.
+fn combined(bmc: ConsoleStatus, bios: ConsoleStatus) -> ConsoleStatus {
+    let state = match (bmc.state, bios.state) {
+        (ConsoleState::Enabled, ConsoleState::Enabled) => ConsoleState::Enabled,
+        (ConsoleState::Disabled, ConsoleState::Disabled) => ConsoleState::Disabled,
+        _ => ConsoleState::Partial,
+    };
+    ConsoleStatus {
+        state,
+        message: format!("BMC: {}. BIOS: {}.", bmc.message, bios.message),
+    }
+}
+
 #[async_trait]
 impl<B: Bmc> Console<B> for IdracConsole
 where
     B::Error: ActionError,
 {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        let attrs = bios_attributes(cx).await?;
-        // Newer BIOS generations expose a second serial address encoding.
-        let newer = attrs
-            .get("SerialPortAddress")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.starts_with("Serial1"));
-        let (serial_comm, serial_port_address) = if newer {
-            ("OnConRedirAuto", "Serial1Com2Serial2Com1")
-        } else {
-            ("OnConRedir", "Com1")
-        };
-        let mut payload = attribute_map([
-            ("SerialComm", json!(serial_comm)),
-            ("SerialPortAddress", json!(serial_port_address)),
-            ("ExtSerialConnector", json!("Serial1")),
-            ("FailSafeBaud", json!("115200")),
-            ("ConTermType", json!("Vt100Vt220")),
-        ]);
-        if attrs.contains_key("RedirAfterBoot") {
-            payload.insert("RedirAfterBoot".to_string(), json!("Enabled"));
-        }
-        dell::clear_job_queue(cx).await?;
-        let manager_attributes = attribute_map([
-            ("SerialRedirection.1.Enable", json!("Enabled")),
-            ("IPMISOL.1.Enable", json!("Enabled")),
-            ("IPMISOL.1.BaudRate", json!("115200")),
-            ("IPMISOL.1.MinPrivilege", json!("Administrator")),
-            ("SSH.1.Enable", json!("Enabled")),
-            ("IPMILan.1.Enable", json!("Enabled")),
-        ]);
-        let manager_outcome = dell::patch_manager_attributes(cx, &manager_attributes, None).await?;
-        let body = bios_update(&payload)?.with_settings_apply_time(dell::on_reset());
-        let response = update_bios_settings(cx, &body).await?;
-        let bios_outcome = dell::job_outcome(cx, response).await?;
-        Ok(manager_outcome.merge(bios_outcome))
+        let attributes = MANAGER_ATTRS
+            .iter()
+            .map(|attr| (attr.key.to_string(), Value::from(attr.enabled[0])))
+            .collect();
+        dell::patch_manager_attributes(cx, &attributes, None).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
-        let mut attrs = bios_attributes(cx).await?;
-        let dell = cx
-            .manager()
-            .await?
-            .oem_dell_attributes()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .ok_or(PlatformError::Unsupported)?;
-        for key in MANAGER_ATTRS {
-            if let Some(value) = dell
-                .attribute(key)
-                .and_then(|value| value.str_value().map(str::to_owned))
-            {
-                attrs.insert(key.to_string(), Value::String(value));
-            }
-        }
-        Ok(attr_status(&attrs, ATTRS))
+        let bmc = attr_status(&manager_attributes(cx).await?, MANAGER_ATTRS);
+        let bios = attr_status(&bios_attributes(cx).await?, BIOS_ATTRS);
+        Ok(combined(bmc, bios))
     }
 
     async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {
@@ -148,5 +143,33 @@ mod tests {
         let shell = spec.as_ssh_shell().expect("SSH shell");
         assert_eq!(shell.activate.as_slice(), b"connect com2");
         assert_eq!(shell.escape_filter, EscapeSeq::Single(0x1c));
+    }
+
+    #[test]
+    fn status_is_enabled_or_disabled_only_when_both_halves_agree() {
+        let status = |state| ConsoleStatus {
+            state,
+            message: String::new(),
+        };
+        let cases = [
+            (
+                ConsoleState::Enabled,
+                ConsoleState::Enabled,
+                ConsoleState::Enabled,
+            ),
+            (
+                ConsoleState::Disabled,
+                ConsoleState::Disabled,
+                ConsoleState::Disabled,
+            ),
+            (
+                ConsoleState::Enabled,
+                ConsoleState::Disabled,
+                ConsoleState::Partial,
+            ),
+        ];
+        for (bmc, bios, expected) in cases {
+            assert_eq!(combined(status(bmc), status(bios)).state, expected);
+        }
     }
 }

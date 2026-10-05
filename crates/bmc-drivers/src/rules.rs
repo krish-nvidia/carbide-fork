@@ -154,6 +154,7 @@ fn built_ins() -> Vec<Rule> {
             NvidiaOpenBmcAccounts,
             NvidiaHgxAttestation,
             NvidiaGbx00Bios,
+            NvidiaOpenBmcConsole,
         ]),
     );
 
@@ -174,9 +175,9 @@ fn built_ins() -> Vec<Rule> {
             NvidiaOpenBmcAccounts,
             NvidiaHgxAttestation,
             NvidiaGbx00Bios,
+            NvidiaOpenBmcConsole,
         ])
-        .standard([Capability::BmcControl])
-        .unsupported([Capability::Console]),
+        .standard([Capability::BmcControl]),
     );
 
     rules.push(
@@ -188,6 +189,7 @@ fn built_ins() -> Vec<Rule> {
             NvidiaOpenBmcAccounts,
             NvidiaHgxAttestation,
             NvidiaVeraRubinBios,
+            NvidiaOpenBmcConsole,
         ]),
     );
 
@@ -200,6 +202,7 @@ fn built_ins() -> Vec<Rule> {
                 NvidiaGh200Bios,
                 NvidiaGh200Power,
                 NvidiaGh200Accounts,
+                NvidiaOpenBmcConsole,
             ])
             .unsupported([Capability::Attestation]),
     );

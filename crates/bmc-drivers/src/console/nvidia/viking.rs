@@ -9,30 +9,28 @@ use nv_redfish::core::Bmc;
 
 use crate::console::support::{
     AttrExpectation, attr, attr_status, bios_attributes, ipmi_sol_spec, setup_bios_attributes,
+    write_only,
 };
 
-/// NVIDIA Viking console; the console is an IPMI SOL session.
+/// NVIDIA Viking console; the console is an IPMI SOL session. Setup writes
+/// only the attributes the BIOS reports.
 pub(crate) struct VikingConsole;
 
 const ATTRS: &[AttrExpectation] = &[
-    attr("AcpiSpcrConsoleRedirectionEnable", &["true"], &["false"]),
-    attr("ConsoleRedirectionEnable0", &["true"], &["false"]),
-    attr("AcpiSpcrPort", &["COM0"], &[]),
-    attr("AcpiSpcrFlowControl", &["None"], &[]),
-    attr("AcpiSpcrBaudRate", &["115200"], &[]),
-    attr("BaudRate0", &["115200"], &[]),
-];
-
-/// Attributes `setup` writes that the BIOS does not report back meaningfully.
-const WRITE_ONLY: &[(&str, &str)] = &[
-    ("AcpiSpcrTerminalType", "VT-UTF8"),
-    ("TerminalType0", "ANSI"),
+    attr("AcpiSpcrConsoleRedirectionEnable", &["true"], &["false"]).optional(),
+    attr("ConsoleRedirectionEnable0", &["true"], &["false"]).optional(),
+    attr("AcpiSpcrPort", &["COM0"], &[]).optional(),
+    attr("AcpiSpcrFlowControl", &["None"], &[]).optional(),
+    attr("AcpiSpcrBaudRate", &["115200"], &[]).optional(),
+    attr("BaudRate0", &["115200"], &[]).optional(),
+    write_only("AcpiSpcrTerminalType", &["VT-UTF8"]).optional(),
+    write_only("TerminalType0", &["ANSI"]).optional(),
 ];
 
 #[async_trait]
 impl<B: Bmc> Console<B> for VikingConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS, WRITE_ONLY).await
+        setup_bios_attributes(cx, ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {

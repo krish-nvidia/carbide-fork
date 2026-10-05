@@ -28,7 +28,7 @@ pub(in crate::console) const ATTRS: &[AttrExpectation] = &[
 #[async_trait]
 impl<B: Bmc> Console<B> for MegaRacConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS, &[]).await
+        setup_bios_attributes(cx, ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {

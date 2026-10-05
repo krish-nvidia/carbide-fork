@@ -292,6 +292,7 @@ drivers! {
         LenovoGb300Console = "lenovo-gb300-console" => console::lenovo::gb300::Gb300Console,
         LenovoXccConsole = "lenovo-xcc-console" => console::lenovo::xcc::XccConsole,
         NvidiaBlueFieldConsole = "nvidia-bluefield-console" => console::nvidia::bluefield::BlueFieldConsole,
+        NvidiaOpenBmcConsole = "nvidia-openbmc-console" => console::nvidia::openbmc::OpenBmcConsole,
         NvidiaVikingConsole = "nvidia-viking-console" => console::nvidia::viking::VikingConsole,
         SupermicroBmcConsole = "supermicro-bmc-console" => console::supermicro::bmc::SupermicroBmcConsole,
     }

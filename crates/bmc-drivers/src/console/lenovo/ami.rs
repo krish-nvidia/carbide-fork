@@ -17,7 +17,7 @@ pub(crate) struct LenovoAmiConsole;
 #[async_trait]
 impl<B: Bmc> Console<B> for LenovoAmiConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, MEGARAC_ATTRS, &[]).await
+        setup_bios_attributes(cx, MEGARAC_ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {

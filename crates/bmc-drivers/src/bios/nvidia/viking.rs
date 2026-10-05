@@ -23,13 +23,8 @@ pub(crate) struct VikingBios;
 
 const UEFI_PASSWORD_NAME: &str = "AdminPassword";
 
+/// Serial console attributes belong to the console capability.
 const ATTRIBUTES: &[BiosAttribute] = &[
-    BiosAttribute::bool("AcpiSpcrConsoleRedirectionEnable", true),
-    BiosAttribute::bool("ConsoleRedirectionEnable0", true),
-    BiosAttribute::string("AcpiSpcrPort", "COM0"),
-    BiosAttribute::string("AcpiSpcrFlowControl", "None"),
-    BiosAttribute::string("AcpiSpcrBaudRate", "115200"),
-    BiosAttribute::string("BaudRate0", "115200"),
     BiosAttribute::string("SriovSupport", "Enabled"),
     BiosAttribute::string("SRIOVEnable", "Enable"),
     BiosAttribute::string("VTdSupport", "Enable"),

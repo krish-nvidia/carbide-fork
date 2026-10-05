@@ -4,4 +4,5 @@
  */
 
 pub(crate) mod bluefield;
+pub(crate) mod openbmc;
 pub(crate) mod viking;
