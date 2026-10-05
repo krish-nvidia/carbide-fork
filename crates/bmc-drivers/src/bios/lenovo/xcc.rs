@@ -4,18 +4,49 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
-use crate::bios::attributes::lenovo::xcc as table;
-use crate::bios::standard::{self, StandardBios};
-use crate::resources::patch_bios_attributes;
+use crate::bios::attributes::BiosAttribute;
+use crate::bios::standard::StandardBios;
+use crate::bios::support::{
+    attribute_holds, change_password, compare, current_settings, expected, settings, stage,
+};
 
 /// Lenovo XCC names the UEFI administrator password `UefiAdminPassword`.
 pub(crate) struct XccBios;
 
 const UEFI_PASSWORD_NAME: &str = "UefiAdminPassword";
+
+/// Virtualization is checked by [`require_virtualization_attribute`] since
+/// each CPU vendor reports only its own attribute.
+const ATTRIBUTES: &[BiosAttribute] = &[
+    BiosAttribute::string("DevicesandIOPorts_COMPort1", "Enabled"),
+    BiosAttribute::string("DevicesandIOPorts_ConsoleRedirection", "Enabled"),
+    BiosAttribute::string("DevicesandIOPorts_SerialPortSharing", "Enabled"),
+    BiosAttribute::string("DevicesandIOPorts_SPRedirection", "Enabled"),
+    BiosAttribute::string("DevicesandIOPorts_COMPortActiveAfterBoot", "Enabled"),
+    BiosAttribute::string("DevicesandIOPorts_SerialPortAccessMode", "Shared"),
+    BiosAttribute::string("Processors_IntelVirtualizationTechnology", "Enabled"),
+    BiosAttribute::string("Processors_SVMMode", "Enabled"),
+    BiosAttribute::string("BootModes_SystemBootMode", "UEFIMode").required(),
+    BiosAttribute::string("NetworkStackSettings_IPv4HTTPSupport", "Enabled").required(),
+    BiosAttribute::string("NetworkStackSettings_IPv4PXESupport", "Disabled").required(),
+    BiosAttribute::string("NetworkStackSettings_IPv6PXESupport", "Disabled").required(),
+    INFINITE_BOOT,
+    BiosAttribute::string("BootModes_PreventOSChangesToBootOrder", "Enabled").required(),
+    // Only older systems still have a legacy BIOS mode.
+    BiosAttribute::string("LegacyBIOS_NonOnboardPXE", "Disabled"),
+    BiosAttribute::string("LegacyBIOS_LegacyBIOS", "Disabled"),
+];
+
+const INFINITE_BOOT: BiosAttribute =
+    BiosAttribute::string("BootModes_InfiniteBootRetry", "Enabled").required();
+
+fn tpm_clear() -> BiosSettings {
+    settings([("TrustedComputingGroup_DeviceOperation", json!("Clear"))])
+}
 
 /// XCC names CPU virtualization after the CPU vendor.
 const VIRTUALIZATION_ATTRIBUTES: [&str; 2] = [
@@ -40,6 +71,14 @@ fn require_virtualization_attribute(current: &BiosSettings) -> Result<(), Platfo
     })
 }
 
+fn expected_settings(
+    current: &BiosSettings,
+    profile: &BiosSettings,
+) -> Result<BiosSettings, PlatformError> {
+    require_virtualization_attribute(current)?;
+    Ok(expected(ATTRIBUTES, current, profile))
+}
+
 #[async_trait]
 impl<B: Bmc> Bios<B> for XccBios
 where
@@ -49,14 +88,22 @@ where
         &StandardBios
     }
 
-    async fn expected(
+    async fn apply(
         &self,
         cx: &OpCx<'_, B>,
-        overlay: &BiosSettings,
-    ) -> Result<BiosSettings, PlatformError> {
-        let current = standard::current(cx).await?;
-        require_virtualization_attribute(&current)?;
-        standard::resolve(table::ATTRIBUTES, &current, overlay)
+        profile: &BiosSettings,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let current = current_settings(cx).await?;
+        stage(cx, &expected_settings(&current, profile)?).await
+    }
+
+    async fn status(
+        &self,
+        cx: &OpCx<'_, B>,
+        profile: &BiosSettings,
+    ) -> Result<BiosStatus, PlatformError> {
+        let current = current_settings(cx).await?;
+        Ok(compare(&current, &expected_settings(&current, profile)?))
     }
 
     async fn change_uefi_password(
@@ -65,23 +112,15 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        standard::change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await
-    }
-
-    async fn clear_uefi_password(
-        &self,
-        cx: &OpCx<'_, B>,
-        current_password: &str,
-    ) -> Result<DriverOutcome, PlatformError> {
-        standard::change_password(cx, UEFI_PASSWORD_NAME, current_password, "").await
+        change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        patch_bios_attributes(
-            cx,
-            json!({"TrustedComputingGroup_DeviceOperation": "Clear"}),
-        )
-        .await
+        stage(cx, &tpm_clear()).await
+    }
+
+    async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
+        attribute_holds(cx, INFINITE_BOOT).await
     }
 }
 

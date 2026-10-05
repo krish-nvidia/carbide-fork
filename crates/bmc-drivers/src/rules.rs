@@ -134,10 +134,10 @@ fn built_ins() -> Vec<Rule> {
         .drivers([
             LiteOnPowerShelfPower,
             LiteOnPowerShelfAccounts,
+            LiteOnPowerShelfBios,
             NoopLockdown,
         ])
         .unsupported([
-            Capability::Bios,
             Capability::BootOrder,
             Capability::SecureBoot,
             Capability::Attestation,

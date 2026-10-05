@@ -3,32 +3,72 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::core::{ActionError, Bmc};
-use serde_json::json;
+use std::collections::BTreeMap;
 
-use crate::bios::attributes::BiosAttribute;
-use crate::bios::attributes::supermicro::{gb300, x13};
-use crate::bios::standard::{self, StandardBios};
+use async_trait::async_trait;
+use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::core::{ActionError, Bmc};
+use serde_json::{Value, json};
+
+use crate::bios::attributes::AttributeValue::{self, Bool, String as Text};
+use crate::bios::standard::StandardBios;
+use crate::bios::support::{compare, current_settings, stage, with_profile};
 use crate::resources::{bios_attributes, bios_update, selected_bios};
 
-/// Supermicro BIOS behavior: a TPM clear is a pending operation written to the
-/// current BIOS resource, under a `PendingOperation*` name that varies by board.
-/// The model decides the attributes machine setup expects.
-pub(crate) struct SmcBios {
-    attributes: &'static [BiosAttribute],
+/// Supermicro hosts: the BIOS appends a registry suffix to every attribute
+/// name, as in `IPv4HTTPSupport_009F`, and a TPM clear is a pending operation
+/// written to the current BIOS resource.
+pub(crate) struct SmcBios;
+
+/// Expected values by attribute-name prefix.
+const ATTRIBUTES: &[(&str, AttributeValue)] = &[
+    ("QuietBoot", Bool(false)),
+    ("Re_tryBoot", Text("EFI Boot")),
+    ("CSMSupport", Text("Disabled")),
+    ("SecureBootEnable", Bool(false)),
+    ("TXTSupport", Text("Enabled")),
+    ("DeviceSelect", Text("TPM 2.0")),
+    ("IntelVTforDirectedI_O_VT_d", Text("Enable")),
+    ("IntelVirtualizationTechnology", Text("Enable")),
+    ("SR-IOVSupport", Text("Enabled")),
+    ("SR_IOVSupport", Text("Enabled")),
+    ("IPv4HTTPSupport", Text("Enabled")),
+    ("IPv4PXESupport", Text("Disabled")),
+    ("IPv6HTTPSupport", Text("Disabled")),
+    ("IPv6PXESupport", Text("Disabled")),
+];
+
+/// Boards spell this attribute's values either `Enabled`/`Disabled` or
+/// `Enable`/`Disable`; it is enabled in the spelling the board uses.
+const SECURITY_DEVICE_SUPPORT: &str = "SecurityDeviceSupport";
+
+/// The expected value of every reported attribute the table names.
+fn expected_settings(current: &BiosSettings) -> Result<BiosSettings, PlatformError> {
+    let mut expected = BiosSettings::default();
+    for (name, reported) in &current.attributes {
+        let value = if name.starts_with(SECURITY_DEVICE_SUPPORT) {
+            security_device_enabled(name, reported)?
+        } else if let Some((_, value)) = ATTRIBUTES
+            .iter()
+            .find(|(prefix, _)| name.starts_with(prefix))
+        {
+            Value::from(*value)
+        } else {
+            continue;
+        };
+        expected.attributes.insert(name.clone(), value);
+    }
+    Ok(expected)
 }
 
-impl SmcBios {
-    /// Supermicro hosts, whose attribute names carry a registry suffix.
-    pub(crate) const X13: Self = Self {
-        attributes: x13::ATTRIBUTES,
-    };
-    /// Supermicro GB300 NVL compute trays.
-    pub(crate) const GB300: Self = Self {
-        attributes: gb300::ATTRIBUTES,
-    };
+fn security_device_enabled(name: &str, reported: &Value) -> Result<Value, PlatformError> {
+    match reported.as_str() {
+        Some("Enabled" | "Disabled") => Ok(json!("Enabled")),
+        Some("Enable" | "Disable") => Ok(json!("Enable")),
+        _ => Err(PlatformError::InvalidResponse {
+            message: format!("{name} reports {reported}, which is neither spelling"),
+        }),
+    }
 }
 
 #[async_trait]
@@ -40,21 +80,37 @@ where
         &StandardBios
     }
 
-    async fn expected(
+    async fn apply(
         &self,
         cx: &OpCx<'_, B>,
-        overlay: &BiosSettings,
-    ) -> Result<BiosSettings, PlatformError> {
-        standard::expected(cx, self.attributes, overlay).await
+        profile: &BiosSettings,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let current = current_settings(cx).await?;
+        stage(cx, &with_profile(expected_settings(&current)?, profile)).await
     }
 
+    async fn status(
+        &self,
+        cx: &OpCx<'_, B>,
+        profile: &BiosSettings,
+    ) -> Result<BiosStatus, PlatformError> {
+        let current = current_settings(cx).await?;
+        Ok(compare(
+            &current,
+            &with_profile(expected_settings(&current)?, profile),
+        ))
+    }
+
+    /// The board names its TPM pending operation `PendingOperation*`, and
+    /// takes it on the current BIOS resource rather than the settings resource.
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         let bios = selected_bios(cx).await?;
         let operation = bios_attributes(&bios.raw())
             .into_keys()
             .find(|key| key.starts_with("PendingOperation"))
             .ok_or(PlatformError::Unsupported)?;
-        bios.update(&bios_update(json!({operation: "TPM Clear"}))?)
+        let attributes = BTreeMap::from([(operation, json!("TPM Clear"))]);
+        bios.update(&bios_update(&attributes)?)
             .await
             .map(DriverOutcome::from)
             .map_err(|error| cx.map_redfish_error(error))
@@ -64,6 +120,7 @@ where
 #[cfg(test)]
 mod tests {
     use axum::http::Method;
+    use carbide_test_support::value_scenarios;
 
     use super::*;
     use crate::test_support::{Fixture, body, path};
@@ -93,7 +150,7 @@ mod tests {
                 .await;
             let cx = bmc.cx().await;
 
-            let result = SmcBios::X13.clear_tpm(&cx).await;
+            let result = SmcBios.clear_tpm(&cx).await;
             let writes = bmc.writes();
             match expected {
                 Some(expected) => {
@@ -109,5 +166,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn expected_values_follow_suffixed_names_and_the_boards_spelling() {
+        value_scenarios!(run = |(name, reported): (&str, &str)| expected_settings(
+            &serde_json::from_value(json!({"attributes": {name: reported, "Unrelated": "x"}}))
+                .expect("settings")
+        )
+        .map(|expected| expected.attributes.into_iter().collect::<Vec<_>>());
+            "suffixed name" {
+                ("IPv4HTTPSupport_009F", "Disabled") => Ok(vec![("IPv4HTTPSupport_009F".to_string(), json!("Enabled"))]),
+            }
+            "spelling family" {
+                ("SecurityDeviceSupport_0123", "Disabled") => Ok(vec![("SecurityDeviceSupport_0123".to_string(), json!("Enabled"))]),
+                ("SecurityDeviceSupport_0123", "Disable") => Ok(vec![("SecurityDeviceSupport_0123".to_string(), json!("Enable"))]),
+                ("SecurityDeviceSupport_0123", "Enable") => Ok(vec![("SecurityDeviceSupport_0123".to_string(), json!("Enable"))]),
+            }
+            "unknown spelling" {
+                ("SecurityDeviceSupport_0123", "Off") => Err(PlatformError::InvalidResponse {
+                    message: "SecurityDeviceSupport_0123 reports \"Off\", which is neither spelling".to_string(),
+                }),
+            }
+        );
     }
 }

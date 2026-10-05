@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
     OpCx, PlatformError,
 };
 use nv_redfish::core::Bmc;
-use serde_json::{Map, Value};
 use version_compare::Cmp;
 
 use crate::lockdown::support::{signal, state_from_signals};
@@ -103,7 +104,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
             require_lockdown_firmware(cx).await?;
         }
         let bios = selected_bios(cx).await?;
-        let mut attributes = Map::new();
+        let mut attributes = BTreeMap::new();
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
             let key = if bios.attribute("KcsInterfaceDisable").is_some() {
                 "KcsInterfaceDisable"
@@ -127,6 +128,6 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
                 (if enabled { "Disabled" } else { "Enabled" }).into(),
             );
         }
-        patch_bios_attributes(cx, Value::Object(attributes)).await
+        patch_bios_attributes(cx, &attributes).await
     }
 }

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, ControllerAction, DriverOutcome, OpCx,
@@ -154,7 +156,7 @@ async fn enable_http_boot<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Pla
                 .cloned()
         })
         .ok_or(PlatformError::Unsupported)?;
-    match patch_bios_attributes(cx, json!({attribute: "Enabled"})).await? {
+    match patch_bios_attributes(cx, &BTreeMap::from([(attribute, json!("Enabled"))])).await? {
         DriverOutcome::Complete { .. } => Ok(DriverOutcome::blocked(ControllerAction::Power(
             ResetType::GracefulRestart,
         ))),

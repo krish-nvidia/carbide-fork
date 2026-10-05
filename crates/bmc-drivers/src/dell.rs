@@ -5,6 +5,8 @@
 
 //! Dell iDRAC mechanics shared by several capabilities.
 
+use std::collections::BTreeMap;
+
 use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError, VendorJobId};
 use nv_redfish::core::{ActionError, Bmc, ModificationResponse, RedfishSettings};
 use nv_redfish::oem::dell::DellManager;
@@ -212,7 +214,7 @@ pub(crate) async fn create_bios_config_job<B: Bmc>(
 /// Stages BIOS attributes as an iDRAC configuration job applied on the next reset.
 pub(crate) async fn stage_bios_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
-    attributes: Value,
+    attributes: &BTreeMap<String, Value>,
 ) -> Result<DriverOutcome, PlatformError>
 where
     B::Error: ActionError,

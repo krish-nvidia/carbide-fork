@@ -14,8 +14,9 @@ use crate::bios::support::{
     attribute_holds, change_password, compare, current_settings, expected, settings, stage,
 };
 
-/// AMI MegaRAC BIOS, including Lenovo HS350x-class systems.
-pub(crate) struct MegaRacBios;
+/// Lenovo GB300: AMI firmware whose Grace BIOS registry prefixes enum values
+/// with their attribute id, and expresses infinite boot as a boot-retry count.
+pub(crate) struct Gb300Bios;
 
 /// AMI firmware names the UEFI administrator password `SETUP001`.
 const UEFI_PASSWORD_NAME: &str = "SETUP001";
@@ -24,26 +25,25 @@ const UEFI_PASSWORD_NAME: &str = "SETUP001";
 const TPM_OPERATION: &str = "TCG006";
 
 const ATTRIBUTES: &[BiosAttribute] = &[
-    BiosAttribute::string("VMXEN", "Enable").required(),
-    BiosAttribute::string("PCIS007", "Enabled").required(),
-    BiosAttribute::integer("LEM0001", 3).required(),
-    BiosAttribute::string("NWSK000", "Enabled").required(),
-    BiosAttribute::string("NWSK001", "Disabled").required(),
-    BiosAttribute::string("NWSK006", "Enabled").required(),
-    BiosAttribute::string("NWSK002", "Disabled").required(),
-    BiosAttribute::string("NWSK007", "Disabled").required(),
-    BiosAttribute::string("FBO001", "UEFI").required(),
+    BiosAttribute::string("PCIS007", "PCIS007Enabled").required(),
+    BiosAttribute::integer("LEM0001", 0).required(),
+    BiosAttribute::string("NWSK000", "NWSK000Enabled").required(),
+    BiosAttribute::string("NWSK001", "NWSK001Disabled").required(),
+    BiosAttribute::string("NWSK006", "NWSK006Enabled").required(),
+    BiosAttribute::string("NWSK002", "NWSK002Disabled").required(),
+    BiosAttribute::string("NWSK007", "NWSK007Disabled").required(),
     INFINITE_BOOT,
 ];
 
-const INFINITE_BOOT: BiosAttribute = BiosAttribute::string("EndlessBoot", "Enabled").required();
+/// A retry count of 50 is the BIOS's endless boot.
+const INFINITE_BOOT: BiosAttribute = BiosAttribute::integer("LEM0003", 50).required();
 
 fn tpm_clear() -> BiosSettings {
-    settings([(TPM_OPERATION, json!("TPM Clear"))])
+    settings([(TPM_OPERATION, json!("TCG006TPMClear"))])
 }
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for MegaRacBios
+impl<B: Bmc> Bios<B> for Gb300Bios
 where
     B::Error: ActionError,
 {
@@ -92,16 +92,16 @@ mod tests {
     use super::*;
     use crate::test_support::{Fixture, body, path};
 
-    const SYSTEM: &str = "/redfish/v1/Systems/Self";
-    const BIOS: &str = "/redfish/v1/Systems/Self/Bios";
-    const SETTINGS: &str = "/redfish/v1/Systems/Self/Bios/SD";
+    const SYSTEM: &str = "/redfish/v1/Systems/System_0";
+    const BIOS: &str = "/redfish/v1/Systems/System_0/Bios";
+    const SETTINGS: &str = "/redfish/v1/Systems/System_0/Bios/SD";
 
     #[tokio::test]
-    async fn tpm_clear_stages_the_bare_enum_value() {
-        let bmc = Fixture::new("AMI", "AMI Redfish Server", "Self", "Self")
+    async fn tpm_clear_stages_the_attribute_prefixed_value() {
+        let bmc = Fixture::new("AMI", "AMI Redfish Server", "System_0", "Self")
             .document(
                 SYSTEM,
-                json!({"@odata.id": SYSTEM, "Id": "Self", "Name": "System", "Bios": {"@odata.id": BIOS}}),
+                json!({"@odata.id": SYSTEM, "Id": "System_0", "Name": "System", "Bios": {"@odata.id": BIOS}}),
             )
             .document(
                 BIOS,
@@ -110,7 +110,7 @@ mod tests {
                     "@Redfish.Settings": {"SettingsObject": {"@odata.id": SETTINGS}},
                     "Id": "BIOS",
                     "Name": "BIOS",
-                    "Attributes": {TPM_OPERATION: "None"},
+                    "Attributes": {TPM_OPERATION: "TCG006None"},
                 }),
             )
             .document(
@@ -121,16 +121,13 @@ mod tests {
             .await;
         let cx = bmc.cx().await;
 
-        MegaRacBios
-            .clear_tpm(&cx)
-            .await
-            .expect("TPM clear is staged");
+        Gb300Bios.clear_tpm(&cx).await.expect("TPM clear is staged");
         let writes = bmc.writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(path(&writes[0]), SETTINGS);
         assert_eq!(
             body(&writes[0]),
-            json!({"Attributes": {TPM_OPERATION: "TPM Clear"}})
+            json!({"Attributes": {TPM_OPERATION: "TCG006TPMClear"}})
         );
     }
 }

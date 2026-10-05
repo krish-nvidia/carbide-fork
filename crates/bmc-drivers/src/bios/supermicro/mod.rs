@@ -3,4 +3,5 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+pub(crate) mod gb300;
 pub(crate) mod smc;

@@ -3,13 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
     PlatformError,
 };
 use nv_redfish::core::Bmc;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::lockdown::support::{
     host_interface_state, set_first_host_interface, signal, state_from_signals, status,
@@ -75,7 +77,7 @@ impl<B: Bmc> Lockdown<B> for Gb300Lockdown {
         let enabled = desired == LockdownDesiredState::Enabled;
         let mut outcome = DriverOutcome::complete();
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
-            let attributes: Map<String, Value> = HOST
+            let attributes: BTreeMap<String, Value> = HOST
                 .iter()
                 .map(|attribute| {
                     let value = if enabled {
@@ -86,7 +88,7 @@ impl<B: Bmc> Lockdown<B> for Gb300Lockdown {
                     (attribute.key.to_string(), Value::from(value))
                 })
                 .collect();
-            outcome = outcome.merge(patch_bios_attributes(cx, Value::Object(attributes)).await?);
+            outcome = outcome.merge(patch_bios_attributes(cx, &attributes).await?);
         }
         if matches!(
             scope,

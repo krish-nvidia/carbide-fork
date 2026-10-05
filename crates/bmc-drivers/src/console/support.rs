@@ -10,7 +10,7 @@ use bmc_platform::{
     ConsoleSpec, ConsoleState, ConsoleStatus, DriverOutcome, EscapeSeq, OpCx, PlatformError,
 };
 use nv_redfish::core::Bmc;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::resources::{self, patch_bios_attributes, selected_bios};
 
@@ -74,7 +74,7 @@ pub(super) async fn setup_bios_attributes<B: Bmc>(
     write_only: &[(&str, &str)],
 ) -> Result<DriverOutcome, PlatformError> {
     let current = bios_attributes(cx).await?;
-    let attributes: Map<String, Value> = attrs
+    let attributes: BTreeMap<String, Value> = attrs
         .iter()
         .filter(|attr| !attr.optional || current.contains_key(attr.key))
         .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
@@ -84,7 +84,7 @@ pub(super) async fn setup_bios_attributes<B: Bmc>(
                 .map(|(key, value)| ((*key).to_string(), attr_value(value))),
         )
         .collect();
-    patch_bios_attributes(cx, Value::Object(attributes)).await
+    patch_bios_attributes(cx, &attributes).await
 }
 
 pub(super) fn attr_status(

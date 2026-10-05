@@ -6,35 +6,28 @@
 use async_trait::async_trait;
 use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
-use serde_json::json;
 
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{compare, current_settings, expected, settings, stage};
+use crate::bios::support::{change_password, compare, current_settings, expected, stage};
 
-/// HPE iLO BIOS behavior: staged settings are left in place rather than
-/// reverted, and the TPM is cleared through BIOS attributes.
-pub(crate) struct IloBios;
+/// Supermicro GB300 NVL compute trays: NVIDIA tray firmware naming the UEFI
+/// administrator password `AdminPassword`, with the TPM behind an AMI BIOS
+/// attribute.
+pub(crate) struct Gb300Bios;
 
-/// The virtualization keys differ by CPU vendor, so each BIOS reports only
-/// some of them.
+const UEFI_PASSWORD_NAME: &str = "AdminPassword";
+
+/// Option ROMs stay enabled so the DPU appears among the host's network
+/// devices and boot options.
 const ATTRIBUTES: &[BiosAttribute] = &[
-    BiosAttribute::string("IntelProcVtd", "Enabled"),
-    BiosAttribute::string("ProcAmdIoVt", "Enabled"),
-    BiosAttribute::string("ProcVirtualization", "Enabled"),
-    BiosAttribute::string("Dhcpv4", "Enabled"),
-    BiosAttribute::string("HttpSupport", "Auto"),
+    BiosAttribute::string("SecurityDeviceSupport", "Enabled").required(),
+    BiosAttribute::bool("Socket0Pcie6DisableOptionROM", false),
+    BiosAttribute::bool("Socket1Pcie6DisableOptionROM", false),
 ];
 
-fn tpm_clear() -> BiosSettings {
-    settings([
-        ("Tpm2Operation", json!("Clear")),
-        ("TpmVisibility", json!("Visible")),
-    ])
-}
-
 #[async_trait]
-impl<B: Bmc> Bios<B> for IloBios
+impl<B: Bmc> Bios<B> for Gb300Bios
 where
     B::Error: ActionError,
 {
@@ -60,11 +53,12 @@ where
         Ok(compare(&current, &expected(ATTRIBUTES, &current, profile)))
     }
 
-    async fn clear_pending(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        Ok(DriverOutcome::complete())
-    }
-
-    async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage(cx, &tpm_clear()).await
+    async fn change_uefi_password(
+        &self,
+        cx: &OpCx<'_, B>,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await
     }
 }

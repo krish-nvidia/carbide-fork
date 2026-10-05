@@ -10,14 +10,14 @@ use nv_redfish::core::{ActionError, Bmc};
 use crate::bios::standard::StandardBios;
 use crate::bios::support::change_password;
 
-/// NVIDIA GB NVSwitch trays expose no BIOS attributes, but their BIOS still
-/// accepts `Bios.ChangePassword` for the `AdminPassword` slot.
-pub(crate) struct SwitchBios;
+/// Lite-On power shelves expose no BIOS attributes, but accept
+/// `Bios.ChangePassword` for the `AdminPassword` slot.
+pub(crate) struct LiteOnPowerShelfBios;
 
 const UEFI_PASSWORD_NAME: &str = "AdminPassword";
 
 #[async_trait]
-impl<B: Bmc> Bios<B> for SwitchBios
+impl<B: Bmc> Bios<B> for LiteOnPowerShelfBios
 where
     B::Error: ActionError,
 {

@@ -14,7 +14,7 @@ use crate::dpu::nvidia::support::{
     bios_host_privilege_level, bios_nic_mode, enable_bmc_rshim, nic_mode_firmware, nic_mode_value,
     no_dpu, require_nic_mode_firmware, restricted_host_privilege, set_bios_host_privilege_level,
 };
-use crate::resources::patch_bios_attributes;
+use crate::resources::{attribute_map, patch_bios_attributes};
 
 /// BlueField-2: NIC mode is a BIOS attribute and there is no host rshim control.
 pub(crate) struct BlueField2Dpu;
@@ -44,9 +44,12 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
         {
             return Ok(restricted_host_privilege());
         }
-        patch_bios_attributes(cx, json!({"NicMode": nic_mode_value(mode)}))
-            .await
-            .map_err(no_dpu)
+        patch_bios_attributes(
+            cx,
+            &attribute_map([("NicMode", json!(nic_mode_value(mode)))]),
+        )
+        .await
+        .map_err(no_dpu)
     }
 
     /// There is nothing to change, so every requested state is complete.

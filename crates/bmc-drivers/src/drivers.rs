@@ -207,19 +207,20 @@ drivers! {
         SupermicroSmcBmcControl = "supermicro-smc-bmc-control" => bmc_control::supermicro::smc::SmcBmcControl,
     }
     Bios as bios, with_bios: Bios = bios::standard::StandardBios {
-        AmiMegaRacBios = "ami-megarac-bios" => bios::ami::megarac::MegaRacBios::AMI,
+        AmiMegaRacBios = "ami-megarac-bios" => bios::ami::megarac::MegaRacBios,
         DellIdracBios = "dell-idrac-bios" => bios::dell::idrac::IdracBios,
         HpeIloBios = "hpe-ilo-bios" => bios::hpe::ilo::IloBios,
-        LenovoGb300Bios = "lenovo-gb300-bios" => bios::ami::megarac::MegaRacBios::LENOVO_GB300,
+        LenovoGb300Bios = "lenovo-gb300-bios" => bios::lenovo::gb300::Gb300Bios,
         LenovoXccBios = "lenovo-xcc-bios" => bios::lenovo::xcc::XccBios,
+        LiteOnPowerShelfBios = "liteon-power-shelf-bios" => bios::liteon::power_shelf::LiteOnPowerShelfBios,
         NvidiaBlueFieldBios = "nvidia-bluefield-bios" => bios::nvidia::bluefield::BlueFieldBios,
-        NvidiaGbx00Bios = "nvidia-gbx00-bios" => bios::nvidia::openbmc::OpenBmcBios::GBX00,
-        NvidiaGh200Bios = "nvidia-gh200-bios" => bios::nvidia::openbmc::OpenBmcBios::GH200,
+        NvidiaGbx00Bios = "nvidia-gbx00-bios" => bios::nvidia::gbx00::Gbx00Bios,
+        NvidiaGh200Bios = "nvidia-gh200-bios" => bios::nvidia::gh200::Gh200Bios,
         NvidiaSwitchBios = "nvidia-switch-bios" => bios::nvidia::switch::SwitchBios,
-        NvidiaVeraRubinBios = "nvidia-vera-rubin-bios" => bios::nvidia::openbmc::OpenBmcBios::VERA_RUBIN,
+        NvidiaVeraRubinBios = "nvidia-vera-rubin-bios" => bios::nvidia::vera_rubin::VeraRubinBios,
         NvidiaVikingBios = "nvidia-viking-bios" => bios::nvidia::viking::VikingBios,
-        SupermicroGb300Bios = "supermicro-gb300-bios" => bios::supermicro::smc::SmcBios::GB300,
-        SupermicroSmcBios = "supermicro-smc-bios" => bios::supermicro::smc::SmcBios::X13,
+        SupermicroGb300Bios = "supermicro-gb300-bios" => bios::supermicro::gb300::Gb300Bios,
+        SupermicroSmcBios = "supermicro-smc-bios" => bios::supermicro::smc::SmcBios,
     }
     BootOrder as boot_order, with_boot_order: BootOrder = boot_order::standard::StandardBootOrder {
         AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::ami::megarac::MegaRacBootOrder,

@@ -4,6 +4,8 @@
  */
 
 pub(crate) mod bluefield;
-pub(crate) mod openbmc;
+pub(crate) mod gbx00;
+pub(crate) mod gh200;
 pub(crate) mod switch;
+pub(crate) mod vera_rubin;
 pub(crate) mod viking;

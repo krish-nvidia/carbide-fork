@@ -14,7 +14,7 @@ use crate::console::support::{
     AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, optional_attr, spec_error,
 };
 use crate::dell;
-use crate::resources::{bios_update, update_bios_settings};
+use crate::resources::{attribute_map, bios_update, update_bios_settings};
 
 /// Dell iDRAC console driver.
 ///
@@ -82,15 +82,20 @@ where
             .get("SerialPortAddress")
             .and_then(Value::as_str)
             .is_some_and(|value| value.starts_with("Serial1"));
-        let mut payload = json!({
-            "SerialComm": if newer { "OnConRedirAuto" } else { "OnConRedir" },
-            "SerialPortAddress": if newer { "Serial1Com2Serial2Com1" } else { "Com1" },
-            "ExtSerialConnector": "Serial1",
-            "FailSafeBaud": "115200",
-            "ConTermType": "Vt100Vt220"
-        });
+        let (serial_comm, serial_port_address) = if newer {
+            ("OnConRedirAuto", "Serial1Com2Serial2Com1")
+        } else {
+            ("OnConRedir", "Com1")
+        };
+        let mut payload = attribute_map([
+            ("SerialComm", json!(serial_comm)),
+            ("SerialPortAddress", json!(serial_port_address)),
+            ("ExtSerialConnector", json!("Serial1")),
+            ("FailSafeBaud", json!("115200")),
+            ("ConTermType", json!("Vt100Vt220")),
+        ]);
         if attrs.contains_key("RedirAfterBoot") {
-            payload["RedirAfterBoot"] = "Enabled".into();
+            payload.insert("RedirAfterBoot".to_string(), json!("Enabled"));
         }
         dell::clear_job_queue(cx).await?;
         let manager_outcome = dell::patch_manager_attributes(
@@ -106,7 +111,7 @@ where
             None,
         )
         .await?;
-        let body = bios_update(payload)?.with_settings_apply_time(dell::on_reset());
+        let body = bios_update(&payload)?.with_settings_apply_time(dell::on_reset());
         let response = update_bios_settings(cx, &body).await?;
         let bios_outcome = dell::job_outcome(cx, response).await?;
         Ok(manager_outcome.merge(bios_outcome))

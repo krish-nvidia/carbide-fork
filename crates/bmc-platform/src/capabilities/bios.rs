@@ -51,10 +51,14 @@ pub struct BiosStatus {
     pub differences: Vec<BiosDiff>,
 }
 
-/// Current, pending, and desired BIOS configuration operations.
+/// BIOS setup for machine provisioning.
 ///
-/// Every operation defaults to delegating to [`Self::standard`], so a driver
-/// implements only the operations its platform deviates on.
+/// Each driver knows the BIOS settings its platform needs; callers pass only
+/// their own profile for the model, which takes precedence. Every operation
+/// defaults to delegating to [`Self::standard`], except
+/// [`Self::clear_uefi_password`], which goes through the driver's own
+/// [`Self::change_uefi_password`]; a driver implements only the operations its
+/// platform deviates on.
 #[async_trait]
 pub trait Bios<B: Bmc>: Send + Sync {
     /// The driver every operation this driver does not implement delegates to.
@@ -64,46 +68,32 @@ pub trait Bios<B: Bmc>: Send + Sync {
     /// operation and returns `self`.
     fn standard(&self) -> &dyn Bios<B>;
 
-    async fn current(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
-        self.standard().current(cx).await
-    }
-
-    /// The attributes staged to change on the next reset.
-    async fn pending(&self, cx: &OpCx<'_, B>) -> Result<BiosSettings, PlatformError> {
-        self.standard().pending(cx).await
-    }
-
-    /// The attributes machine setup expects: the platform's own settings,
-    /// resolved against the current BIOS, with `overlay` (the caller's
-    /// profile for this model) layered on top.
-    async fn expected(
-        &self,
-        cx: &OpCx<'_, B>,
-        overlay: &BiosSettings,
-    ) -> Result<BiosSettings, PlatformError> {
-        self.standard().expected(cx, overlay).await
-    }
-
-    async fn status(
-        &self,
-        cx: &OpCx<'_, B>,
-        expected: &BiosSettings,
-    ) -> Result<BiosStatus, PlatformError> {
-        self.standard().status(cx, expected).await
-    }
-
+    /// Stages the platform's BIOS settings and `profile` for the next reset,
+    /// including infinite boot on platforms that have the setting.
     async fn apply(
         &self,
         cx: &OpCx<'_, B>,
-        expected: &BiosSettings,
+        profile: &BiosSettings,
     ) -> Result<DriverOutcome, PlatformError> {
-        self.standard().apply(cx, expected).await
+        self.standard().apply(cx, profile).await
     }
 
+    /// Whether the platform's BIOS settings and `profile` are in effect, with
+    /// every difference.
+    async fn status(
+        &self,
+        cx: &OpCx<'_, B>,
+        profile: &BiosSettings,
+    ) -> Result<BiosStatus, PlatformError> {
+        self.standard().status(cx, profile).await
+    }
+
+    /// Restores the BIOS defaults.
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         self.standard().reset(cx).await
     }
 
+    /// Discards settings staged for the next reset.
     async fn clear_pending(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         self.standard().clear_pending(cx).await
     }
@@ -120,18 +110,23 @@ pub trait Bios<B: Bmc>: Send + Sync {
             .await
     }
 
+    /// Clears the UEFI administrator password by changing it to an empty one.
     async fn clear_uefi_password(
         &self,
         cx: &OpCx<'_, B>,
         current_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        self.standard()
-            .clear_uefi_password(cx, current_password)
-            .await
+        self.change_uefi_password(cx, current_password, "").await
     }
 
     /// Requests that the BIOS clear the TPM on the next boot.
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         self.standard().clear_tpm(cx).await
+    }
+
+    /// Whether the BIOS retries booting indefinitely; `None` when the platform
+    /// has no such setting or the BIOS does not report it.
+    async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
+        self.standard().infinite_boot_enabled(cx).await
     }
 }

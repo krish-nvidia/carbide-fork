@@ -34,42 +34,32 @@ pub(crate) async fn bios_settings<B: Bmc>(
         .ok_or(PlatformError::Unsupported)
 }
 
-/// Stages `attributes` on an already fetched pending-settings resource.
-pub(crate) async fn update_settings<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    settings: &Bios<B>,
-    attributes: &BTreeMap<String, Value>,
-) -> Result<DriverOutcome, PlatformError> {
-    let body = BiosUpdate::builder()
-        .with_attributes(attributes_update(attributes)?)
-        .build();
-    settings
-        .update(&body)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
+/// BIOS attribute values keyed by name, from `(name, value)` pairs.
+pub(crate) fn attribute_map<const N: usize>(
+    entries: [(&str, Value); N],
+) -> BTreeMap<String, Value> {
+    entries
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect()
 }
 
-/// Stages BIOS attribute values, given as a JSON object, through the
-/// pending-settings resource.
+/// Stages `attributes` through the pending-settings resource.
 pub(crate) async fn patch_bios_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
-    attributes: Value,
+    attributes: &BTreeMap<String, Value>,
 ) -> Result<DriverOutcome, PlatformError> {
     update_bios_settings(cx, &bios_update(attributes)?)
         .await
         .map(DriverOutcome::from)
 }
 
-/// The BIOS update writing `attributes`, given as a JSON object.
-pub(crate) fn bios_update(attributes: Value) -> Result<BiosUpdate, PlatformError> {
-    let Value::Object(attributes) = attributes else {
-        return Err(PlatformError::InvalidResponse {
-            message: "BIOS attributes must be a JSON object".to_string(),
-        });
-    };
+/// The BIOS update writing `attributes`.
+pub(crate) fn bios_update(
+    attributes: &BTreeMap<String, Value>,
+) -> Result<BiosUpdate, PlatformError> {
     Ok(BiosUpdate::builder()
-        .with_attributes(attributes_update(&attributes.into_iter().collect())?)
+        .with_attributes(attributes_update(attributes)?)
         .build())
 }
 
@@ -163,13 +153,11 @@ mod tests {
             ("Enabled".to_string(), json!(true)),
             ("Count".to_string(), json!(4)),
         ]);
-        let body = BiosUpdate::builder()
-            .with_attributes(attributes_update(&attributes).expect("primitive values"))
-            .build();
+        let body = bios_update(&attributes).expect("primitive values");
         assert_eq!(
             serde_json::to_value(&body).expect("body serializes"),
             json!({"Attributes": {"Mode": "Restricted", "Enabled": true, "Count": 4}})
         );
-        assert!(attributes_update(&BTreeMap::from([("List".to_string(), json!([1]))])).is_err());
+        assert!(bios_update(&attribute_map([("List", json!([1]))])).is_err());
     }
 }

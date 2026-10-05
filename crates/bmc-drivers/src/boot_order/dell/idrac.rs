@@ -11,6 +11,7 @@ use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
 use crate::dell;
+use crate::resources::attribute_map;
 
 /// Dell iDRAC boot behavior.
 ///
@@ -73,12 +74,12 @@ where
             .ok_or(PlatformError::Unsupported)?;
         dell::stage_bios_attributes(
             cx,
-            json!({
-                "HttpDev1Uri": uri,
-                "HttpDev1EnDis": "Enabled",
-                "HttpDev1DhcpEnDis": "Disabled",
-                "HttpDev1Protocol": "IPv4"
-            }),
+            &attribute_map([
+                ("HttpDev1Uri", json!(uri)),
+                ("HttpDev1EnDis", json!("Enabled")),
+                ("HttpDev1DhcpEnDis", json!("Disabled")),
+                ("HttpDev1Protocol", json!("IPv4")),
+            ]),
         )
         .await
         .map_err(read_only_attribute_is_unsupported)

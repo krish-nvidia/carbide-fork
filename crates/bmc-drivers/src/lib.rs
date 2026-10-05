@@ -7,7 +7,7 @@
 
 mod accounts;
 mod attestation;
-pub mod bios;
+mod bios;
 mod bmc_control;
 mod boot_order;
 mod console;

@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::dell::{self, ManagerApplyTime};
 use crate::lockdown::support::{signal, state_from_signals};
-use crate::resources::{bios_update, selected_bios, update_bios_settings};
+use crate::resources::{attribute_map, bios_update, selected_bios, update_bios_settings};
 
 /// Dell iDRAC lockdown driver.
 ///
@@ -38,10 +38,16 @@ where
 {
     dell::stage_bios_attributes(
         cx,
-        json!({
-            "InBandManageabilityInterface": if enabled { "Disabled" } else { "Enabled" },
-            "UefiVariableAccess": if enabled { "Controlled" } else { "Standard" }
-        }),
+        &attribute_map([
+            (
+                "InBandManageabilityInterface",
+                json!(if enabled { "Disabled" } else { "Enabled" }),
+            ),
+            (
+                "UefiVariableAccess",
+                json!(if enabled { "Controlled" } else { "Standard" }),
+            ),
+        ]),
     )
     .await
 }
@@ -49,10 +55,10 @@ where
 /// Lifts the BIOS restrictions on the next reset; some iDRACs report them
 /// read-only, which leaves nothing to lift.
 async fn unlock_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    let body = bios_update(json!({
-        "InBandManageabilityInterface": "Enabled",
-        "UefiVariableAccess": "Standard"
-    }))?
+    let body = bios_update(&attribute_map([
+        ("InBandManageabilityInterface", json!("Enabled")),
+        ("UefiVariableAccess", json!("Standard")),
+    ]))?
     .with_settings_apply_time(dell::on_reset());
     match update_bios_settings(cx, &body).await {
         Ok(response) => dell::job_outcome(cx, response).await,

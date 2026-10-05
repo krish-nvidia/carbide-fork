@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
@@ -12,7 +14,7 @@ use nv_redfish::core::Bmc;
 use nv_redfish::oem::lenovo::boot_manager::{
     BootOrderKind, LenovoBootManager, LenovoBootManagerCollection, LenovoBootManagerUpdate,
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::boot_order::standard::StandardBootOrder;
 use crate::resources::{bios_attributes, patch_bios_attributes, selected_bios};
@@ -223,12 +225,12 @@ async fn configure_bios_priority<B: Bmc>(
     if slot == 1 {
         return Ok(DriverOutcome::complete());
     }
-    let mut swapped = Map::new();
-    swapped.insert(format!("{NETWORK_PRIORITY}1"), adapter.into());
+    let mut swapped = BTreeMap::new();
+    swapped.insert(format!("{NETWORK_PRIORITY}1"), Value::from(adapter));
     if let Some(first) = priority(1) {
-        swapped.insert(format!("{NETWORK_PRIORITY}{slot}"), first.into());
+        swapped.insert(format!("{NETWORK_PRIORITY}{slot}"), Value::from(first));
     }
-    patch_bios_attributes(cx, Value::Object(swapped)).await
+    patch_bios_attributes(cx, &swapped).await
 }
 
 /// The system boot order with the `Network` group first, or `None` when it

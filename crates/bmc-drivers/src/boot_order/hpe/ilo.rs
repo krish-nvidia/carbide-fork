@@ -11,7 +11,7 @@ use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
-use crate::resources::{patch_bios_attributes, selected_bios};
+use crate::resources::{attribute_map, patch_bios_attributes, selected_bios};
 
 /// HPE iLO boot behavior.
 ///
@@ -34,7 +34,10 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
         if let Some(uri) = override_setting.http_boot_uri.as_deref() {
             return patch_bios_attributes(
                 cx,
-                json!({"UrlBootFile": uri, "PreBootNetwork": "IPv4"}),
+                &attribute_map([
+                    ("UrlBootFile", json!(uri)),
+                    ("PreBootNetwork", json!("IPv4")),
+                ]),
             )
             .await;
         }

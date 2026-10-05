@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::dell;
 use crate::power::standard::{self, StandardPower};
-use crate::resources::selected_bios;
+use crate::resources::{attribute_map, selected_bios};
 
 /// Dell iDRAC host-power behavior.
 ///
@@ -32,8 +32,11 @@ where
     if uefi_variable_access.as_deref() == Some("Controlled") {
         return Err(PlatformError::LockedDown);
     }
-    let staged =
-        dell::stage_bios_attributes(cx, json!({"PowerCycleRequest": "FullPowerCycle"})).await?;
+    let staged = dell::stage_bios_attributes(
+        cx,
+        &attribute_map([("PowerCycleRequest", json!("FullPowerCycle"))]),
+    )
+    .await?;
     let follow_up = match standard::state(cx).await? {
         PowerState::Off => ResetType::On,
         _ => ResetType::GracefulRestart,

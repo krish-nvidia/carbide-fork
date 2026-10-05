@@ -16,7 +16,7 @@ use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
 use serde_json::{Value, json};
 use version_compare::Cmp;
 
-use crate::resources::{patch_bios_attributes, selected_bios};
+use crate::resources::{attribute_map, patch_bios_attributes, selected_bios};
 
 /// NIC mode is readable and switchable through Redfish from this BMC firmware onward.
 const NIC_MODE_MINIMUM_FIRMWARE: &str = "BF-23.10-5";
@@ -260,9 +260,13 @@ pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
         HostPrivilegeLevel::Privileged => "Privileged",
         HostPrivilegeLevel::Restricted => "Restricted",
     };
-    match patch_bios_attributes(cx, json!({HOST_PRIVILEGE_LEVEL: value})).await {
+    match patch_bios_attributes(cx, &attribute_map([(HOST_PRIVILEGE_LEVEL, json!(value))])).await {
         Err(PlatformError::Bmc { message, .. }) if message.contains(HOST_PRIVILEGE_LEVEL) => {
-            patch_bios_attributes(cx, json!({HOST_PRIVILEGE_LEVEL_WITH_SPACES: value})).await
+            patch_bios_attributes(
+                cx,
+                &attribute_map([(HOST_PRIVILEGE_LEVEL_WITH_SPACES, json!(value))]),
+            )
+            .await
         }
         result => result.map_err(no_dpu),
     }
