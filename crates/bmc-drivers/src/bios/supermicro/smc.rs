@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::{Value, json};
 
@@ -84,6 +86,7 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
         stage(cx, &with_profile(expected_settings(&current)?, profile)).await
@@ -93,6 +96,7 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let current = current_settings(cx).await?;
         Ok(compare(

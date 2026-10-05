@@ -4,7 +4,9 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
@@ -79,6 +81,7 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
         stage(cx, &expected_settings(&current, profile)).await
@@ -88,6 +91,7 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let current = current_settings(cx).await?;
         Ok(compare(&current, &expected_settings(&current, profile)))
@@ -187,7 +191,7 @@ mod tests {
             let bmc = bluefield(case.reported).await;
             let cx = bmc.cx().await;
             let status = BlueFieldBios
-                .status(&cx, &BiosSettings::default())
+                .status(&cx, &BiosSettings::default(), None)
                 .await
                 .expect("status reads");
             assert_eq!(

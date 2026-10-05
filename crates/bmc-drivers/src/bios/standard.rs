@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::Value;
 
@@ -35,6 +37,7 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         stage(cx, profile).await
     }
@@ -43,6 +46,7 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         Ok(compare(&current_settings(cx).await?, profile))
     }
@@ -153,7 +157,10 @@ mod tests {
         }}))
         .expect("profile");
 
-        let status = StandardBios.status(&cx, &profile).await.expect("status");
+        let status = StandardBios
+            .status(&cx, &profile, None)
+            .await
+            .expect("status");
         assert_eq!(
             status
                 .differences
@@ -163,7 +170,7 @@ mod tests {
             ["Changed", "Missing", "Staged"]
         );
         assert_eq!(
-            StandardBios.apply(&cx, &profile).await,
+            StandardBios.apply(&cx, &profile, None).await,
             Ok(DriverOutcome::complete())
         );
         let writes = bmc.writes();

@@ -12,3 +12,4 @@ pub(crate) mod lenovo;
 pub(crate) mod nvidia;
 pub(crate) mod standard;
 pub(crate) mod supermicro;
+pub(crate) mod support;

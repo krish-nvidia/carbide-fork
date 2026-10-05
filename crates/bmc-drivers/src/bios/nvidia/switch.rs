@@ -4,7 +4,9 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::standard::StandardBios;
@@ -29,6 +31,7 @@ where
         &self,
         _cx: &OpCx<'_, B>,
         _profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         Err(PlatformError::Unsupported)
     }
@@ -37,6 +40,7 @@ where
         &self,
         _cx: &OpCx<'_, B>,
         _profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         Err(PlatformError::Unsupported)
     }

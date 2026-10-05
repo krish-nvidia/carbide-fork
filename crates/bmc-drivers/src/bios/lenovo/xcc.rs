@@ -4,15 +4,19 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    Bios, BiosDiff, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx,
+    PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
 use crate::bios::support::{
     attribute_holds, change_password, compare, current_settings, expected, settings, stage,
 };
+use crate::boot_order::lenovo::{NETWORK, first_group, network_group_first};
 
 /// Lenovo XCC names the UEFI administrator password `UefiAdminPassword`.
 pub(crate) struct XccBios;
@@ -79,6 +83,9 @@ fn expected_settings(
     Ok(expected(ATTRIBUTES, current, profile))
 }
 
+/// The status difference reporting which device group boots first.
+const FIRST_BOOT_GROUP: &str = "boot_first_type";
+
 #[async_trait]
 impl<B: Bmc> Bios<B> for XccBios
 where
@@ -88,22 +95,37 @@ where
         &StandardBios
     }
 
+    /// Also puts the network device group first so boot order setup, after
+    /// the reset, finds the adapters it orders.
     async fn apply(
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
-        stage(cx, &expected_settings(&current, profile)?).await
+        let settings = stage(cx, &expected_settings(&current, profile)?).await?;
+        Ok(settings.merge(network_group_first(cx).await?))
     }
 
     async fn status(
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let current = current_settings(cx).await?;
-        Ok(compare(&current, &expected_settings(&current, profile)?))
+        let mut status = compare(&current, &expected_settings(&current, profile)?);
+        let group = first_group(cx).await?;
+        if group.as_deref() != Some(NETWORK) {
+            status.differences.push(BiosDiff {
+                key: FIRST_BOOT_GROUP.to_string(),
+                expected: json!(NETWORK),
+                actual: group.map(Value::from),
+            });
+            status.is_applied = false;
+        }
+        Ok(status)
     }
 
     async fn change_uefi_password(

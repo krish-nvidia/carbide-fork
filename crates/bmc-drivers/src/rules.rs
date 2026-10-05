@@ -76,7 +76,7 @@ fn built_ins() -> Vec<Rule> {
             SupermicroSmcBmcControl,
             SupermicroSmcBios,
             SupermicroSmcFirmware,
-            SupermicroX13BootOrder,
+            SupermicroSmcBootOrder,
             SupermicroSmcLockdown,
             SupermicroBmcConsole,
         ]),
@@ -147,7 +147,7 @@ fn built_ins() -> Vec<Rule> {
     // Wiwynn's GB200 NVL trays run NVIDIA OpenBMC under their own vendor.
     rules.push(
         Rule::new("nvidia-gbx00-wiwynn", [Match::vendor("Wiwynn")]).drivers([
-            NvidiaOpenBmcBootOrder,
+            NvidiaGbx00BootOrder,
             NvidiaOpenBmcLockdown,
             NvidiaOpenBmcPower,
             NvidiaOpenBmcFirmware,
@@ -167,7 +167,7 @@ fn built_ins() -> Vec<Rule> {
             [Match::product(&["GB BMC", "GB200 NVL", "GB NVL"])],
         )
         .drivers([
-            NvidiaOpenBmcBootOrder,
+            NvidiaGbx00BootOrder,
             NvidiaOpenBmcLockdown,
             NvidiaOpenBmcPower,
             NvidiaOpenBmcFirmware,
@@ -181,7 +181,7 @@ fn built_ins() -> Vec<Rule> {
 
     rules.push(
         Rule::new("nvidia-vera", [Match::product(&["VR NVL72"])]).drivers([
-            NvidiaOpenBmcBootOrder,
+            NvidiaVeraRubinBootOrder,
             NvidiaOpenBmcLockdown,
             NvidiaOpenBmcPower,
             NvidiaOpenBmcFirmware,
@@ -195,7 +195,7 @@ fn built_ins() -> Vec<Rule> {
     rules.push(
         Rule::new("nvidia-gh", [Match::product(&["P3809"])])
             .drivers([
-                NvidiaOpenBmcBootOrder,
+                NvidiaGh200BootOrder,
                 NvidiaOpenBmcLockdown,
                 NvidiaGh200Bios,
                 NvidiaGh200Power,
@@ -250,7 +250,7 @@ fn built_ins() -> Vec<Rule> {
             ],
         )
         .drivers([
-            NvidiaOpenBmcBootOrder,
+            NvidiaSwitchBootOrder,
             NvidiaSwitchAccounts,
             NvidiaSwitchBios,
             NoopLockdown,
@@ -261,6 +261,19 @@ fn built_ins() -> Vec<Rule> {
             Capability::Firmware,
             Capability::Attestation,
         ]),
+    );
+
+    // XCC 3 has no OEM boot settings; it orders network adapters through BIOS
+    // attributes.
+    rules.push(
+        Rule::new(
+            "lenovo-xcc3",
+            [
+                Match::vendor("Lenovo"),
+                Match::exact(IdentityField::ManagerModel, "Lenovo XClarity Controller 3"),
+            ],
+        )
+        .drivers([LenovoXcc3BootOrder]),
     );
 
     // SR650 V4 cuts DPU power on a Redfish restart, so the host restarts over IPMI.
@@ -313,6 +326,7 @@ fn built_ins() -> Vec<Rule> {
         )
         .drivers([
             LenovoGb300Bios,
+            LenovoGb300BootOrder,
             LenovoGb300Lockdown,
             LenovoGb300Console,
             NvidiaHgxAttestation,

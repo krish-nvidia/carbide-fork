@@ -22,7 +22,7 @@ use nv_redfish::core::Bmc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{DriverOutcome, OpCx, PlatformError};
+use crate::{BootInterfaceSelector, DriverOutcome, OpCx, PlatformError};
 
 /// BIOS attribute names and values.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -70,22 +70,29 @@ pub trait Bios<B: Bmc>: Send + Sync {
 
     /// Stages the platform's BIOS settings and `profile` for the next reset,
     /// including infinite boot on platforms that have the setting.
+    ///
+    /// `boot_interface` is the host interface boot order setup will put first,
+    /// or `None` on a host without one; platforms whose boot order reads BIOS
+    /// settings stage them here so the reset that applies them precedes boot
+    /// order setup.
     async fn apply(
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        self.standard().apply(cx, profile).await
+        self.standard().apply(cx, profile, boot_interface).await
     }
 
-    /// Whether the platform's BIOS settings and `profile` are in effect, with
-    /// every difference.
+    /// Whether the platform's BIOS settings and `profile` are in effect for
+    /// `boot_interface`, with every difference.
     async fn status(
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
-        self.standard().status(cx, profile).await
+        self.standard().status(cx, profile, boot_interface).await
     }
 
     /// Restores the BIOS defaults.

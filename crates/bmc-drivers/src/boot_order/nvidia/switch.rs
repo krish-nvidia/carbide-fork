@@ -3,8 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! Standard Redfish boot control.
-
 use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
@@ -12,18 +10,20 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use crate::boot_order::support::{system_uri, write_override};
+use super::{boots, device_options_first, settings_override};
+use crate::boot_order::standard::StandardBootOrder;
+use crate::boot_order::support::persistent_device;
 
-/// DMTF boot override on the live system resource.
+/// NVIDIA NVSwitch tray boot behavior.
 ///
-/// Ordering the boot interface first depends on how each platform names its
-/// boot options, so only vendor drivers configure or check it.
-pub(crate) struct StandardBootOrder;
+/// Overrides and the boot order go through the system's `Settings` object.
+/// A switch tray has no host interface to put first.
+pub(crate) struct SwitchBootOrder;
 
 #[async_trait]
-impl<B: Bmc> BootOrder<B> for StandardBootOrder {
+impl<B: Bmc> BootOrder<B> for SwitchBootOrder {
     fn standard(&self) -> &dyn BootOrder<B> {
-        self
+        &StandardBootOrder
     }
 
     async fn status(
@@ -39,8 +39,10 @@ impl<B: Bmc> BootOrder<B> for StandardBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let uri = system_uri(cx, None).await?;
-        write_override(cx, &uri, override_setting, false, None).await
+        match persistent_device(override_setting) {
+            Some(device) => device_options_first(cx, |option| boots(option, device)).await,
+            None => settings_override(cx, override_setting, false).await,
+        }
     }
 
     async fn configure(

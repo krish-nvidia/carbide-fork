@@ -226,11 +226,16 @@ drivers! {
         AmiMegaRacBootOrder = "ami-megarac-boot-order" => boot_order::ami::megarac::MegaRacBootOrder,
         DellIdracBootOrder = "dell-idrac-boot-order" => boot_order::dell::idrac::IdracBootOrder,
         HpeIloBootOrder = "hpe-ilo-boot-order" => boot_order::hpe::ilo::IloBootOrder,
+        LenovoGb300BootOrder = "lenovo-gb300-boot-order" => boot_order::lenovo::gb300::Gb300BootOrder,
         LenovoXccBootOrder = "lenovo-xcc-boot-order" => boot_order::lenovo::xcc::XccBootOrder,
+        LenovoXcc3BootOrder = "lenovo-xcc3-boot-order" => boot_order::lenovo::xcc3::Xcc3BootOrder,
         NvidiaBlueFieldBootOrder = "nvidia-bluefield-boot-order" => boot_order::nvidia::bluefield::BlueFieldBootOrder,
-        NvidiaOpenBmcBootOrder = "nvidia-openbmc-boot-order" => boot_order::nvidia::openbmc::OpenBmcBootOrder,
+        NvidiaGbx00BootOrder = "nvidia-gbx00-boot-order" => boot_order::nvidia::gbx00::Gbx00BootOrder,
+        NvidiaGh200BootOrder = "nvidia-gh200-boot-order" => boot_order::nvidia::gh200::Gh200BootOrder,
+        NvidiaSwitchBootOrder = "nvidia-switch-boot-order" => boot_order::nvidia::switch::SwitchBootOrder,
+        NvidiaVeraRubinBootOrder = "nvidia-vera-rubin-boot-order" => boot_order::nvidia::vera_rubin::VeraRubinBootOrder,
         NvidiaVikingBootOrder = "nvidia-viking-boot-order" => boot_order::nvidia::viking::VikingBootOrder,
-        SupermicroX13BootOrder = "supermicro-x13-boot-order" => boot_order::supermicro::x13::X13BootOrder,
+        SupermicroSmcBootOrder = "supermicro-smc-boot-order" => boot_order::supermicro::smc::SmcBootOrder,
     }
     SecureBoot as secure_boot, with_secure_boot: SecureBoot = secure_boot::standard::StandardSecureBoot {
     }

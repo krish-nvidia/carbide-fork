@@ -31,6 +31,7 @@ nv-redfish = { features = [
     "manager-network-protocol",
     "managers",
     "network-adapters",
+    "network-device-functions",
     "oem-ami",
     "oem-delta",
     "oem-dell-attributes",

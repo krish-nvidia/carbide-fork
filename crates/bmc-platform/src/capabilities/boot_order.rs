@@ -35,14 +35,15 @@ pub enum BootInterfaceSelector {
     },
 }
 
-/// NICo's normalized boot-order policy status.
+/// Whether the boot order is configured for the selected interface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BootOrderStatus {
-    /// The selected interface's boot option is first in the boot order.
+    /// The selected interface's HTTP boot option is first in the boot order.
     pub boot_interface_first: bool,
-    /// At least one disk boot option remains enabled.
+    /// The disks remain in the boot order; true on platforms that cannot drop them.
     pub disk_enabled: bool,
-    /// Every network boot option other than the selected one is disabled.
+    /// The other network boot options are disabled; true on platforms whose
+    /// boot order setup leaves them alone.
     pub other_network_options_disabled: bool,
 }
 
@@ -66,7 +67,7 @@ pub trait BootOrder<B: Bmc>: Send + Sync {
     /// operation and returns `self`.
     fn standard(&self) -> &dyn BootOrder<B>;
 
-    /// Evaluates the complete boot-order policy for the selected host interface.
+    /// Whether the selected host interface boots first.
     ///
     /// The interface may be a DPU, a DPU in NIC mode, or a conventional NIC.
     async fn status(
@@ -77,6 +78,12 @@ pub trait BootOrder<B: Bmc>: Send + Sync {
         self.standard().status(cx, boot_interface_selector).await
     }
 
+    /// Boots the override target once (`Once`) or from now on (`Continuous`).
+    ///
+    /// A `Continuous` network, HTTP or disk target with no mode or HTTP boot
+    /// URI moves that device first in the persistent boot order on platforms
+    /// that order boot devices rather than honor a continuous override. An
+    /// HTTP boot URI pins where a UEFI HTTP boot loads from.
     async fn set_override(
         &self,
         cx: &OpCx<'_, B>,
@@ -85,7 +92,8 @@ pub trait BootOrder<B: Bmc>: Send + Sync {
         self.standard().set_override(cx, override_setting).await
     }
 
-    /// Applies the complete boot-order policy for the selected host interface.
+    /// Moves the selected host interface's HTTP boot option first in the
+    /// persistent boot order.
     async fn configure(
         &self,
         cx: &OpCx<'_, B>,

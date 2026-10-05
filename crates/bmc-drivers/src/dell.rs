@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use bmc_platform::{DriverOutcome, OpCx, OperationReference, PlatformError, VendorJobId};
+use bmc_platform::{
+    BootInterfaceSelector, DriverOutcome, OpCx, OperationReference, PlatformError, VendorJobId,
+};
 use nv_redfish::core::{ActionError, Bmc, ModificationResponse, RedfishSettings};
 use nv_redfish::oem::dell::DellManager;
 use nv_redfish::oem::dell::attributes::{AttributesUpdate, DellAttributes, DellAttributesUpdate};
@@ -20,7 +22,9 @@ use nv_redfish::oem::dell::schema::{
     ActionAnnotations as DellActionAnnotations,
     SettingsApplyTimeUpdate as DellSettingsApplyTimeUpdate,
 };
+use nv_redfish::oem::oem_value;
 use nv_redfish::schema::SettingsApplyTimeUpdate;
+use nv_redfish::schema::network_device_function::NetworkDeviceFunction as NetworkDeviceFunctionSchema;
 use nv_redfish::schema::settings::ApplyTime;
 use serde_json::Value;
 
@@ -247,6 +251,113 @@ pub(crate) fn is_read_only_attribute(error: &PlatformError) -> bool {
     )
 }
 
+/// The `Oem/Dell/DellNIC` object of the network device function `selector`
+/// names, found under the chassis that shares the selected system's id.
+///
+/// A MAC matches the function's `Ethernet.MACAddress`; an interface id
+/// matches the function's id or a partition of it (`NIC.Slot.7-1` for
+/// `NIC.Slot.7-1-1`), which still resolves when the MAC has been stripped.
+pub(crate) async fn nic<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    selector: &BootInterfaceSelector,
+) -> Result<serde_json::Map<String, Value>, PlatformError> {
+    let system_id = cx.system().await?.raw().id.clone();
+    let chassis = cx
+        .service_root()
+        .chassis()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .members()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .into_iter()
+        .find(|chassis| chassis.raw().id == system_id)
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: format!("no Chassis {system_id}"),
+        })?;
+    let adapters = chassis
+        .network_adapters()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: format!("Chassis {system_id} reports no NetworkAdapters"),
+        })?;
+    for adapter in adapters {
+        let Some(functions) = adapter
+            .network_device_functions()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?
+        else {
+            continue;
+        };
+        let functions = functions
+            .members()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
+        if let Some(function) = functions
+            .iter()
+            .map(|function| function.raw())
+            .find(|function| function_matches(function, selector))
+        {
+            return function
+                .oem
+                .as_ref()
+                .and_then(|oem| oem_value(oem, "Dell"))
+                .and_then(|dell| dell.get("DellNIC"))
+                .and_then(Value::as_object)
+                .cloned()
+                .ok_or_else(|| PlatformError::InvalidResponse {
+                    message: format!("network device function {} reports no DellNIC", function.id),
+                });
+        }
+    }
+    Err(PlatformError::InvalidResponse {
+        message: format!("no network device function matches {selector:?}"),
+    })
+}
+
+fn function_matches(
+    function: &NetworkDeviceFunctionSchema,
+    selector: &BootInterfaceSelector,
+) -> bool {
+    match selector {
+        BootInterfaceSelector::Mac(mac) => function
+            .ethernet
+            .as_ref()
+            .and_then(|ethernet| ethernet.mac_address.as_ref().and_then(Option::as_ref))
+            .is_some_and(|reported| reported.eq_ignore_ascii_case(&mac.to_string())),
+        BootInterfaceSelector::InterfaceId(interface_id)
+        | BootInterfaceSelector::Pair { interface_id, .. } => {
+            *interface_id == function.id || interface_id.starts_with(&format!("{}-", function.id))
+        }
+    }
+}
+
+/// The NIC slot iDRAC's `HttpDev1Interface` names: the selector's interface
+/// id, the slot of the NIC with its MAC, or empty on a host without a boot
+/// interface.
+pub(crate) async fn nic_slot<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    selector: Option<&BootInterfaceSelector>,
+) -> Result<String, PlatformError> {
+    match selector {
+        None => Ok(String::new()),
+        Some(
+            BootInterfaceSelector::InterfaceId(interface_id)
+            | BootInterfaceSelector::Pair { interface_id, .. },
+        ) => Ok(interface_id.clone()),
+        Some(selector) => nic(cx, selector)
+            .await?
+            .get("Id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| PlatformError::InvalidResponse {
+                message: "DellNIC reports no Id".to_string(),
+            }),
+    }
+}
+
 /// The values of `names` the selected Manager's iDRAC attributes report;
 /// unreported attributes are omitted and null ones are `Value::Null`.
 pub(crate) async fn manager_attribute_values<B: Bmc>(
@@ -307,6 +418,29 @@ mod tests {
 
     use super::*;
     use crate::test_support::{Fixture, body};
+
+    #[test]
+    fn a_function_matches_by_mac_or_by_interface_id_and_its_partitions() {
+        let function: NetworkDeviceFunctionSchema = serde_json::from_value(json!({
+            "@odata.id": "/redfish/v1/Chassis/System.Embedded.1/NetworkAdapters/NIC.Slot.7/NetworkDeviceFunctions/NIC.Slot.7-1",
+            "Id": "NIC.Slot.7-1",
+            "Name": "NIC.Slot.7-1",
+            "Ethernet": {"MACAddress": "b8:e9:24:17:6d:72"},
+        }))
+        .expect("network device function");
+        let interface = |id: &str| BootInterfaceSelector::InterfaceId(id.to_string());
+        let mac = |mac: &str| BootInterfaceSelector::Mac(mac.parse().expect("MAC"));
+        let cases = [
+            ("same MAC in another case", mac("B8:E9:24:17:6D:72"), true),
+            ("other MAC", mac("B8:E9:24:17:6D:73"), false),
+            ("the function itself", interface("NIC.Slot.7-1"), true),
+            ("one of its partitions", interface("NIC.Slot.7-1-1"), true),
+            ("a longer slot number", interface("NIC.Slot.7-10"), false),
+        ];
+        for (name, selector, expected) in cases {
+            assert_eq!(function_matches(&function, &selector), expected, "{name}");
+        }
+    }
 
     fn task(location: &str) -> ModificationResponse<Value> {
         ModificationResponse::Task(AsyncTask {

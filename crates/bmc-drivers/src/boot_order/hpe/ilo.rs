@@ -4,13 +4,19 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{BootInterfaceSelector, BootOrder, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
+};
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::hpe::server_boot_settings::HpeServerBootSettingsUpdate;
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
+use crate::boot_order::support::{
+    boot_interface_mac, boot_options, boot_order, display_name, reference, system_uri,
+    write_boot_order,
+};
 use crate::resources::{attribute_map, patch_bios_attributes, selected_bios};
 
 /// HPE iLO boot behavior.
@@ -49,14 +55,38 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
         set_persistent_boot_first(cx, category).await
     }
 
-    /// iLO refuses boot-order changes while the host is in POST; that refusal
-    /// is not an error, and the next status read shows whether the order holds.
+    async fn status(
+        &self,
+        cx: &OpCx<'_, B>,
+        selector: &BootInterfaceSelector,
+    ) -> Result<BootOrderStatus, PlatformError> {
+        let http_option = http_option(cx, selector).await?;
+        let order = boot_order(cx.system().await?);
+        Ok(BootOrderStatus {
+            boot_interface_first: order.first() == Some(&http_option),
+            disk_enabled: true,
+            other_network_options_disabled: true,
+        })
+    }
+
+    /// Swaps the HTTP option into the first slot of the live boot order. iLO
+    /// refuses boot-order changes while the host is in POST; that refusal is
+    /// not an error, and the next status read shows whether the order holds.
     async fn configure(
         &self,
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        match self.standard().configure(cx, selector).await {
+        let http_option = http_option(cx, selector).await?;
+        let mut order = boot_order(cx.system().await?);
+        let position = order
+            .iter()
+            .position(|entry| *entry == http_option)
+            .ok_or_else(|| PlatformError::MissingBootOption {
+                description: format!("BootOrder entry {http_option}"),
+            })?;
+        order.swap(0, position);
+        match write_boot_order(cx, &system_uri(cx, None).await?, order).await {
             Err(PlatformError::Bmc {
                 message_id,
                 message,
@@ -74,6 +104,26 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
 }
 
 const UNABLE_TO_MODIFY_DURING_POST: &str = "UnableToModifyDuringSystemPOST";
+
+/// The reference of the selected interface's HTTP IPv4 boot option: the
+/// first whose display name holds `HTTP`, `IPV4` and the MAC.
+async fn http_option<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    selector: &BootInterfaceSelector,
+) -> Result<String, PlatformError> {
+    let mac = boot_interface_mac(cx, selector).await?.to_uppercase();
+    boot_options(cx)
+        .await?
+        .iter()
+        .find(|option| {
+            let name = display_name(option).to_uppercase();
+            name.contains("HTTP") && name.contains("IPV4") && name.contains(&mac)
+        })
+        .map(|option| reference(option).to_string())
+        .ok_or(PlatformError::MissingBootOption {
+            description: format!("HTTP IPv4 {mac}"),
+        })
+}
 
 /// Moves every persistent boot entry naming `category` to the front.
 async fn set_persistent_boot_first<B: Bmc>(

@@ -3,71 +3,27 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
 };
-use nv_redfish::computer_system::BootOptionReference;
 use nv_redfish::core::Bmc;
-use nv_redfish::oem::lenovo::boot_manager::{
-    BootOrderKind, LenovoBootManager, LenovoBootManagerCollection, LenovoBootManagerUpdate,
-};
-use serde_json::Value;
+use nv_redfish::oem::lenovo::boot_manager::{BootOrderKind, LenovoBootManagerCollection};
+use nv_redfish::schema::computer_system::BootUpdate;
 
+use super::{NETWORK, boot_settings, first_group, oem_boot_order, set_next};
 use crate::boot_order::standard::StandardBootOrder;
-use crate::resources::{bios_attributes, patch_bios_attributes, selected_bios};
+use crate::boot_order::support::boot_interface_mac;
 
-/// Lenovo XCC boot behavior.
+/// Lenovo XCC 2 boot behavior.
 ///
-/// XCC groups boot options by device class: the system boot order puts the
-/// `Network` group first, and the adapter is ordered inside the OEM
-/// `NetworkBootOrder`, or through the `BootOrder_NetworkPriority_*` BIOS
-/// attributes on firmware without the OEM boot settings. XCC can drop
-/// `Hard Disk` from its general order, leaving the installed OS unbootable, so
-/// configuring restores it.
+/// BIOS setup puts the `Network` group first; boot order setup puts the
+/// adapter first within the OEM `NetworkBootOrder`. XCC can drop `Hard Disk`
+/// from its OEM general order, leaving the installed OS unbootable, so
+/// configuring restores it and status requires it.
 pub(crate) struct XccBootOrder;
 
-const NETWORK: &str = "Network";
-const HARD_DISK: &str = "Hard Disk";
-const NETWORK_PRIORITY: &str = "BootOrder_NetworkPriority_";
-/// The network priority attributes XCC exposes.
-const NETWORK_PRIORITY_SLOTS: std::ops::RangeInclusive<u32> = 1..=10;
-
-/// The selected interface's MAC, upper-case with colons as XCC spells it.
-async fn boot_interface_mac<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    selector: &BootInterfaceSelector,
-) -> Result<String, PlatformError> {
-    let interface_id = match selector {
-        BootInterfaceSelector::Mac(mac)
-        | BootInterfaceSelector::Pair {
-            mac_address: mac, ..
-        } => {
-            return Ok(mac.to_string().to_ascii_uppercase());
-        }
-        BootInterfaceSelector::InterfaceId(interface_id) => interface_id,
-    };
-    let interfaces = cx
-        .system()
-        .await?
-        .ethernet_interfaces()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?;
-    interfaces
-        .iter()
-        .find(|interface| interface.raw().id == *interface_id)
-        .and_then(|interface| interface.mac_address())
-        .map(|mac| mac.as_str().to_ascii_uppercase())
-        .ok_or_else(|| PlatformError::MissingBootOption {
-            description: format!("MAC address of interface {interface_id}"),
-        })
-}
+const GENERAL_HARD_DISK: &str = "Hard Disk";
 
 /// Whether an OEM network boot entry is the HTTP IPv4 option of the adapter
 /// with `mac`, as in `UEFI: SLOT2 (31/0/0) HTTP IPv4  Nvidia Network Adapter - A0:88:C2:08:53:C4`.
@@ -78,191 +34,28 @@ fn names_adapter(entry: &str, mac: &str) -> bool {
         .any(|prefix| {
             entry
                 .find(prefix)
-                .is_some_and(|start| entry[start..].to_ascii_uppercase().contains(&suffix))
+                .is_some_and(|start| entry[start + prefix.len()..].contains(&suffix))
         })
 }
 
-/// Whether a network priority attribute value is the HTTP IPv4 option of the
-/// adapter with `mac`, as in `Slot5Port1HTTPv4NvidiaNetworkAdapter_B8_E9_24_18_42_52`.
-fn priority_names_adapter(value: &str, mac: &str) -> bool {
-    value.contains("HTTPv4") && value.to_ascii_uppercase().contains(&mac.replace(':', "_"))
-}
-
-async fn boot_settings<B: Bmc>(
+async fn settings<B: Bmc>(
     cx: &OpCx<'_, B>,
-) -> Result<Option<LenovoBootManagerCollection<B>>, PlatformError> {
-    cx.system()
-        .await?
-        .oem_lenovo()
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .boot_settings()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))
+) -> Result<LenovoBootManagerCollection<B>, PlatformError> {
+    boot_settings(cx).await?.ok_or(PlatformError::Unsupported)
 }
 
-async fn boot_order<B: Bmc>(
+/// Inserts `Hard Disk` second in the OEM general order when it is missing.
+async fn restore_hard_disk<B: Bmc>(
     cx: &OpCx<'_, B>,
     settings: &LenovoBootManagerCollection<B>,
-    kind: BootOrderKind,
-) -> Result<LenovoBootManager<B>, PlatformError> {
-    settings
-        .boot_order(kind)
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("XCC boot settings do not list the {kind:?} boot order"),
-        })
-}
-
-async fn set_next<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    order: &LenovoBootManager<B>,
-    next: Vec<String>,
 ) -> Result<DriverOutcome, PlatformError> {
-    order
-        .update(
-            &LenovoBootManagerUpdate::builder()
-                .with_boot_order_next(next)
-                .build(),
-        )
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// `next` with `entry` first: swapped with the first entry when listed,
-/// otherwise inserted at the front.
-fn with_first(mut next: Vec<String>, entry: &str) -> Vec<String> {
-    match next.iter().position(|candidate| candidate == entry) {
-        Some(position) => next.swap(0, position),
-        None => next.insert(0, entry.to_string()),
-    }
-    next
-}
-
-/// The adapter's network boot entry and the entry currently first, from the OEM
-/// network order or, without OEM boot settings, the BIOS network priorities.
-async fn expected_and_first_network_option<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    settings: Option<&LenovoBootManagerCollection<B>>,
-    mac: &str,
-) -> Result<(Option<String>, Option<String>), PlatformError> {
-    if let Some(settings) = settings {
-        let network = boot_order(cx, settings, BootOrderKind::Network).await?;
-        let expected = network
-            .supported()
-            .unwrap_or_default()
-            .iter()
-            .find(|entry| names_adapter(entry, mac))
-            .cloned();
-        let first = network.next().unwrap_or_default().first().cloned();
-        return Ok((expected, first));
-    }
-    let attributes = bios_attributes(&selected_bios(cx).await?.raw());
-    let priority = |slot: u32| {
-        attributes
-            .get(&format!("{NETWORK_PRIORITY}{slot}"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    };
-    let expected = NETWORK_PRIORITY_SLOTS
-        .filter_map(priority)
-        .find(|value| priority_names_adapter(value, mac));
-    Ok((expected, priority(1)))
-}
-
-/// Puts the adapter's entry first in the OEM network order, restoring
-/// `Hard Disk` in the general order first.
-async fn configure_oem<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    settings: &LenovoBootManagerCollection<B>,
-    mac: &str,
-) -> Result<DriverOutcome, PlatformError> {
-    let mut outcome = DriverOutcome::complete();
-    let general = boot_order(cx, settings, BootOrderKind::General).await?;
-    let general_next = general.next().unwrap_or_default().to_vec();
-    if !general_next.iter().any(|entry| entry == HARD_DISK) {
-        let mut next = general_next;
-        next.insert(next.len().min(1), HARD_DISK.to_string());
-        outcome = outcome.merge(set_next(cx, &general, next).await?);
-    }
-
-    let network = boot_order(cx, settings, BootOrderKind::Network).await?;
-    let adapter = network
-        .supported()
-        .unwrap_or_default()
-        .iter()
-        .find(|entry| names_adapter(entry, mac))
-        .cloned()
-        .ok_or_else(|| PlatformError::MissingBootOption {
-            description: format!("XCC NetworkBootOrder HTTP IPv4 option for {mac}"),
-        })?;
-    let network_next = network.next().unwrap_or_default().to_vec();
-    if network_next.first() != Some(&adapter) {
-        outcome = outcome.merge(set_next(cx, &network, with_first(network_next, &adapter)).await?);
-    }
-    Ok(outcome)
-}
-
-/// Swaps the adapter's BIOS network priority into the first slot.
-async fn configure_bios_priority<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    mac: &str,
-) -> Result<DriverOutcome, PlatformError> {
-    let attributes = bios_attributes(&selected_bios(cx).await?.raw());
-    let priority = |slot: u32| {
-        attributes
-            .get(&format!("{NETWORK_PRIORITY}{slot}"))
-            .and_then(Value::as_str)
-    };
-    let (slot, adapter) = NETWORK_PRIORITY_SLOTS
-        .filter_map(|slot| priority(slot).map(|value| (slot, value)))
-        .find(|(_, value)| priority_names_adapter(value, mac))
-        .ok_or_else(|| PlatformError::MissingBootOption {
-            description: format!("{NETWORK_PRIORITY}* HTTPv4 option for {mac}"),
-        })?;
-    if slot == 1 {
+    let general = oem_boot_order(cx, settings, BootOrderKind::General).await?;
+    let mut next = general.next().unwrap_or_default().to_vec();
+    if next.iter().any(|entry| entry == GENERAL_HARD_DISK) {
         return Ok(DriverOutcome::complete());
     }
-    let mut swapped = BTreeMap::new();
-    swapped.insert(format!("{NETWORK_PRIORITY}1"), Value::from(adapter));
-    if let Some(first) = priority(1) {
-        swapped.insert(format!("{NETWORK_PRIORITY}{slot}"), Value::from(first));
-    }
-    patch_bios_attributes(cx, &swapped).await
-}
-
-/// The system boot order with the `Network` group first, or `None` when it
-/// already is.
-async fn network_group_first<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<Option<Vec<String>>, PlatformError> {
-    let system = cx.system().await?;
-    let order: Vec<String> = system
-        .boot_order()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|reference| reference.inner().to_string())
-        .collect();
-    let network = system
-        .boot_options()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .into_iter()
-        .find(|option| option.raw().name == NETWORK)
-        .map(|option| option.boot_reference().inner().to_string())
-        .ok_or_else(|| PlatformError::MissingBootOption {
-            description: format!("{NETWORK} boot option"),
-        })?;
-    if order.first() == Some(&network) {
-        return Ok(None);
-    }
-    Ok(Some(with_first(order, &network)))
+    next.insert(next.len().min(1), GENERAL_HARD_DISK.to_string());
+    set_next(cx, &general, next).await
 }
 
 #[async_trait]
@@ -276,31 +69,35 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
+        let network_first = first_group(cx).await?.as_deref() == Some(NETWORK);
         let mac = boot_interface_mac(cx, selector).await?;
-        let network_first = match network_group_first(cx).await {
-            Ok(order) => order.is_none(),
-            Err(PlatformError::MissingBootOption { .. }) => false,
-            Err(error) => return Err(error),
-        };
-        let settings = boot_settings(cx).await?;
-        let (expected, first) =
-            expected_and_first_network_option(cx, settings.as_ref(), &mac).await?;
-        let disk_enabled = match &settings {
-            Some(settings) => boot_order(cx, settings, BootOrderKind::General)
-                .await?
+        let settings = settings(cx).await?;
+        let network = oem_boot_order(cx, &settings, BootOrderKind::Network).await?;
+        let adapter = network
+            .supported()
+            .unwrap_or_default()
+            .iter()
+            .find(|entry| names_adapter(entry, &mac));
+        let adapter_first =
+            adapter.is_some() && network.next().unwrap_or_default().first() == adapter;
+        let general = oem_boot_order(cx, &settings, BootOrderKind::General).await?;
+        Ok(BootOrderStatus {
+            boot_interface_first: network_first && adapter_first,
+            disk_enabled: general
                 .next()
                 .unwrap_or_default()
                 .iter()
-                .any(|entry| entry == HARD_DISK),
-            None => true,
-        };
-        Ok(BootOrderStatus {
-            boot_interface_first: network_first && expected.is_some() && expected == first,
-            disk_enabled,
-            // The Network group holds every adapter; ordering the selected one
-            // first within it is the only network policy XCC applies.
+                .any(|entry| entry == GENERAL_HARD_DISK),
             other_network_options_disabled: true,
         })
+    }
+
+    async fn set_override(
+        &self,
+        cx: &OpCx<'_, B>,
+        override_setting: &BootUpdate,
+    ) -> Result<DriverOutcome, PlatformError> {
+        super::set_override(cx, override_setting).await
     }
 
     async fn configure(
@@ -308,38 +105,26 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        if self.status(cx, selector).await?.is_configured() {
-            return Ok(DriverOutcome::complete());
-        }
         let mac = boot_interface_mac(cx, selector).await?;
-        let settings = boot_settings(cx).await?;
-        let mut outcome = DriverOutcome::complete();
-        match (network_group_first(cx).await, &settings) {
-            (Ok(Some(order)), _) => {
-                outcome = outcome.merge(
-                    cx.system()
-                        .await?
-                        .set_boot_order(order.into_iter().map(BootOptionReference::new).collect())
-                        .await
-                        .map(DriverOutcome::from)
-                        .map_err(|error| cx.map_redfish_error(error))?,
-                );
-            }
-            (Ok(None), _) => {}
-            // Without a Network boot option the network group is missing from
-            // the OEM general order, which leaves the network order empty.
-            (Err(PlatformError::MissingBootOption { .. }), Some(settings)) => {
-                let general = boot_order(cx, settings, BootOrderKind::General).await?;
-                let next = general.next().unwrap_or_default().to_vec();
-                outcome = outcome.merge(set_next(cx, &general, with_first(next, NETWORK)).await?);
-            }
-            (Err(error), _) => return Err(error),
+        let settings = settings(cx).await?;
+        let hard_disk = restore_hard_disk(cx, &settings).await?;
+        let network = oem_boot_order(cx, &settings, BootOrderKind::Network).await?;
+        let adapter = network
+            .supported()
+            .unwrap_or_default()
+            .iter()
+            .find(|entry| names_adapter(entry, &mac))
+            .cloned()
+            .ok_or_else(|| PlatformError::MissingBootOption {
+                description: format!("XCC NetworkBootOrder HTTP IPv4 option for {mac}"),
+            })?;
+        let mut next = network.next().unwrap_or_default().to_vec();
+        match next.iter().position(|entry| *entry == adapter) {
+            Some(0) => return Ok(hard_disk),
+            Some(position) => next.swap(0, position),
+            None => next.insert(0, adapter),
         }
-        let adapter = match &settings {
-            Some(settings) => configure_oem(cx, settings, &mac).await?,
-            None => configure_bios_priority(cx, &mac).await?,
-        };
-        Ok(outcome.merge(adapter))
+        Ok(hard_disk.merge(set_next(cx, &network, next).await?))
     }
 }
 
@@ -353,23 +138,16 @@ mod tests {
         for entry in [
             "UEFI:   SLOT2 (31/0/0) HTTP IPv4  Nvidia Network Adapter - A0:88:C2:08:53:C4",
             "UEFI:   SLOT 1 (41/0/0) HTTP IPv4  Nvidia BlueField-3 VPI QSFP112 2P 200G PCIe Gen5 x16 - A0:88:C2:08:53:C4",
-            "UEFI:   SLOT1 (4B/0/0) HTTP IPv4  Mellanox Network Adapter - a0:88:c2:08:53:c4",
+            "UEFI:   SLOT1 (4B/0/0) HTTP IPv4  Mellanox Network Adapter - A0:88:C2:08:53:C4",
         ] {
             assert!(names_adapter(entry, mac), "{entry}");
         }
         for entry in [
             "UEFI:   SLOT2 (31/0/0) PXE IPv4  Nvidia Network Adapter - A0:88:C2:08:53:C4",
             "UEFI:   SLOT2 (31/0/0) HTTP IPv4  Nvidia Network Adapter - A0:88:C2:08:53:C5",
+            "UEFI:   SLOT1 (4B/0/0) HTTP IPv4  Mellanox Network Adapter - a0:88:c2:08:53:c4",
         ] {
             assert!(!names_adapter(entry, mac), "{entry}");
         }
-        assert!(priority_names_adapter(
-            "Slot5Port1HTTPv4NvidiaNetworkAdapter_A0_88_C2_08_53_C4",
-            mac
-        ));
-        assert!(!priority_names_adapter(
-            "Slot5Port1PXEv4NvidiaNetworkAdapter_A0_88_C2_08_53_C4",
-            mac
-        ));
     }
 }

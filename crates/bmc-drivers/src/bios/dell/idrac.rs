@@ -4,7 +4,9 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{Bios, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{
+    Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::{Value, json};
 
@@ -76,13 +78,33 @@ fn serial_redirection(current: &BiosSettings) -> [BiosAttribute; 2] {
     }
 }
 
-fn expected_settings(current: &BiosSettings, profile: &BiosSettings) -> BiosSettings {
+/// The settings `current` should hold, with HTTP Device 1 on the boot
+/// interface's `nic_slot`.
+fn expected_settings(
+    current: &BiosSettings,
+    profile: &BiosSettings,
+    nic_slot: &str,
+) -> BiosSettings {
     let attributes: Vec<BiosAttribute> = ATTRIBUTES
         .iter()
         .copied()
         .chain(serial_redirection(current))
         .collect();
-    with_profile(desired_settings(&attributes, current), profile)
+    let mut expected = desired_settings(&attributes, current);
+    expected
+        .attributes
+        .insert("HttpDev1Interface".to_string(), json!(nic_slot));
+    with_profile(expected, profile)
+}
+
+/// The expected settings plus the boot order iDRAC builds at the next reset,
+/// led by `nic_slot`; boot order status checks the order that results.
+fn staged_settings(current: &BiosSettings, profile: &BiosSettings, nic_slot: &str) -> BiosSettings {
+    let boot_order = settings([
+        ("SetBootOrderEn", json!(nic_slot)),
+        ("SetBootOrderDis", json!("")),
+    ]);
+    with_profile(boot_order, &expected_settings(current, profile, nic_slot))
 }
 
 /// Changes the UEFI password inside a configuration job, which iDRAC requires
@@ -114,9 +136,11 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
+        let nic_slot = dell::nic_slot(cx, boot_interface).await?;
         let current = current_settings(cx).await?;
-        let writes = expected_settings(&current, profile);
+        let writes = staged_settings(&current, profile, &nic_slot);
         dell::stage_bios_attributes(cx, &writes.attributes).await
     }
 
@@ -124,9 +148,14 @@ where
         &self,
         cx: &OpCx<'_, B>,
         profile: &BiosSettings,
+        boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
+        let nic_slot = dell::nic_slot(cx, boot_interface).await?;
         let current = current_settings(cx).await?;
-        Ok(compare(&current, &expected_settings(&current, profile)))
+        Ok(compare(
+            &current,
+            &expected_settings(&current, profile, &nic_slot),
+        ))
     }
 
     async fn clear_pending(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -169,6 +198,26 @@ mod tests {
 
     use super::*;
     use crate::bios::attributes::AttributeValue;
+
+    #[test]
+    fn http_device_follows_the_boot_interface_and_only_the_interface_is_checked() {
+        let current = BiosSettings::default();
+        let profile = BiosSettings::default();
+        let expected = expected_settings(&current, &profile, "NIC.Slot.7-1-1");
+        let staged = staged_settings(&current, &profile, "NIC.Slot.7-1-1");
+
+        assert_eq!(
+            expected.attributes["HttpDev1Interface"],
+            json!("NIC.Slot.7-1-1")
+        );
+        assert!(!expected.attributes.contains_key("SetBootOrderEn"));
+        assert_eq!(staged.attributes["SetBootOrderEn"], json!("NIC.Slot.7-1-1"));
+        assert_eq!(staged.attributes["SetBootOrderDis"], json!(""));
+        assert_eq!(
+            staged.attributes["HttpDev1Interface"],
+            json!("NIC.Slot.7-1-1")
+        );
+    }
 
     #[test]
     fn serial_redirection_follows_the_port_address_format() {
