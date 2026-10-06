@@ -123,7 +123,9 @@ pub enum OperationStatus {
         message: Option<String>,
     },
     /// The work cannot progress until an operator acts on the BMC.
-    NeedsIntervention { state: String },
+    NeedsIntervention {
+        state: String,
+    },
 }
 
 /// Immediate normalized result of a mutation request.

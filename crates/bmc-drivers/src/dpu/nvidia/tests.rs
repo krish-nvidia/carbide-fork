@@ -424,7 +424,11 @@ async fn only_bf4_nic_mode_waits_for_an_operator_while_host_privilege_is_restric
     {
         let bmc = fixture.build().await;
         let cx = bmc.cx().await;
-        assert_eq!(dpu.set_nic_mode(&cx, NicMode::Nic).await, expected, "{name}");
+        assert_eq!(
+            dpu.set_nic_mode(&cx, NicMode::Nic).await,
+            expected,
+            "{name}"
+        );
         assert_eq!(
             bmc.writes().iter().map(body).collect::<Vec<_>>(),
             writes,

@@ -29,8 +29,12 @@ fn with_envelope(uri: &str, id: &str, fields: Value) -> Value {
 }
 
 fn task(fields: Value) -> Task {
-    serde_json::from_value(with_envelope("/redfish/v1/TaskService/Tasks/7", "7", fields))
-        .expect("task body")
+    serde_json::from_value(with_envelope(
+        "/redfish/v1/TaskService/Tasks/7",
+        "7",
+        fields,
+    ))
+    .expect("task body")
 }
 
 fn job(fields: Value) -> Job {
@@ -145,5 +149,8 @@ fn a_task_that_transitioned_to_a_job_names_that_job() {
         transitioned_job(&transitioned),
         Some(ODataId::from("/redfish/v1/JobService/Jobs/3".to_string()))
     );
-    assert_eq!(transitioned_job(&task(json!({"TaskState": "Running"}))), None);
+    assert_eq!(
+        transitioned_job(&task(json!({"TaskState": "Running"}))),
+        None
+    );
 }

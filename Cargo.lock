@@ -789,6 +789,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmc-driver-validator"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bmc-drivers",
+ "bmc-platform",
+ "bmc-runtime",
+ "carbide-ipmi",
+ "carbide-redfish",
+ "carbide-secrets",
+ "carbide-uuid",
+ "clap",
+ "futures",
+ "mac_address",
+ "nv-redfish",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "strum",
+ "tokio",
+]
+
+[[package]]
 name = "bmc-drivers"
 version = "0.1.0"
 dependencies = [

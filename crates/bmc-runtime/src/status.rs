@@ -120,9 +120,10 @@ fn task_status(task: &Task) -> Result<OperationStatus, PlatformError> {
             | TaskState::Cancelling,
         ) => OperationStatus::Running,
         Some(TaskState::Completed) => OperationStatus::Completed,
-        Some(state @ (TaskState::Killed | TaskState::Exception | TaskState::Cancelled)) => {
-            failed(format!("{state:?}"), joined_messages(task.messages.as_ref()))
-        }
+        Some(state @ (TaskState::Killed | TaskState::Exception | TaskState::Cancelled)) => failed(
+            format!("{state:?}"),
+            joined_messages(task.messages.as_ref()),
+        ),
         Some(TaskState::UnsupportedValue) => return Err(unrecognized("task", &task.odata_id)),
     })
 }
