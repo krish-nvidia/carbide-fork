@@ -14,9 +14,10 @@ use serde_json::{Value, json};
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
 use crate::bios::support::{
-    attribute_holds, change_password, compare, current_settings, expected, settings, stage,
+    attribute_holds, change_password, compare, current_settings, expected, settings,
 };
 use crate::boot_order::lenovo::{NETWORK, first_group, network_group_first};
+use crate::resources::stage_bios_attributes;
 
 /// Lenovo XCC names the UEFI administrator password `UefiAdminPassword`.
 pub(crate) struct XccBios;
@@ -99,7 +100,8 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
-        let settings = stage(cx, &expected_settings(&current, profile)?).await?;
+        let settings =
+            stage_bios_attributes(cx, &expected_settings(&current, profile)?.attributes).await?;
         Ok(settings.merge(network_group_first(cx).await?))
     }
 
@@ -133,7 +135,7 @@ where
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage(cx, &tpm_clear()).await
+        stage_bios_attributes(cx, &tpm_clear().attributes).await
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {

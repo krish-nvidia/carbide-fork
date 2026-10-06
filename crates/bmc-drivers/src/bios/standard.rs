@@ -14,8 +14,10 @@ use bmc_platform::{
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::Value;
 
-use crate::bios::support::{change_password, compare, current_settings, stage};
-use crate::resources::{bios_attributes, bios_settings, bios_update, selected_bios};
+use crate::bios::support::{change_password, compare, current_settings};
+use crate::resources::{
+    bios_attributes, bios_settings, bios_update, selected_bios, stage_bios_attributes,
+};
 
 /// DMTF names the UEFI administrator password `AdministratorPassword`.
 const UEFI_PASSWORD_NAME: &str = "AdministratorPassword";
@@ -39,7 +41,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        stage(cx, profile).await
+        stage_bios_attributes(cx, &profile.attributes).await
     }
 
     async fn status(

@@ -6,16 +6,15 @@
 //! BIOS operations shared by the BIOS drivers.
 //!
 //! A driver reads the BIOS's [`current_settings`], works out the settings it
-//! expects from them, then either [`compare`]s or [`stage`]s those.
-
-use std::collections::BTreeMap;
+//! expects from them, then either [`compare`]s or stages those with
+//! [`crate::resources::stage_bios_attributes`].
 
 use bmc_platform::{BiosDiff, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::Value;
 
 use crate::bios::attributes::{BiosAttribute, desired_settings};
-use crate::resources::{attribute_map, bios_attributes, bios_settings, bios_update, selected_bios};
+use crate::resources::{attribute_map, bios_attributes, selected_bios};
 
 /// The attributes the BIOS currently runs with.
 pub(super) async fn current_settings<B: Bmc>(
@@ -74,36 +73,6 @@ pub(super) fn compare(current: &BiosSettings, expected: &BiosSettings) -> BiosSt
         is_applied: differences.is_empty(),
         differences,
     }
-}
-
-/// Stages, on the pending-settings resource, the entries of `writes` the BIOS
-/// would not hold after the next reset, judged by the staged value or, when
-/// nothing is staged, the current one.
-pub(super) async fn stage<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    writes: &BiosSettings,
-) -> Result<DriverOutcome, PlatformError> {
-    if writes.attributes.is_empty() {
-        return Ok(DriverOutcome::complete());
-    }
-    let bios = selected_bios(cx).await?;
-    let current = bios_attributes(&bios.raw());
-    let settings = bios_settings(cx, &bios).await?;
-    let pending = bios_attributes(&settings.raw());
-    let staged: BTreeMap<String, Value> = writes
-        .attributes
-        .iter()
-        .filter(|(key, value)| pending.get(*key).or_else(|| current.get(*key)) != Some(value))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    if staged.is_empty() {
-        return Ok(DriverOutcome::complete());
-    }
-    settings
-        .update(&bios_update(&staged)?)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Whether the current BIOS holds `attribute`'s expected value; `None` when

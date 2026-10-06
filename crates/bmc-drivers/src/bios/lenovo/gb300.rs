@@ -13,8 +13,9 @@ use serde_json::json;
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
 use crate::bios::support::{
-    attribute_holds, change_password, compare, current_settings, expected, settings, stage,
+    attribute_holds, change_password, compare, current_settings, expected, settings,
 };
+use crate::resources::stage_bios_attributes;
 
 /// Lenovo GB300: AMI firmware whose Grace BIOS registry prefixes enum values
 /// with their attribute id, and expresses infinite boot as a boot-retry count.
@@ -60,7 +61,7 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
-        stage(cx, &expected(ATTRIBUTES, &current, profile)).await
+        stage_bios_attributes(cx, &expected(ATTRIBUTES, &current, profile).attributes).await
     }
 
     async fn status(
@@ -83,7 +84,7 @@ where
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage(cx, &tpm_clear()).await
+        stage_bios_attributes(cx, &tpm_clear().attributes).await
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {

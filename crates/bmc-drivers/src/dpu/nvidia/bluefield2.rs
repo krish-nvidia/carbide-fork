@@ -12,9 +12,9 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    bios_nic_mode, enable_bmc_rshim, nic_mode_value, set_bios_host_privilege_level,
+    bios_nic_mode, enable_bmc_rshim, nic_mode_value, set_bios_host_privilege_level, write_bios,
 };
-use crate::resources::{attribute_map, patch_bios_attributes};
+use crate::resources::attribute_map;
 
 /// BlueField-2: NIC mode is a BIOS attribute and there is no host rshim control.
 pub(crate) struct BlueField2Dpu;
@@ -41,7 +41,7 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
         if cx.has_quirk(Quirk::BlueFieldNicModeUnreadable) {
             return Err(PlatformError::Unsupported);
         }
-        patch_bios_attributes(
+        write_bios(
             cx,
             &attribute_map([("NicMode", json!(nic_mode_value(mode)))]),
         )

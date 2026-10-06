@@ -17,7 +17,7 @@ use crate::boot_order::support::{
     boot_interface_mac, boot_options, boot_order, display_name, reference, system_uri,
     write_boot_order,
 };
-use crate::resources::{attribute_map, patch_bios_attributes, selected_bios};
+use crate::resources::{attribute_map, selected_bios, stage_bios_attributes};
 
 /// HPE iLO boot behavior.
 ///
@@ -38,7 +38,7 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
         if let Some(uri) = override_setting.http_boot_uri.as_deref() {
-            return patch_bios_attributes(
+            return stage_bios_attributes(
                 cx,
                 &attribute_map([
                     ("UrlBootFile", json!(uri)),

@@ -44,8 +44,39 @@ pub(crate) fn attribute_map<const N: usize>(
         .collect()
 }
 
-/// Stages `attributes` through the pending-settings resource.
-pub(crate) async fn patch_bios_attributes<B: Bmc>(
+/// Stages, on the pending-settings resource, the entries of `attributes` the
+/// BIOS would not hold after the next reset, judged by the staged value or,
+/// when nothing is staged, the current one. Repeating a stage writes nothing.
+pub(crate) async fn stage_bios_attributes<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    attributes: &BTreeMap<String, Value>,
+) -> Result<DriverOutcome, PlatformError> {
+    if attributes.is_empty() {
+        return Ok(DriverOutcome::complete());
+    }
+    let bios = selected_bios(cx).await?;
+    let current = bios_attributes(&bios.raw());
+    let settings = bios_settings(cx, &bios).await?;
+    let pending = bios_attributes(&settings.raw());
+    let staged: BTreeMap<String, Value> = attributes
+        .iter()
+        .filter(|(key, value)| pending.get(*key).or_else(|| current.get(*key)) != Some(value))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if staged.is_empty() {
+        return Ok(DriverOutcome::complete());
+    }
+    settings
+        .update(&bios_update(&staged)?)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
+}
+
+/// Writes every entry of `attributes` to the pending-settings resource without
+/// reading the BIOS first, for write-only attributes and for BIOSes that cannot
+/// be read at the time, such as a BlueField in NIC mode on older firmware.
+pub(crate) async fn write_bios_attributes<B: Bmc>(
     cx: &OpCx<'_, B>,
     attributes: &BTreeMap<String, Value>,
 ) -> Result<DriverOutcome, PlatformError> {

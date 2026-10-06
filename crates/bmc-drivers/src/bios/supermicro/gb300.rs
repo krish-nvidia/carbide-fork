@@ -11,7 +11,8 @@ use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{change_password, compare, current_settings, expected, stage};
+use crate::bios::support::{change_password, compare, current_settings, expected};
+use crate::resources::stage_bios_attributes;
 
 /// Supermicro GB300 NVL compute trays: NVIDIA tray firmware naming the UEFI
 /// administrator password `AdminPassword`, with the TPM behind an AMI BIOS
@@ -44,7 +45,7 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
-        stage(cx, &expected(ATTRIBUTES, &current, profile)).await
+        stage_bios_attributes(cx, &expected(ATTRIBUTES, &current, profile).attributes).await
     }
 
     async fn status(

@@ -349,6 +349,38 @@ async fn bluefield3_host_privilege_uses_the_firmware_spelling_and_retries_the_ot
 }
 
 #[tokio::test]
+async fn host_privilege_is_written_without_reading_a_bios_that_fails_in_nic_mode() {
+    let bmc = bluefield3("BF-24.04-6")
+        .respond(
+            Method::GET,
+            BF3_BIOS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some(json!({"Attributes": {"NicMode": "NicMode"}})),
+        )
+        .build()
+        .await;
+    let quirks = BTreeSet::from([Quirk::BlueFieldNicModeBiosError]);
+    let cx = bmc.cx().await.with_quirks(&quirks);
+
+    BlueField3Dpu
+        .set_host_privilege_level(&cx, HostPrivilegeLevel::Restricted)
+        .await
+        .expect("host privilege is written");
+
+    let writes = bmc.writes();
+    assert_eq!(
+        writes
+            .iter()
+            .map(|write| (path(write), body(write)))
+            .collect::<Vec<_>>(),
+        [(
+            BF3_BIOS_SETTINGS,
+            json!({"Attributes": {"HostPrivilegeLevel": "Restricted"}})
+        )]
+    );
+}
+
+#[tokio::test]
 async fn only_bf4_nic_mode_waits_for_an_operator_while_host_privilege_is_restricted() {
     let restricted_bios = json!({
         "@odata.id": BF3_BIOS,

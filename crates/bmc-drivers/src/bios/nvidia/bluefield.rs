@@ -13,8 +13,8 @@ use serde_json::json;
 
 use crate::bios::attributes::{BiosAttribute, desired_settings};
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{compare, current_settings, settings, stage, with_profile};
-use crate::resources::{attribute_map, patch_bios_attributes};
+use crate::bios::support::{compare, current_settings, with_profile};
+use crate::resources::{attribute_map, stage_bios_attributes, write_bios_attributes};
 
 /// NVIDIA BlueField: the DPU BIOS exposes no `ResetBios` or `ChangePassword`
 /// actions; both are write-only attributes on the pending settings.
@@ -120,9 +120,9 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
         let expected = expected_settings(cx, &current, profile);
-        match stage(cx, &expected).await {
+        match stage_bios_attributes(cx, &expected.attributes).await {
             Err(PlatformError::Bmc { message, .. }) if rejects_spelling(&expected, &message) => {
-                stage(cx, &respelled(expected)).await
+                stage_bios_attributes(cx, &respelled(expected).attributes).await
             }
             result => result,
         }
@@ -139,7 +139,7 @@ where
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage(cx, &settings([("ResetEfiVars", json!(true))])).await
+        stage_bios_attributes(cx, &attribute_map([("ResetEfiVars", json!(true))])).await
     }
 
     /// Written unconditionally: the password attributes are write-only, so a
@@ -150,7 +150,7 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        patch_bios_attributes(
+        write_bios_attributes(
             cx,
             &attribute_map([
                 ("CurrentUefiPassword", json!(current_password)),

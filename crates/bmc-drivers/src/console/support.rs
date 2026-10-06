@@ -12,7 +12,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::Value;
 
-use crate::resources::{self, patch_bios_attributes, selected_bios};
+use crate::resources::{self, selected_bios, stage_bios_attributes};
 
 pub(super) const SSH_PORT: NonZeroU16 = NonZeroU16::new(22).expect("22 is nonzero");
 pub(super) const DPU_SSH_PORT: NonZeroU16 = NonZeroU16::new(2200).expect("2200 is nonzero");
@@ -95,7 +95,7 @@ pub(super) async fn setup_bios_attributes<B: Bmc>(
         .filter(|attr| !attr.optional || current.contains_key(attr.key))
         .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
         .collect();
-    patch_bios_attributes(cx, &attributes).await
+    stage_bios_attributes(cx, &attributes).await
 }
 
 /// Rates the checked attributes `attrs` reports: enabled when every one

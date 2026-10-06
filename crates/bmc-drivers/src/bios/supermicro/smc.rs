@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 
 use crate::bios::attributes::AttributeValue::{self, Bool, String as Text};
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{compare, current_settings, stage, with_profile};
-use crate::resources::{bios_attributes, bios_update, selected_bios};
+use crate::bios::support::{compare, current_settings, with_profile};
+use crate::resources::{bios_attributes, bios_update, selected_bios, stage_bios_attributes};
 
 /// Supermicro hosts: the BIOS appends a registry suffix to every attribute
 /// name, as in `IPv4HTTPSupport_009F`, and a TPM clear is a pending operation
@@ -89,7 +89,11 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = current_settings(cx).await?;
-        stage(cx, &with_profile(expected_settings(&current)?, profile)).await
+        stage_bios_attributes(
+            cx,
+            &with_profile(expected_settings(&current)?, profile).attributes,
+        )
+        .await
     }
 
     async fn status(

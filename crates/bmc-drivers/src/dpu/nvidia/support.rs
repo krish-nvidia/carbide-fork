@@ -5,16 +5,18 @@
 
 //! BlueField DPU mechanics shared by the card generations.
 
+use std::collections::BTreeMap;
+
 use bmc_platform::{
     DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, Quirk, RshimState,
 };
 use nv_redfish::computer_system::Bios;
-use nv_redfish::core::Bmc;
+use nv_redfish::core::{Bmc, ODataId};
 use nv_redfish::oem::nvidia::NvidiaComputerSystem;
 use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
 use serde_json::{Value, json};
 
-use crate::resources::{attribute_map, patch_bios_attributes, selected_bios};
+use crate::resources::{attribute_map, bios_update, selected_bios, write_bios_attributes};
 
 /// BMC 24.10 dropped the spaces from BIOS attribute names; see
 /// [`Quirk::BlueFieldSpacedBiosAttributeNames`].
@@ -121,6 +123,37 @@ pub(super) async fn enable_bmc_rshim<B: Bmc>(
         .map_err(|error| cx.map_redfish_error(error))
 }
 
+/// Writes `attributes` to the BIOS pending settings. Firmware with
+/// [`Quirk::BlueFieldNicModeBiosError`] cannot read the BIOS in NIC mode, so
+/// there the write goes to the system's `Bios/Settings` without reading the
+/// BIOS for its advertised settings link.
+pub(super) async fn write_bios<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    attributes: &BTreeMap<String, Value>,
+) -> Result<DriverOutcome, PlatformError> {
+    if !cx.has_quirk(Quirk::BlueFieldNicModeBiosError) {
+        return write_bios_attributes(cx, attributes).await;
+    }
+    let bios = cx
+        .system()
+        .await?
+        .raw()
+        .bios
+        .as_ref()
+        .ok_or(PlatformError::Unsupported)?
+        .id()
+        .to_string();
+    cx.bmc()
+        .update::<_, Value>(
+            &ODataId::from(format!("{bios}/Settings")),
+            None,
+            &bios_update(attributes)?,
+        )
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_bmc_error(error))
+}
+
 /// Stages the host privilege level in BIOS under the spelling the firmware
 /// uses, retrying with the other spelling when the BMC rejects it.
 pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
@@ -136,9 +169,9 @@ pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
     } else {
         (HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES)
     };
-    match patch_bios_attributes(cx, &attribute_map([(key, json!(value))])).await {
+    match write_bios(cx, &attribute_map([(key, json!(value))])).await {
         Err(PlatformError::Bmc { message, .. }) if message.contains(key) => {
-            patch_bios_attributes(cx, &attribute_map([(other_key, json!(value))])).await
+            write_bios(cx, &attribute_map([(other_key, json!(value))])).await
         }
         result => result,
     }

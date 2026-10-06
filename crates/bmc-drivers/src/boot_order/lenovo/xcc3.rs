@@ -17,7 +17,7 @@ use serde_json::Value;
 use super::{NETWORK, first_group};
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::boot_interface_mac;
-use crate::resources::{bios_attributes, patch_bios_attributes, selected_bios};
+use crate::resources::{bios_attributes, selected_bios, stage_bios_attributes};
 
 /// Lenovo XCC 3 boot behavior.
 ///
@@ -113,7 +113,7 @@ impl<B: Bmc> BootOrder<B> for Xcc3BootOrder {
                 Value::from(first.as_str()),
             );
         }
-        patch_bios_attributes(cx, &swapped).await
+        stage_bios_attributes(cx, &swapped).await
     }
 }
 

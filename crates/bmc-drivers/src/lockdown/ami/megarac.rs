@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::lockdown::support::{
     host_interface_state, set_first_host_interface, signal, state_from_signals, status,
 };
-use crate::resources::{patch_bios_attributes, selected_bios};
+use crate::resources::{selected_bios, stage_bios_attributes};
 
 /// A BIOS attribute whose two values mean locked and unlocked.
 struct LockedAttribute {
@@ -98,7 +98,7 @@ impl<B: Bmc> Lockdown<B> for MegaRacLockdown {
                     (attribute.key.to_string(), Value::from(value))
                 })
                 .collect();
-            outcome = outcome.merge(patch_bios_attributes(cx, &attributes).await?);
+            outcome = outcome.merge(stage_bios_attributes(cx, &attributes).await?);
         }
         if matches!(scope, LockdownScope::Bmc | LockdownScope::All) {
             outcome = outcome.merge(set_first_host_interface(cx, !enabled).await?);

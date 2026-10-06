@@ -13,7 +13,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 
 use crate::lockdown::support::{signal, state_from_signals};
-use crate::resources::{patch_bios_attributes, selected_bios};
+use crate::resources::{selected_bios, stage_bios_attributes};
 
 /// NVIDIA Viking lockdown driver; both host and BMC lockdown are BIOS attributes.
 ///
@@ -95,7 +95,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
                 (if enabled { "Disabled" } else { "Enabled" }).into(),
             );
         }
-        patch_bios_attributes(cx, &attributes).await
+        stage_bios_attributes(cx, &attributes).await
     }
 }
 
