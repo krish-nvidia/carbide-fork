@@ -4,16 +4,18 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
+use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
 use nv_redfish::core::{ActionError, Bmc};
-use nv_redfish::resource::{PowerState, ResetType};
+use nv_redfish::resource::ResetType;
 
-use crate::power::standard::{self, StandardPower};
+use crate::power::standard::StandardPower;
+use crate::power::support::force_off_and_wait;
 
 /// HPE iLO power behavior.
 ///
 /// iLO maps `ForceRestart` to a graceful restart, and its auxiliary power
-/// cycle is only accepted while the host is off.
+/// cycle is only accepted while the host is off, so the host is forced off
+/// first.
 pub(crate) struct IloPower;
 
 /// Posts the iLO auxiliary power cycle, which the BMC accepts only while the host is off.
@@ -53,11 +55,7 @@ where
         match reset_type {
             ResetType::ForceRestart => self.standard().set(cx, ResetType::GracefulRestart).await,
             ResetType::FullPowerCycle => {
-                if standard::state(cx).await? != PowerState::Off {
-                    return Ok(DriverOutcome::blocked(ControllerAction::Power(
-                        ResetType::ForceOff,
-                    )));
-                }
+                force_off_and_wait(cx).await?;
                 aux_power_cycle(cx).await
             }
             other => self.standard().set(cx, other).await,

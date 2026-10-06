@@ -11,8 +11,7 @@ use axum::http::header::IF_MATCH;
 use axum::http::{Method, StatusCode};
 use bmc_mock::test_support::TestBmc;
 use bmc_platform::{
-    ControllerAction, Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, PlatformError,
-    Quirk, RshimState,
+    Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, PlatformError, Quirk, RshimState,
 };
 use serde_json::{Value, json};
 
@@ -389,14 +388,11 @@ async fn only_bf4_nic_mode_waits_for_an_operator_while_host_privilege_is_restric
         "Name": "BIOS Configuration Current Settings",
         "Attributes": {"HostPrivilegeLevel": "Restricted", "NicMode": "DpuMode"},
     });
-    let blocked = DriverOutcome::blocked(ControllerAction::ManualIntervention {
-        code: "dpu-host-privilege-restricted".parse().expect("valid code"),
-    });
     struct Case {
         name: &'static str,
         fixture: Fixture,
         dpu: &'static dyn Dpu<TestBmc>,
-        expected: DriverOutcome,
+        expected: Result<DriverOutcome, PlatformError>,
         writes: Vec<Value>,
     }
     let cases = [
@@ -404,14 +400,16 @@ async fn only_bf4_nic_mode_waits_for_an_operator_while_host_privilege_is_restric
             name: "BF3 restricted",
             fixture: bluefield3("BF-26.04-8").document(BF3_BIOS, restricted_bios),
             dpu: &BlueField3Dpu,
-            expected: DriverOutcome::complete(),
+            expected: Ok(DriverOutcome::complete()),
             writes: vec![json!({"Mode": "NicMode"})],
         },
         Case {
             name: "BF4 restricted",
             fixture: bluefield4(),
             dpu: &BlueField4Dpu,
-            expected: blocked,
+            expected: Err(PlatformError::ManualInterventionRequired {
+                code: "dpu-host-privilege-restricted".to_string(),
+            }),
             writes: vec![],
         },
     ];
@@ -426,11 +424,7 @@ async fn only_bf4_nic_mode_waits_for_an_operator_while_host_privilege_is_restric
     {
         let bmc = fixture.build().await;
         let cx = bmc.cx().await;
-        assert_eq!(
-            dpu.set_nic_mode(&cx, NicMode::Nic).await,
-            Ok(expected),
-            "{name}"
-        );
+        assert_eq!(dpu.set_nic_mode(&cx, NicMode::Nic).await, expected, "{name}");
         assert_eq!(
             bmc.writes().iter().map(body).collect::<Vec<_>>(),
             writes,

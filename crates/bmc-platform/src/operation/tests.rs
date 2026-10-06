@@ -15,10 +15,7 @@
  * limitations under the License.
  */
 
-use std::num::NonZeroU64;
-
 use nv_redfish::core::ODataId;
-use nv_redfish::resource::ResetType;
 use serde_json::json;
 
 use super::*;
@@ -85,128 +82,60 @@ fn operation_references_are_stable() {
 }
 
 #[test]
-fn controller_actions_exhaustively_round_trip() {
-    let actions = [
-        ControllerAction::Power(ResetType::ForceOff),
-        ControllerAction::BmcReset,
-        ControllerAction::SetLockdown {
-            scope: LockdownScope::All,
-            state: LockdownDesiredState::Disabled,
-        },
-        ControllerAction::ClearNvram,
-        ControllerAction::RefreshExploration,
-        ControllerAction::Wait {
-            seconds: NonZeroU64::new(30).expect("wait is nonzero"),
-        },
-        ControllerAction::ManualIntervention {
-            code: "replace-system-board"
-                .parse()
-                .expect("intervention code is valid"),
-        },
+fn driver_outcomes_are_stable() {
+    let cases = [
+        (DriverOutcome::complete(), json!({"outcome": "complete"})),
+        (
+            DriverOutcome::accepted(task_reference()),
+            json!({
+                "outcome": "accepted",
+                "details": {"reference": {
+                    "type": "redfish_task",
+                    "uri": "/redfish/v1/TaskService/Tasks/42",
+                    "retry_after_seconds": 5
+                }}
+            }),
+        ),
     ];
 
-    assert!(NonZeroU64::new(0).is_none());
-    for action in actions {
-        let encoded = serde_json::to_value(&action).expect("action serializes");
+    for (outcome, expected) in cases {
         assert_eq!(
-            serde_json::from_value::<ControllerAction>(encoded).expect("action deserializes"),
-            action
+            serde_json::to_value(&outcome).expect("outcome serializes"),
+            expected
         );
-    }
-    assert!(
-        serde_json::from_value::<ControllerAction>(
-            json!({"type": "wait", "details": {"seconds": 0}})
-        )
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<ControllerAction>(json!({
-            "type": "manual_intervention",
-            "details": {"code": " "}
-        }))
-        .is_err()
-    );
-}
-
-#[test]
-fn driver_outcomes_round_trip_and_blocked_is_non_empty() {
-    let prerequisite = ControllerAction::SetLockdown {
-        scope: LockdownScope::Host,
-        state: LockdownDesiredState::Disabled,
-    };
-    let outcomes = [
-        DriverOutcome::Complete {
-            follow_up: vec![ControllerAction::BmcReset],
-        },
-        DriverOutcome::accepted(task_reference()).then([ControllerAction::Power(ResetType::On)]),
-        DriverOutcome::blocked(prerequisite.clone()),
-        DriverOutcome::Blocked {
-            prerequisite,
-            additional_prerequisites: vec![ControllerAction::ClearNvram],
-        },
-    ];
-
-    for outcome in outcomes {
-        let encoded = serde_json::to_value(&outcome).expect("outcome serializes");
         assert_eq!(
-            serde_json::from_value::<DriverOutcome>(encoded).expect("outcome deserializes"),
+            serde_json::from_value::<DriverOutcome>(expected).expect("outcome deserializes"),
             outcome
         );
     }
-    assert_eq!(
-        serde_json::to_value(DriverOutcome::complete()).expect("outcome serializes"),
-        json!({"outcome": "complete", "details": {"follow_up": []}})
-    );
-    assert!(
-        serde_json::from_value::<DriverOutcome>(json!({
-            "outcome": "blocked",
-            "details": {"additional_prerequisites": []}
-        }))
-        .is_err()
-    );
 }
 
 #[test]
-fn merging_accepted_outcomes_preserves_every_reference_and_follow_up() {
-    let first = DriverOutcome::accepted(task_reference())
-        .then([ControllerAction::Power(ResetType::ForceOff)]);
-    let second =
-        DriverOutcome::accepted(job_reference()).then([ControllerAction::Power(ResetType::On)]);
-
-    let merged = first.merge(second);
+fn merging_keeps_every_accepted_reference_in_issue_order() {
+    let merged = DriverOutcome::complete()
+        .merge(DriverOutcome::accepted(task_reference()))
+        .merge(DriverOutcome::complete())
+        .merge(DriverOutcome::accepted(job_reference()));
 
     assert_eq!(
         merged.references().cloned().collect::<Vec<_>>(),
         vec![task_reference(), job_reference()]
-    );
-    assert_eq!(
-        merged,
-        DriverOutcome::Accepted {
-            reference: task_reference(),
-            additional_references: vec![job_reference()],
-            follow_up: vec![
-                ControllerAction::Power(ResetType::ForceOff),
-                ControllerAction::Power(ResetType::On),
-            ],
-        }
     );
     let encoded = serde_json::to_value(&merged).expect("merged outcome serializes");
     assert_eq!(
         serde_json::from_value::<DriverOutcome>(encoded).expect("merged outcome deserializes"),
         merged
     );
+    assert_eq!(
+        DriverOutcome::complete().merge(DriverOutcome::complete()),
+        DriverOutcome::complete()
+    );
 }
 
 #[test]
-fn operation_identifiers_reject_empty_values() {
+fn vendor_job_ids_reject_empty_values() {
     for invalid in ["", " \t"] {
         assert!(invalid.parse::<VendorJobId>().is_err());
-        assert!(invalid.parse::<ManualInterventionCode>().is_err());
     }
     assert!("JID_42".parse::<VendorJobId>().is_ok());
-    assert!(
-        "replace-system-board"
-            .parse::<ManualInterventionCode>()
-            .is_ok()
-    );
 }

@@ -16,17 +16,14 @@
  */
 
 //! Runtime-owned BMC endpoint wiring, identity-based driver selection, and
-//! outcome execution.
-//!
-//! [`Executor`] polls BMC tasks and jobs and performs the follow-up actions a
-//! driver requests; controllers only see the actions that need them.
+//! the status of asynchronous work drivers hand back.
 
 mod connection;
 mod credentials;
 mod endpoint;
 mod error;
-mod execute;
 mod ipmi;
+mod status;
 
 pub use connection::{AuthRetryError, ConnectionManager};
 pub use credentials::{
@@ -35,5 +32,4 @@ pub use credentials::{
 };
 pub use endpoint::{BmcRef, BmcRefError, ConnectedBmc};
 pub use error::ConnectError;
-pub use execute::{ExecuteError, Executor, Progress};
 pub use ipmi::EndpointIpmiOps;

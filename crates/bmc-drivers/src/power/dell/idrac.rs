@@ -4,7 +4,7 @@
  */
 
 use async_trait::async_trait;
-use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power};
+use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 use serde_json::json;
@@ -16,7 +16,7 @@ use crate::resources::{attribute_map, selected_bios};
 /// Dell iDRAC host-power behavior.
 ///
 /// iDRAC has no AC-cycle action; the BIOS `PowerCycleRequest` job runs during
-/// the next reset, so the follow-up reset is what actually performs the cycle.
+/// the next reset, so the reset issued after staging it performs the cycle.
 pub(crate) struct IdracPower;
 
 /// Refused while the BIOS still restricts UEFI variable access, which a host
@@ -37,11 +37,11 @@ where
         &attribute_map([("PowerCycleRequest", json!("FullPowerCycle"))]),
     )
     .await?;
-    let follow_up = match standard::state(cx).await? {
+    let reset = match standard::state(cx).await? {
         PowerState::Off => ResetType::On,
         _ => ResetType::GracefulRestart,
     };
-    Ok(staged.then([ControllerAction::Power(follow_up)]))
+    Ok(staged.merge(StandardPower.set(cx, reset).await?))
 }
 
 #[async_trait]

@@ -67,6 +67,12 @@ pub enum PlatformError {
     },
     #[error("BMC returned an invalid response: {message}")]
     InvalidResponse { message: String },
+    /// The operation waits for an operator; `code` names the manual step.
+    #[error("operation requires manual intervention: {code}")]
+    ManualInterventionRequired { code: String },
+    /// The hardware did not reach the state the operation waited for.
+    #[error("BMC did not reach the expected state in time: {message}")]
+    Timeout { message: String },
 }
 
 impl PlatformError {
@@ -125,6 +131,12 @@ mod tests {
             },
             PlatformError::InvalidResponse {
                 message: "missing task location".to_string(),
+            },
+            PlatformError::ManualInterventionRequired {
+                code: "dpu-host-privilege-restricted".to_string(),
+            },
+            PlatformError::Timeout {
+                message: "host did not power off".to_string(),
             },
         ];
 

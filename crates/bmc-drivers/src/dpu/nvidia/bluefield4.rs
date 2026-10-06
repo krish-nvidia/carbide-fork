@@ -5,8 +5,7 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    ControllerAction, Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, ManualInterventionCode,
-    NicMode, OpCx, PlatformError, RshimState,
+    Dpu, DpuStatus, DriverOutcome, HostPrivilegeLevel, NicMode, OpCx, PlatformError, RshimState,
 };
 use nv_redfish::chassis::{NetworkAdapter, NetworkAdapterUpdate};
 use nv_redfish::core::Bmc;
@@ -27,11 +26,10 @@ pub(crate) struct BlueField4Dpu;
 /// The manual step a switch to NIC mode waits on while host privilege is Restricted.
 const HOST_PRIVILEGE_RESTRICTED: &str = "dpu-host-privilege-restricted";
 
-fn restricted_host_privilege() -> DriverOutcome {
-    DriverOutcome::blocked(ControllerAction::ManualIntervention {
-        code: ManualInterventionCode::new(HOST_PRIVILEGE_RESTRICTED.to_string())
-            .expect("a non-empty literal is a valid manual-intervention code"),
-    })
+fn restricted_host_privilege() -> PlatformError {
+    PlatformError::ManualInterventionRequired {
+        code: HOST_PRIVILEGE_RESTRICTED.to_string(),
+    }
 }
 
 /// The first network adapter carrying an `Oem.Nvidia` extension; the
@@ -101,7 +99,7 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
                 .map_err(|error| cx.map_redfish_error(error))?
                 .and_then(|config| config.host_privilege_level());
             if level == Some(HostPrivilegeLevelInput::Restricted) {
-                return Ok(restricted_host_privilege());
+                return Err(restricted_host_privilege());
             }
         }
         let mode = match mode {

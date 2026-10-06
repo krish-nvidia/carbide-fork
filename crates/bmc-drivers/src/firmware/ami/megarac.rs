@@ -94,10 +94,8 @@ async fn preserve_bmc_configuration<B: Bmc>(
         .map(DriverOutcome::from)
         .map_err(|error| cx.map_redfish_error(error))?
     {
-        DriverOutcome::Complete { .. } => Ok(()),
-        DriverOutcome::Accepted { .. } | DriverOutcome::Blocked { .. } => {
-            Err(PlatformError::Unsupported)
-        }
+        DriverOutcome::Complete => Ok(()),
+        DriverOutcome::Accepted { .. } => Err(PlatformError::Unsupported),
     }
 }
 

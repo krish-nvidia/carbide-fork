@@ -37,12 +37,9 @@ nv-redfish = { features = ["bmc-http", "job-service", "oem-dell", "task-service"
 serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-bmc-mock = { path = "../bmc-mock" }
 carbide-test-support = { path = "../test-support" }
-tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

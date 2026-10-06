@@ -3,15 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use std::num::NonZeroU64;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use bmc_platform::{ControllerAction, DriverOutcome, OpCx, PlatformError, Power, Quirk};
+use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power, Quirk};
 use nv_redfish::core::{ActionError, Bmc};
-use nv_redfish::resource::{PowerState, ResetType};
+use nv_redfish::resource::ResetType;
 
 use crate::power::lenovo::support::ac_power_cycle;
-use crate::power::standard::{self, StandardPower};
+use crate::power::standard::StandardPower;
+use crate::power::support::force_off_and_wait;
 
 /// Lenovo XClarity Controller power behavior.
 ///
@@ -19,19 +20,17 @@ use crate::power::standard::{self, StandardPower};
 /// and, after a wait, back on instead.
 pub(crate) struct XccPower;
 
-fn force_restart_outcome(state: PowerState) -> DriverOutcome {
-    if state != PowerState::Off {
-        DriverOutcome::blocked(ControllerAction::Power(ResetType::ForceOff))
-    } else {
-        DriverOutcome::Complete {
-            follow_up: vec![
-                ControllerAction::Wait {
-                    seconds: NonZeroU64::new(10).expect("workaround wait is nonzero"),
-                },
-                ControllerAction::Power(ResetType::On),
-            ],
-        }
-    }
+/// How long the host stays off before it is powered back on in place of a
+/// hanging ForceRestart.
+const FORCE_RESTART_OFF_TIME: Duration = Duration::from_secs(10);
+
+async fn off_then_on<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
+where
+    B::Error: ActionError,
+{
+    force_off_and_wait(cx).await?;
+    tokio::time::sleep(FORCE_RESTART_OFF_TIME).await;
+    StandardPower.set(cx, ResetType::On).await
 }
 
 #[async_trait]
@@ -54,7 +53,7 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         match reset_type {
             ResetType::ForceRestart if cx.has_quirk(Quirk::LenovoForceRestartHangs) => {
-                Ok(force_restart_outcome(standard::state(cx).await?))
+                off_then_on(cx).await
             }
             ResetType::FullPowerCycle => ac_power_cycle(cx).await,
             other => self.standard().set(cx, other).await,
@@ -64,24 +63,44 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::BTreeSet;
 
-    #[test]
-    fn hanging_force_restart_powers_off_before_delayed_power_on() {
+    use serde_json::json;
+    use tokio::time::Instant;
+
+    use super::*;
+    use crate::test_support::{Fixture, body};
+
+    #[tokio::test(start_paused = true)]
+    async fn hanging_force_restart_powers_on_only_after_the_host_has_stayed_off() {
+        const SYSTEM: &str = "/redfish/v1/Systems/1";
+        let bmc = Fixture::new("Lenovo", "XCC", "1", "1")
+            .document(
+                SYSTEM,
+                json!({
+                    "@odata.id": SYSTEM,
+                    "Id": "1",
+                    "Name": "System",
+                    "PowerState": "Off",
+                    "Actions": {"#ComputerSystem.Reset": {
+                        "target": "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset"
+                    }},
+                }),
+            )
+            .build()
+            .await;
+        let quirks = BTreeSet::from([Quirk::LenovoForceRestartHangs]);
+        let cx = bmc.cx().await.with_quirks(&quirks);
+        let started = Instant::now();
+
         assert_eq!(
-            force_restart_outcome(PowerState::On),
-            DriverOutcome::blocked(ControllerAction::Power(ResetType::ForceOff))
+            XccPower.set(&cx, ResetType::ForceRestart).await,
+            Ok(DriverOutcome::complete())
         );
+        assert!(started.elapsed() >= FORCE_RESTART_OFF_TIME);
         assert_eq!(
-            force_restart_outcome(PowerState::Off),
-            DriverOutcome::Complete {
-                follow_up: vec![
-                    ControllerAction::Wait {
-                        seconds: NonZeroU64::new(10).expect("nonzero"),
-                    },
-                    ControllerAction::Power(ResetType::On),
-                ],
-            }
+            bmc.writes().iter().map(body).collect::<Vec<_>>(),
+            [json!({"ResetType": "On"})]
         );
     }
 }

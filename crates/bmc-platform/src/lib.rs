@@ -53,8 +53,7 @@ pub use matcher::{
     Precedence, derived_precedence,
 };
 pub use operation::{
-    ControllerAction, DriverOutcome, ManualInterventionCode, ManualInterventionCodeError,
-    OperationReference, VendorJobId, VendorJobIdError,
+    DriverOutcome, OperationReference, OperationStatus, VendorJobId, VendorJobIdError,
 };
 pub use quirk::Quirk;
 pub use selection::Capability;
