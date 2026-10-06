@@ -46,4 +46,16 @@ pub enum Quirk {
     SupermicroMgxC2,
     /// The Supermicro BMC exposes the system `IPMIHostInterface`.
     SupermicroIpmiHostInterface,
+    /// The Supermicro BMC becomes unreachable when its host interface is
+    /// disabled, so lockdown leaves the interface up.
+    SupermicroHostInterfaceRequired,
+    /// A Redfish restart cuts power to the host's DPUs, breaking their PXE
+    /// boot, so the host restarts over IPMI instead.
+    /// <https://github.com/NVIDIA/bare-metal-manager-core/issues/347>
+    RedfishRestartCutsDpuPower,
+    /// A standard ForceRestart can hang the Lenovo host, so it is powered off
+    /// and, after a wait, back on instead.
+    LenovoForceRestartHangs,
+    /// The Viking host BIOS and BMC firmware are new enough to enable lockdown.
+    VikingLockdownFirmware,
 }

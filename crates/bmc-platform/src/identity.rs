@@ -69,6 +69,17 @@ pub struct ChassisIdentity {
     pub part_number: Option<String>,
 }
 
+/// One `UpdateService` firmware inventory entry.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FirmwareInventoryIdentity {
+    /// Resource id, such as `UEFI` or `HostBMC_0`.
+    pub id: String,
+    /// The version as site exploration reports it, with Lenovo's build-id
+    /// prefix (`26G-2.20`) and GB200's `GB200Nvl-` prefix trimmed.
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
 /// Minimal hardware and firmware projection used to select operation drivers.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -77,6 +88,7 @@ pub struct PlatformIdentity {
     pub manager: Option<ManagerIdentity>,
     pub system: Option<SystemIdentity>,
     pub chassis: Vec<ChassisIdentity>,
+    pub firmware_inventory: Vec<FirmwareInventoryIdentity>,
 }
 
 #[cfg(test)]

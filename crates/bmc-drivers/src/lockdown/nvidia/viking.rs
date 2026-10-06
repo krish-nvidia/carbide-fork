@@ -8,10 +8,9 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use bmc_platform::{
     DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
-    OpCx, PlatformError,
+    OpCx, PlatformError, Quirk,
 };
 use nv_redfish::core::Bmc;
-use version_compare::Cmp;
 
 use crate::lockdown::support::{signal, state_from_signals};
 use crate::resources::{patch_bios_attributes, selected_bios};
@@ -21,41 +20,9 @@ use crate::resources::{patch_bios_attributes, selected_bios};
 /// Firmware generations differ in both the KCS attribute name and its value
 /// vocabulary, so the write mirrors whichever encoding the BIOS reports. A
 /// denied KCS alone reports lockdown as enabled; unlocked also needs
-/// `RedfishEnable` enabled.
+/// `RedfishEnable` enabled. Enabling lockdown needs
+/// [`Quirk::VikingLockdownFirmware`].
 pub(crate) struct VikingLockdown;
-
-/// Lockdown needs at least these firmware inventory versions.
-const MINIMUM_LOCKDOWN_FIRMWARE: [(&str, &str); 2] =
-    [("HostBIOS_0", "1.01.03"), ("HostBMC_0", "23.11.09")];
-
-/// Fails with `Unsupported` when the host BIOS or BMC firmware is older than
-/// lockdown needs or does not report a version.
-async fn require_lockdown_firmware<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), PlatformError> {
-    let inventories = cx
-        .service_root()
-        .update_service()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .firmware_inventories()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?;
-    for (id, minimum) in MINIMUM_LOCKDOWN_FIRMWARE {
-        let version = inventories
-            .iter()
-            .map(|inventory| inventory.raw())
-            .find(|inventory| inventory.id == id)
-            .and_then(|inventory| inventory.version.clone().flatten());
-        let supported = version.as_deref().is_some_and(|version| {
-            version_compare::compare(version, minimum).is_ok_and(|order| order != Cmp::Lt)
-        });
-        if !supported {
-            return Err(PlatformError::Unsupported);
-        }
-    }
-    Ok(())
-}
 
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for VikingLockdown {
@@ -100,8 +67,8 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
             return Err(PlatformError::Unsupported);
         }
         let enabled = desired == LockdownDesiredState::Enabled;
-        if enabled {
-            require_lockdown_firmware(cx).await?;
+        if enabled && !cx.has_quirk(Quirk::VikingLockdownFirmware) {
+            return Err(PlatformError::Unsupported);
         }
         let bios = selected_bios(cx).await?;
         let mut attributes = BTreeMap::new();
@@ -129,5 +96,27 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
             );
         }
         patch_bios_attributes(cx, &attributes).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::Fixture;
+
+    #[tokio::test]
+    async fn lockdown_is_not_enabled_on_firmware_too_old_for_it() {
+        let bmc = Fixture::new("AMI", "AMI Redfish Server", "DGX", "BMC")
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+
+        assert_eq!(
+            VikingLockdown
+                .set(&cx, LockdownScope::All, LockdownDesiredState::Enabled)
+                .await,
+            Err(PlatformError::Unsupported)
+        );
+        assert!(bmc.writes().is_empty());
     }
 }

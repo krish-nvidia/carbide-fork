@@ -45,7 +45,8 @@ pub use capabilities::{
 };
 pub use error::{AuthError, PlatformError};
 pub use identity::{
-    ChassisIdentity, ManagerIdentity, PlatformIdentity, ServiceRootIdentity, SystemIdentity,
+    ChassisIdentity, FirmwareInventoryIdentity, ManagerIdentity, PlatformIdentity,
+    ServiceRootIdentity, SystemIdentity,
 };
 pub use matcher::{
     FirmwareVersionRange, FirmwareVersionRangeError, IdentityField, IdentityMatcher, MatchPattern,

@@ -3,6 +3,5 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-pub(crate) mod ars121l;
 pub(crate) mod smc;
 mod support;

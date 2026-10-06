@@ -191,13 +191,10 @@ drivers! {
         DellIdracPower = "dell-idrac-power" => power::dell::idrac::IdracPower,
         DeltaPowerShelfPower = "delta-power-shelf-power" => power::delta::power_shelf::DeltaPowerShelfPower,
         HpeIloPower = "hpe-ilo-power" => power::hpe::ilo::IloPower,
-        LenovoSr650V4Power = "lenovo-sr650-v4-power" => power::lenovo::sr650_v4::Sr650V4Power,
-        LenovoSr675V3OvxPower = "lenovo-sr675-v3-ovx-power" => power::lenovo::sr675_v3_ovx::Sr675V3OvxPower,
         LenovoXccPower = "lenovo-xcc-power" => power::lenovo::xcc::XccPower,
         LiteOnPowerShelfPower = "liteon-power-shelf-power" => power::liteon::power_shelf::LiteOnPowerShelfPower,
         NvidiaGh200Power = "nvidia-gh200-power" => power::nvidia::openbmc::Gh200Power,
         NvidiaOpenBmcPower = "nvidia-openbmc-power" => power::nvidia::openbmc::OpenBmcPower,
-        NvidiaVikingPower = "nvidia-viking-power" => power::nvidia::viking::VikingPower,
         SupermicroSmcPower = "supermicro-smc-power" => power::supermicro::smc::SmcPower,
     }
     BmcControl as bmc_control, with_bmc_control: BmcControl = bmc_control::standard::StandardBmcControl {
@@ -247,7 +244,6 @@ drivers! {
         LenovoGb300Lockdown = "lenovo-gb300-lockdown" => lockdown::lenovo::gb300::Gb300Lockdown,
         LenovoXccLockdown = "lenovo-xcc-lockdown" => lockdown::lenovo::xcc::XccLockdown,
         NvidiaVikingLockdown = "nvidia-viking-lockdown" => lockdown::nvidia::viking::VikingLockdown,
-        SupermicroArs121lLockdown = "supermicro-ars121l-lockdown" => lockdown::supermicro::ars121l::Ars121lLockdown,
         SupermicroSmcLockdown = "supermicro-smc-lockdown" => lockdown::supermicro::smc::SmcLockdown,
     }
     Accounts as accounts, with_accounts: Accounts = accounts::standard::StandardAccounts {

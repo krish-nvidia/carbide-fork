@@ -4,9 +4,9 @@
  */
 
 use bmc_platform::{
-    Capability, ChassisIdentity, FirmwareVersionRange, FirmwareVersionRangeError, IdentityField,
-    IdentityMatcher, ManagerIdentity, MatchPattern, Precedence, ServiceRootIdentity,
-    SystemIdentity,
+    Capability, ChassisIdentity, FirmwareInventoryIdentity, FirmwareVersionRange,
+    FirmwareVersionRangeError, IdentityField, IdentityMatcher, ManagerIdentity, MatchPattern,
+    Precedence, ServiceRootIdentity, SystemIdentity,
 };
 use carbide_test_support::value_scenarios;
 
@@ -38,6 +38,16 @@ fn identity() -> PlatformIdentity {
             model: Some("NVIDIA GB300".to_string()),
             part_number: None,
         }],
+        firmware_inventory: vec![
+            FirmwareInventoryIdentity {
+                id: "HostBIOS_0".to_string(),
+                version: Some("1.01.03".to_string()),
+            },
+            FirmwareInventoryIdentity {
+                id: "HostBMC_0".to_string(),
+                version: Some("23.11.21".to_string()),
+            },
+        ],
     }
 }
 
@@ -114,6 +124,21 @@ fn matchers_read_scalar_and_repeated_identity_fields() {
         (
             IdentityField::ChassisPartNumber,
             MatchPattern::Exact("missing".to_string()),
+            false,
+        ),
+        (
+            IdentityField::FirmwareInventory("HostBIOS_0".to_string()),
+            MatchPattern::VersionAtLeast("1.01.03".to_string()),
+            true,
+        ),
+        (
+            IdentityField::FirmwareInventory("HostBIOS_0".to_string()),
+            MatchPattern::VersionAtLeast("23.11.09".to_string()),
+            false,
+        ),
+        (
+            IdentityField::FirmwareInventory("HGX_FW_BMC_0".to_string()),
+            MatchPattern::VersionAtLeast("1.0".to_string()),
             false,
         ),
     ];
@@ -220,6 +245,16 @@ fn rule_validation_rejects_malformed_declarations() {
             RuleError::InvalidVersion {
                 id: "invalid".to_string(),
                 field: IdentityField::ManagerFirmware,
+            },
+        ),
+        (
+            invalid(IdentityMatcher::version_at_least(
+                IdentityField::FirmwareInventory(String::new()),
+                "1.0",
+            )),
+            RuleError::EmptyPattern {
+                id: "invalid".to_string(),
+                field: IdentityField::FirmwareInventory(String::new()),
             },
         ),
         (

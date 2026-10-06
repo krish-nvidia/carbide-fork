@@ -24,7 +24,7 @@ use version_compare::{Cmp, Version};
 use crate::PlatformIdentity;
 
 /// An identity value available to declarative selection rules.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityField {
     /// ServiceRoot `Vendor`.
@@ -59,6 +59,19 @@ pub enum IdentityField {
     ChassisModel,
     /// Any Chassis part number.
     ChassisPartNumber,
+    /// The version of the firmware inventory entry with this id.
+    FirmwareInventory(String),
+}
+
+impl IdentityField {
+    /// Whether this field holds a firmware version, the only kind of value
+    /// version patterns compare.
+    pub const fn is_version(&self) -> bool {
+        matches!(
+            self,
+            Self::ManagerFirmware | Self::SystemBiosVersion | Self::FirmwareInventory(_)
+        )
+    }
 }
 
 /// Inclusive validated firmware-version bounds.
@@ -147,6 +160,8 @@ pub enum MatchPattern {
     OneOf(Vec<String>),
     /// Requires a parseable version within inclusive validated bounds.
     FirmwareVersionRange(FirmwareVersionRange),
+    /// Requires a parseable version equal to this one.
+    VersionEqual(String),
     /// Requires a parseable version at or above this one.
     VersionAtLeast(String),
     /// Requires a parseable version below this one.
@@ -162,6 +177,7 @@ impl MatchPattern {
             | Self::Prefix(value)
             | Self::Contains(value)
             | Self::ContainsAsciiCaseInsensitive(value)
+            | Self::VersionEqual(value)
             | Self::VersionAtLeast(value)
             | Self::VersionBelow(value) => Some(value),
             Self::OneOf(values) => values.first().map(String::as_str),
@@ -169,21 +185,24 @@ impl MatchPattern {
         }
     }
 
-    /// Whether this pattern compares versions, which only firmware and BIOS
-    /// version fields carry.
+    /// Whether this pattern compares versions, which only
+    /// [`IdentityField::is_version`] fields carry.
     pub const fn is_version_pattern(&self) -> bool {
         matches!(
             self,
-            Self::FirmwareVersionRange(_) | Self::VersionAtLeast(_) | Self::VersionBelow(_)
+            Self::FirmwareVersionRange(_)
+                | Self::VersionEqual(_)
+                | Self::VersionAtLeast(_)
+                | Self::VersionBelow(_)
         )
     }
 
-    /// Whether an open version bound parses; other patterns have no bound to check.
+    /// Whether a single version bound parses; other patterns have no bound to check.
     pub fn has_parseable_bound(&self) -> bool {
         match self {
-            Self::VersionAtLeast(version) | Self::VersionBelow(version) => {
-                Version::from(version).is_some()
-            }
+            Self::VersionEqual(version)
+            | Self::VersionAtLeast(version)
+            | Self::VersionBelow(version) => Version::from(version).is_some(),
             _ => true,
         }
     }
@@ -200,6 +219,7 @@ impl MatchPattern {
                 .contains(&value.to_ascii_lowercase()),
             Self::OneOf(values) => values.iter().any(|value| candidate == value),
             Self::FirmwareVersionRange(range) => range.contains(candidate),
+            Self::VersionEqual(version) => version_order(candidate, version) == Some(Cmp::Eq),
             Self::VersionAtLeast(minimum) => {
                 version_order(candidate, minimum).is_some_and(|order| order != Cmp::Lt)
             }
@@ -266,6 +286,11 @@ impl IdentityMatcher {
         Self::new(field, MatchPattern::Contains(value.to_string()))
     }
 
+    /// The version in `field` equals `version`.
+    pub fn version_equal(field: IdentityField, version: &str) -> Self {
+        Self::new(field, MatchPattern::VersionEqual(version.to_string()))
+    }
+
     /// The version in `field` is at least `version`.
     pub fn version_at_least(field: IdentityField, version: &str) -> Self {
         Self::new(field, MatchPattern::VersionAtLeast(version.to_string()))
@@ -286,7 +311,7 @@ impl IdentityMatcher {
 
     /// Reports whether any value of this field satisfies the matcher.
     pub fn matches(&self, identity: &PlatformIdentity) -> bool {
-        field_values(identity, self.field)
+        field_values(identity, &self.field)
             .into_iter()
             .any(|value| self.pattern.matches(value))
     }
@@ -309,7 +334,7 @@ pub enum Precedence {
     DeploymentOverride,
 }
 
-fn field_values(identity: &PlatformIdentity, field: IdentityField) -> Vec<&str> {
+fn field_values<'a>(identity: &'a PlatformIdentity, field: &IdentityField) -> Vec<&'a str> {
     match field {
         IdentityField::ServiceRootVendor => optional(identity.service_root.vendor.as_deref()),
         IdentityField::ServiceRootProduct => optional(identity.service_root.product.as_deref()),
@@ -391,6 +416,12 @@ fn field_values(identity: &PlatformIdentity, field: IdentityField) -> Vec<&str> 
             .iter()
             .filter_map(|value| value.part_number.as_deref())
             .collect(),
+        IdentityField::FirmwareInventory(id) => identity
+            .firmware_inventory
+            .iter()
+            .filter(|entry| entry.id == *id)
+            .filter_map(|entry| entry.version.as_deref())
+            .collect(),
     }
 }
 
@@ -403,12 +434,12 @@ fn optional(value: Option<&str>) -> Vec<&str> {
 pub fn derived_precedence(matchers: &[IdentityMatcher]) -> Precedence {
     matchers
         .iter()
-        .filter_map(|matcher| field_precedence(matcher.field))
+        .filter_map(|matcher| field_precedence(&matcher.field))
         .max()
         .unwrap_or(Precedence::StandardDefault)
 }
 
-const fn field_precedence(field: IdentityField) -> Option<Precedence> {
+const fn field_precedence(field: &IdentityField) -> Option<Precedence> {
     match field {
         IdentityField::ServiceRootVendor
         | IdentityField::ServiceRootOemKey
@@ -425,6 +456,8 @@ const fn field_precedence(field: IdentityField) -> Option<Precedence> {
         | IdentityField::ChassisId
         | IdentityField::ChassisModel
         | IdentityField::ChassisPartNumber => Some(Precedence::ExactSystemIdentity),
-        IdentityField::ManagerFirmware | IdentityField::SystemBiosVersion => None,
+        IdentityField::ManagerFirmware
+        | IdentityField::SystemBiosVersion
+        | IdentityField::FirmwareInventory(_) => None,
     }
 }

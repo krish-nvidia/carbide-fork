@@ -11,9 +11,7 @@
 //! it only keeps the file readable. Tests prove every rule names a compiled
 //! driver of the right capability.
 
-use bmc_platform::{
-    Capability, FirmwareVersionRange, IdentityField, IdentityMatcher as Match, MatchPattern, Quirk,
-};
+use bmc_platform::{Capability, IdentityField, IdentityMatcher as Match, MatchPattern, Quirk};
 
 use crate::drivers::Driver::*;
 use crate::selection::{Rule, RuleError, Rules};
@@ -301,30 +299,6 @@ fn built_ins() -> Vec<Rule> {
         .drivers([LenovoXcc3BootOrder]),
     );
 
-    // SR650 V4 cuts DPU power on a Redfish restart, so the host restarts over IPMI.
-    rules.push(
-        Rule::new(
-            "lenovo-sr650-v4",
-            [
-                Match::vendor("Lenovo"),
-                Match::contains(IdentityField::SystemModel, "SR650 V4"),
-            ],
-        )
-        .drivers([LenovoSr650V4Power]),
-    );
-
-    // ARS-121L-DNR loses BMC reachability when its host interface is disabled.
-    rules.push(
-        Rule::new(
-            "supermicro-ars121l",
-            [
-                Match::vendor("Supermicro"),
-                Match::contains(IdentityField::SystemModel, "ARS-121L-DNR"),
-            ],
-        )
-        .drivers([SupermicroArs121lLockdown]),
-    );
-
     // BlueField-2 identifies itself only through its card chassis model.
     rules.push(
         Rule::new(
@@ -370,7 +344,6 @@ fn built_ins() -> Vec<Rule> {
             ],
         )
         .drivers([
-            NvidiaVikingPower,
             AmiMegaRacBmcControl,
             NvidiaVikingBios,
             NvidiaVikingBootOrder,
@@ -395,20 +368,80 @@ fn built_ins() -> Vec<Rule> {
         .unsupported([Capability::SecureBoot]),
     );
 
-    // A standard ForceRestart can hang on this SKU at exactly this firmware pair.
+    // ---- Quirk rules: every matching rule's quirks apply ----
+
+    // SR650 V4 and DGX Viking hosts cut DPU power on a Redfish restart.
     rules.push(
         Rule::new(
-            "lenovo-sr675-v3-ovx",
+            "lenovo-sr650-v4-redfish-restart-cuts-dpu-power",
             [
-                Match::exact(IdentityField::SystemSku, "7D9RCTOLWW"),
-                Match::exact(IdentityField::ManagerFirmware, "9.10"),
-                Match::exact(IdentityField::SystemBiosVersion, "7.10"),
+                Match::vendor("Lenovo"),
+                Match::contains(IdentityField::SystemModel, "SR650 V4"),
             ],
         )
-        .drivers([LenovoSr675V3OvxPower]),
+        .quirks([Quirk::RedfishRestartCutsDpuPower]),
+    );
+    rules.push(
+        Rule::new(
+            "nvidia-viking-redfish-restart-cuts-dpu-power",
+            [
+                Match::vendor("AMI"),
+                Match::exact(IdentityField::SystemId, "DGX"),
+                Match::exact(IdentityField::ManagerId, "BMC"),
+            ],
+        )
+        .quirks([Quirk::RedfishRestartCutsDpuPower]),
     );
 
-    // ---- Quirk rules: every matching rule's quirks apply ----
+    // ARS-121L-DNR loses BMC reachability when its host interface is disabled.
+    rules.push(
+        Rule::new(
+            "supermicro-ars121l-host-interface-required",
+            [
+                Match::vendor("Supermicro"),
+                Match::contains(IdentityField::SystemModel, "ARS-121L-DNR"),
+            ],
+        )
+        .quirks([Quirk::SupermicroHostInterfaceRequired]),
+    );
+
+    // A standard ForceRestart can hang on the SR675 V3 OVX at UEFI 7.10 with
+    // BMC 9.10.
+    rules.push(
+        Rule::new(
+            "lenovo-sr675-v3-ovx-force-restart-hangs",
+            [
+                Match::exact(IdentityField::SystemSku, "7D9RCTOLWW"),
+                Match::version_equal(IdentityField::FirmwareInventory("UEFI".to_string()), "7.10"),
+                Match::version_equal(
+                    IdentityField::FirmwareInventory("BMC-Primary".to_string()),
+                    "9.10",
+                ),
+            ],
+        )
+        .quirks([Quirk::LenovoForceRestartHangs]),
+    );
+
+    // Viking lockdown needs at least host BIOS 1.01.03 and BMC 23.11.09.
+    rules.push(
+        Rule::new(
+            "nvidia-viking-lockdown-firmware",
+            [
+                Match::vendor("AMI"),
+                Match::exact(IdentityField::SystemId, "DGX"),
+                Match::exact(IdentityField::ManagerId, "BMC"),
+                Match::version_at_least(
+                    IdentityField::FirmwareInventory("HostBIOS_0".to_string()),
+                    "1.01.03",
+                ),
+                Match::version_at_least(
+                    IdentityField::FirmwareInventory("HostBMC_0".to_string()),
+                    "23.11.09",
+                ),
+            ],
+        )
+        .quirks([Quirk::VikingLockdownFirmware]),
+    );
 
     // BlueField BMC firmware before BF-23.10-5 cannot read or switch NIC mode
     // through Redfish.
@@ -466,16 +499,7 @@ fn built_ins() -> Vec<Rule> {
             "nvidia-bluefield3-oem-timeout",
             [
                 Match::product(BLUEFIELD3_PRODUCTS),
-                Match::new(
-                    IdentityField::ManagerFirmware,
-                    MatchPattern::FirmwareVersionRange(
-                        FirmwareVersionRange::new(
-                            "BF-24.04-5".to_string(),
-                            "BF-24.04-5".to_string(),
-                        )
-                        .expect("a single version is a valid range"),
-                    ),
-                ),
+                Match::version_equal(IdentityField::ManagerFirmware, "BF-24.04-5"),
             ],
         )
         .quirks([Quirk::BlueFieldOemTimeoutInNicMode]),

@@ -9,10 +9,13 @@ use Capability::{
 };
 use Quirk::{
     BlueFieldNicModeBiosError, BlueFieldNicModeUnreadable, BlueFieldOemTimeoutInNicMode,
-    BlueFieldSpacedBiosAttributeNames, SupermicroIpmiHostInterface, SupermicroMgxC2,
+    BlueFieldSpacedBiosAttributeNames, LenovoForceRestartHangs, RedfishRestartCutsDpuPower,
+    SupermicroHostInterfaceRequired, SupermicroIpmiHostInterface, SupermicroMgxC2,
+    VikingLockdownFirmware,
 };
 use bmc_platform::{
-    ChassisIdentity, ManagerIdentity, PlatformIdentity, ServiceRootIdentity, SystemIdentity,
+    ChassisIdentity, FirmwareInventoryIdentity, ManagerIdentity, PlatformIdentity,
+    ServiceRootIdentity, SystemIdentity,
 };
 
 use super::*;
@@ -187,22 +190,28 @@ fn with_manager_firmware(mut platform: PlatformIdentity, firmware: &str) -> Plat
     platform
 }
 
-/// Lenovo SR675 V3 OVX at manager firmware 9.10 and the given BIOS version.
-fn sr675_v3_ovx(bios_version: &str) -> PlatformIdentity {
-    let mut platform = with_system(
+fn sr675_v3_ovx() -> PlatformIdentity {
+    with_system(
         identity("Lenovo", None),
         SystemIdentity {
             id: "1".to_string(),
             sku: Some("7D9RCTOLWW".to_string()),
-            bios_version: Some(bios_version.to_string()),
             ..SystemIdentity::default()
         },
-    );
-    platform.manager = Some(ManagerIdentity {
-        id: "1".to_string(),
-        model: Some("XCC".to_string()),
-        firmware: Some("9.10".to_string()),
-    });
+    )
+}
+
+fn with_firmware_inventory(
+    mut platform: PlatformIdentity,
+    entries: &[(&str, &str)],
+) -> PlatformIdentity {
+    platform.firmware_inventory = entries
+        .iter()
+        .map(|(id, version)| FirmwareInventoryIdentity {
+            id: (*id).to_string(),
+            version: Some((*version).to_string()),
+        })
+        .collect();
     platform
 }
 
@@ -286,11 +295,6 @@ fn narrower_identity_outranks_broader_rules() {
             expect: vec![(Bios, driver(AmiMegaRacBios))],
         },
         Case {
-            scenario: "Supermicro ARS-121L",
-            identity: ars121l(),
-            expect: vec![(Lockdown, driver(SupermicroArs121lLockdown))],
-        },
-        Case {
             scenario: "BlueField-2",
             identity: bluefield2(),
             expect: vec![(Dpu, driver(NvidiaBlueField2Dpu))],
@@ -350,16 +354,6 @@ fn narrower_identity_outranks_broader_rules() {
                 (Bios, driver(LenovoGb300Bios)),
                 (Attestation, driver(NvidiaHgxAttestation)),
             ],
-        },
-        Case {
-            scenario: "SR675 V3 OVX workaround at its exact firmware pair",
-            identity: sr675_v3_ovx("7.10"),
-            expect: vec![(Power, driver(LenovoSr675V3OvxPower))],
-        },
-        Case {
-            scenario: "SR675 V3 OVX on another BIOS keeps XCC power",
-            identity: sr675_v3_ovx("7.11"),
-            expect: vec![(Power, driver(LenovoXccPower))],
         },
     ];
 
@@ -457,6 +451,60 @@ fn firmware_and_model_resolve_to_their_quirks() {
             scenario: "MGX C2 whose manager reports no firmware",
             identity: mgx_c2(Some("PG535-A00"), None),
             expect: vec![SupermicroMgxC2],
+        },
+        Case {
+            scenario: "SR675 V3 OVX at the firmware pair where ForceRestart hangs",
+            identity: with_firmware_inventory(
+                sr675_v3_ovx(),
+                &[("UEFI", "7.10"), ("BMC-Primary", "9.10")],
+            ),
+            expect: vec![LenovoForceRestartHangs],
+        },
+        Case {
+            scenario: "SR675 V3 OVX on other UEFI firmware",
+            identity: with_firmware_inventory(
+                sr675_v3_ovx(),
+                &[("UEFI", "7.11"), ("BMC-Primary", "9.10")],
+            ),
+            expect: vec![],
+        },
+        Case {
+            scenario: "Viking at its lockdown firmware minimums or newer",
+            identity: with_firmware_inventory(
+                viking(),
+                &[("HostBIOS_0", "01.01.03"), ("HostBMC_0", "23.11.21")],
+            ),
+            expect: vec![RedfishRestartCutsDpuPower, VikingLockdownFirmware],
+        },
+        Case {
+            scenario: "Viking BMC firmware below the lockdown minimum",
+            identity: with_firmware_inventory(
+                viking(),
+                &[("HostBIOS_0", "01.01.03"), ("HostBMC_0", "23.11.08")],
+            ),
+            expect: vec![RedfishRestartCutsDpuPower],
+        },
+        Case {
+            scenario: "Viking reporting no firmware inventory",
+            identity: viking(),
+            expect: vec![RedfishRestartCutsDpuPower],
+        },
+        Case {
+            scenario: "Lenovo SR650 V4",
+            identity: with_system(
+                identity("Lenovo", None),
+                SystemIdentity {
+                    id: "1".to_string(),
+                    model: Some("ThinkSystem SR650 V4".to_string()),
+                    ..SystemIdentity::default()
+                },
+            ),
+            expect: vec![RedfishRestartCutsDpuPower],
+        },
+        Case {
+            scenario: "Supermicro ARS-121L",
+            identity: ars121l(),
+            expect: vec![SupermicroHostInterfaceRequired],
         },
     ];
 

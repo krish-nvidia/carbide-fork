@@ -293,37 +293,34 @@ impl Rules {
                     if values.is_empty() {
                         return Err(RuleError::EmptyOneOf {
                             id: rule.id.clone(),
-                            field: matcher.field,
+                            field: matcher.field.clone(),
                         });
                     }
                     if has_duplicates(values.iter()) {
                         return Err(RuleError::DuplicateOneOfValue {
                             id: rule.id.clone(),
-                            field: matcher.field,
+                            field: matcher.field.clone(),
                         });
                     }
                 }
-                if matcher.pattern.first_value().is_some_and(str::is_empty) {
+                let empty_inventory_id =
+                    matches!(&matcher.field, IdentityField::FirmwareInventory(id) if id.is_empty());
+                if empty_inventory_id || matcher.pattern.first_value().is_some_and(str::is_empty) {
                     return Err(RuleError::EmptyPattern {
                         id: rule.id.clone(),
-                        field: matcher.field,
+                        field: matcher.field.clone(),
                     });
                 }
-                if matcher.pattern.is_version_pattern()
-                    && !matches!(
-                        matcher.field,
-                        IdentityField::ManagerFirmware | IdentityField::SystemBiosVersion
-                    )
-                {
+                if matcher.pattern.is_version_pattern() && !matcher.field.is_version() {
                     return Err(RuleError::VersionRangeOnNonFirmwareField {
                         id: rule.id.clone(),
-                        field: matcher.field,
+                        field: matcher.field.clone(),
                     });
                 }
                 if !matcher.pattern.has_parseable_bound() {
                     return Err(RuleError::InvalidVersion {
                         id: rule.id.clone(),
-                        field: matcher.field,
+                        field: matcher.field.clone(),
                     });
                 }
             }

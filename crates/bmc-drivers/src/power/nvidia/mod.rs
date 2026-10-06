@@ -4,4 +4,3 @@
  */
 
 pub(crate) mod openbmc;
-pub(crate) mod viking;

@@ -6,12 +6,16 @@
 //! Standard Redfish power control.
 
 use async_trait::async_trait;
-use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
+use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power, Quirk};
 use nv_redfish::chassis::Chassis;
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 
+use crate::power::support::ipmi_restart;
+
 /// Spec-compliant Redfish power control.
+///
+/// With [`Quirk::RedfishRestartCutsDpuPower`], restarts go over IPMI.
 pub(crate) struct StandardPower;
 
 #[async_trait]
@@ -37,7 +41,16 @@ where
         cx: &OpCx<'_, B>,
         reset_type: ResetType,
     ) -> Result<DriverOutcome, PlatformError> {
-        reset(cx, reset_type).await
+        match reset_type {
+            // Platforms with an AC power cycle implement it in their own driver.
+            ResetType::FullPowerCycle => Err(PlatformError::Unsupported),
+            ResetType::ForceRestart | ResetType::GracefulRestart
+                if cx.has_quirk(Quirk::RedfishRestartCutsDpuPower) =>
+            {
+                ipmi_restart(cx).await
+            }
+            other => reset(cx, other).await,
+        }
     }
 
     async fn chassis_reset(
@@ -126,7 +139,10 @@ fn already_satisfied_is_complete(
 
 #[cfg(test)]
 mod tests {
-    use bmc_platform::{PlatformIdentity, SystemIdentity};
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use bmc_platform::{IpmiOps, PlatformIdentity, SystemIdentity};
     use serde_json::json;
 
     use super::*;
@@ -167,5 +183,57 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&request.body).expect("JSON body"),
             json!({"ResetType": "ForceOff"})
         );
+    }
+
+    #[derive(Default)]
+    struct RecordingIpmi {
+        power_resets: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl IpmiOps for RecordingIpmi {
+        async fn bmc_cold_reset(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        async fn chassis_power_reset(&self) -> Result<(), PlatformError> {
+            self.power_resets.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn restarts_go_over_ipmi_when_a_redfish_restart_cuts_dpu_power() {
+        let bmc = bmc_mock::test_support::dell_poweredge_r750_bmc().await;
+        let identity = PlatformIdentity::default();
+        let ipmi = RecordingIpmi::default();
+        let quirks = BTreeSet::from([Quirk::RedfishRestartCutsDpuPower]);
+        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity)
+            .with_ipmi(&ipmi)
+            .with_quirks(&quirks);
+        bmc.http_client.take_requests();
+
+        for reset_type in [ResetType::ForceRestart, ResetType::GracefulRestart] {
+            assert_eq!(
+                StandardPower.set(&cx, reset_type).await,
+                Ok(DriverOutcome::complete())
+            );
+        }
+        assert_eq!(ipmi.power_resets.load(Ordering::SeqCst), 2);
+        assert!(bmc.http_client.take_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn standard_ac_power_cycle_is_unsupported_without_a_request() {
+        let bmc = bmc_mock::test_support::dell_poweredge_r750_bmc().await;
+        let identity = PlatformIdentity::default();
+        let cx = OpCx::new(bmc.bmc.as_ref(), bmc.service_root.as_ref(), &identity);
+        bmc.http_client.take_requests();
+
+        assert_eq!(
+            StandardPower.set(&cx, ResetType::FullPowerCycle).await,
+            Err(PlatformError::Unsupported)
+        );
+        assert!(bmc.http_client.take_requests().is_empty());
     }
 }
