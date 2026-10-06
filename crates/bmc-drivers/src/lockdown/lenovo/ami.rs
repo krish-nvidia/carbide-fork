@@ -10,7 +10,7 @@ use bmc_platform::{
 };
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::ami::config_bmc::{
-    ConfigBmcUpdate, LockdownBiosSettingsChangeState, LockdownBiosUpgradeDowngradeState,
+    ConfigBmc, ConfigBmcUpdate, LockdownBiosSettingsChangeState, LockdownBiosUpgradeDowngradeState,
     LockoutBiosVariableWriteMode, LockoutHostControlState,
 };
 
@@ -19,20 +19,23 @@ use crate::lockdown::support::{set_first_host_interface, signal, state_from_sign
 /// Lenovo AMI lockdown driver.
 ///
 /// The OEM `ConfigBMC` object switches host control and BIOS protection
-/// together, so `All` is the only full scope; BMC system lockdown is the
-/// host interface.
+/// together, so `All` is the only full scope; the BMC-side lock is the host
+/// interface.
 pub(crate) struct LenovoAmiLockdown;
+
+async fn config_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<ConfigBmc<B>, PlatformError> {
+    cx.manager()
+        .await?
+        .oem_ami_config_bmc()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)
+}
 
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let config = cx
-            .manager()
-            .await?
-            .oem_ami_config_bmc()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .ok_or(PlatformError::Unsupported)?;
+        let config = config_bmc(cx).await?;
         let raw = config.raw();
         let signals = [
             signal(
@@ -78,34 +81,37 @@ impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
     ) -> Result<DriverOutcome, PlatformError> {
         match scope {
             LockdownScope::All => {}
-            LockdownScope::BmcSystemLockdown => {
+            LockdownScope::Bmc => {
                 let enabled = desired == LockdownDesiredState::Enabled;
                 return set_first_host_interface(cx, !enabled).await;
             }
-            LockdownScope::Host | LockdownScope::Bmc => return Err(PlatformError::Unsupported),
+            LockdownScope::Host | LockdownScope::BmcSystemLockdown => {
+                return Err(PlatformError::Unsupported);
+            }
         }
-        let config = cx
-            .manager()
-            .await?
-            .oem_ami_config_bmc()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .ok_or(PlatformError::Unsupported)?;
-        let update = if desired == LockdownDesiredState::Enabled {
-            ConfigBmcUpdate::builder()
-                .with_lockout_host_control(LockoutHostControlState::Enable)
-                .with_lockout_bios_variable_write_mode(LockoutBiosVariableWriteMode::Enable)
-                .with_lockdown_bios_settings_change(LockdownBiosSettingsChangeState::Enable)
-                .with_lockdown_bios_upgrade_downgrade(LockdownBiosUpgradeDowngradeState::Enable)
-        } else {
-            ConfigBmcUpdate::builder()
-                .with_lockout_host_control(LockoutHostControlState::Disable)
-                .with_lockout_bios_variable_write_mode(LockoutBiosVariableWriteMode::Disable)
-                .with_lockdown_bios_settings_change(LockdownBiosSettingsChangeState::Disable)
-                .with_lockdown_bios_upgrade_downgrade(LockdownBiosUpgradeDowngradeState::Disable)
+        let (host_control, variable_write, settings_change, upgrade_downgrade) = match desired {
+            LockdownDesiredState::Enabled => (
+                LockoutHostControlState::Enable,
+                LockoutBiosVariableWriteMode::Enable,
+                LockdownBiosSettingsChangeState::Enable,
+                LockdownBiosUpgradeDowngradeState::Enable,
+            ),
+            LockdownDesiredState::Disabled => (
+                LockoutHostControlState::Disable,
+                LockoutBiosVariableWriteMode::Disable,
+                LockdownBiosSettingsChangeState::Disable,
+                LockdownBiosUpgradeDowngradeState::Disable,
+            ),
         };
-        config
-            .apply(&update.build())
+        let update = ConfigBmcUpdate::builder()
+            .with_lockout_host_control(host_control)
+            .with_lockout_bios_variable_write_mode(variable_write)
+            .with_lockdown_bios_settings_change(settings_change)
+            .with_lockdown_bios_upgrade_downgrade(upgrade_downgrade)
+            .build();
+        config_bmc(cx)
+            .await?
+            .apply(&update)
             .await
             .map(DriverOutcome::from)
             .map_err(|error| cx.map_redfish_error(error))

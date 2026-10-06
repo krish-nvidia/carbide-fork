@@ -135,11 +135,12 @@ fn built_ins() -> Vec<Rule> {
     // identifies them.
     rules.push(
         Rule::new("delta-power-shelf", [Match::chassis_manufacturer("Delta")])
-            .drivers([DeltaPowerShelfPower, DeltaPowerShelfAccounts, NoopLockdown])
+            .drivers([DeltaPowerShelfPower, DeltaPowerShelfAccounts])
             .unsupported([
                 Capability::Bios,
                 Capability::BootOrder,
                 Capability::SecureBoot,
+                Capability::Lockdown,
                 Capability::Firmware,
                 Capability::Attestation,
             ]),
@@ -154,27 +155,29 @@ fn built_ins() -> Vec<Rule> {
             LiteOnPowerShelfPower,
             LiteOnPowerShelfAccounts,
             LiteOnPowerShelfBios,
-            NoopLockdown,
         ])
         .unsupported([
             Capability::BootOrder,
             Capability::SecureBoot,
+            Capability::Lockdown,
             Capability::Attestation,
         ]),
     );
 
     // Wiwynn's GB200 NVL trays run NVIDIA OpenBMC under their own vendor.
+    // OpenBMC has no lockdown.
     rules.push(
-        Rule::new("nvidia-gbx00-wiwynn", [Match::vendor("Wiwynn")]).drivers([
-            NvidiaGbx00BootOrder,
-            NvidiaOpenBmcLockdown,
-            NvidiaOpenBmcPower,
-            NvidiaOpenBmcFirmware,
-            NvidiaOpenBmcAccounts,
-            NvidiaHgxAttestation,
-            NvidiaGbx00Bios,
-            NvidiaOpenBmcConsole,
-        ]),
+        Rule::new("nvidia-gbx00-wiwynn", [Match::vendor("Wiwynn")])
+            .drivers([
+                NvidiaGbx00BootOrder,
+                NvidiaOpenBmcPower,
+                NvidiaOpenBmcFirmware,
+                NvidiaOpenBmcAccounts,
+                NvidiaHgxAttestation,
+                NvidiaGbx00Bios,
+                NvidiaOpenBmcConsole,
+            ])
+            .unsupported([Capability::Lockdown]),
     );
 
     // ---- Product rules: ServiceRoot product ----
@@ -188,7 +191,6 @@ fn built_ins() -> Vec<Rule> {
         )
         .drivers([
             NvidiaGbx00BootOrder,
-            NvidiaOpenBmcLockdown,
             NvidiaOpenBmcPower,
             NvidiaOpenBmcFirmware,
             NvidiaOpenBmcAccounts,
@@ -196,20 +198,22 @@ fn built_ins() -> Vec<Rule> {
             NvidiaGbx00Bios,
             NvidiaOpenBmcConsole,
         ])
-        .standard([Capability::BmcControl]),
+        .standard([Capability::BmcControl])
+        .unsupported([Capability::Lockdown]),
     );
 
     rules.push(
-        Rule::new("nvidia-vera", [Match::product(&["VR NVL72"])]).drivers([
-            NvidiaVeraRubinBootOrder,
-            NvidiaOpenBmcLockdown,
-            NvidiaOpenBmcPower,
-            NvidiaOpenBmcFirmware,
-            NvidiaOpenBmcAccounts,
-            NvidiaHgxAttestation,
-            NvidiaVeraRubinBios,
-            NvidiaOpenBmcConsole,
-        ]),
+        Rule::new("nvidia-vera", [Match::product(&["VR NVL72"])])
+            .drivers([
+                NvidiaVeraRubinBootOrder,
+                NvidiaOpenBmcPower,
+                NvidiaOpenBmcFirmware,
+                NvidiaOpenBmcAccounts,
+                NvidiaHgxAttestation,
+                NvidiaVeraRubinBios,
+                NvidiaOpenBmcConsole,
+            ])
+            .unsupported([Capability::Lockdown]),
     );
 
     // GH200 firmware updates take the caller's parameters unchanged.
@@ -217,13 +221,12 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("nvidia-gh", [Match::product(&["P3809"])])
             .drivers([
                 NvidiaGh200BootOrder,
-                NvidiaOpenBmcLockdown,
                 NvidiaGh200Bios,
                 NvidiaGh200Power,
                 NvidiaGh200Accounts,
                 NvidiaOpenBmcConsole,
             ])
-            .unsupported([Capability::Attestation]),
+            .unsupported([Capability::Lockdown, Capability::Attestation]),
     );
 
     rules.push(
@@ -275,11 +278,11 @@ fn built_ins() -> Vec<Rule> {
             NvidiaSwitchBootOrder,
             NvidiaSwitchAccounts,
             NvidiaSwitchBios,
-            NoopLockdown,
         ])
         .standard([Capability::Power])
         .unsupported([
             Capability::SecureBoot,
+            Capability::Lockdown,
             Capability::Firmware,
             Capability::Attestation,
         ]),

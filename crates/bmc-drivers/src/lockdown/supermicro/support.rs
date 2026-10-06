@@ -3,13 +3,69 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! The host KCS control the Supermicro lockdown drivers share.
+//! The KCS, host-interface, and system-lockdown controls the Supermicro
+//! lockdown drivers share.
 
-use bmc_platform::{DriverOutcome, OpCx, PlatformError, Quirk};
+use bmc_platform::{DriverOutcome, LockdownScope, OpCx, PlatformError, Quirk};
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
 
-use crate::lockdown::support::{Signal, signal};
+use crate::lockdown::support::{Signal, host_interfaces, set_host_interface, signal};
+
+/// Whether the OEM `SysLockdown` switch is on; `None` when unreported.
+pub(super) async fn sys_lockdown<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
+    Ok(cx
+        .manager()
+        .await?
+        .oem_supermicro()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .sys_lockdown()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .and_then(|value| value.sys_lockdown_enabled()))
+}
+
+pub(super) async fn set_sys_lockdown<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    enabled: bool,
+) -> Result<DriverOutcome, PlatformError> {
+    cx.manager()
+        .await?
+        .oem_supermicro()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .sys_lockdown()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)?
+        .set_enabled(enabled)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
+}
+
+/// Whether the first host interface is enabled; `None` when unreported.
+pub(super) async fn host_interface_enabled<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<Option<bool>, PlatformError> {
+    Ok(host_interfaces(cx)
+        .await?
+        .first()
+        .and_then(|interface| interface.interface_enabled()))
+}
+
+/// Enables or disables every host interface.
+pub(super) async fn set_host_interfaces<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    enabled: bool,
+) -> Result<DriverOutcome, PlatformError> {
+    let mut outcome = DriverOutcome::complete();
+    for interface in host_interfaces(cx).await? {
+        outcome = outcome.merge(set_host_interface(cx, &interface, enabled).await?);
+    }
+    Ok(outcome)
+}
 
 /// Host KCS access: the OEM `KCSInterface` privilege, or on MGX C2 the system
 /// `IPMIHostInterface` read as `Administrator` when enabled and `Callback`
@@ -48,6 +104,16 @@ pub(super) async fn kcs_privilege<B: Bmc>(
         .ok_or_else(|| PlatformError::InvalidResponse {
             message: "Supermicro KCSInterface does not report Privilege".to_string(),
         })
+}
+
+/// Whether `scope` covers the OEM `SysLockdown` switch; Supermicro has no
+/// separate [`LockdownScope::BmcSystemLockdown`].
+pub(super) fn sys_lockdown_scope(scope: LockdownScope) -> Result<bool, PlatformError> {
+    match scope {
+        LockdownScope::Bmc | LockdownScope::All => Ok(true),
+        LockdownScope::Host => Ok(false),
+        LockdownScope::BmcSystemLockdown => Err(PlatformError::Unsupported),
+    }
 }
 
 /// A KCS state the BMC does not report counts as both locked and unlocked.

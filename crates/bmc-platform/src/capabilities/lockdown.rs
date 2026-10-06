@@ -35,10 +35,16 @@ pub enum LockdownState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LockdownScope {
+    /// Host-side controls only (KCS, USB, in-band interfaces).
     Host,
+    /// The BMC-side lock a platform toggles around configuration changes:
+    /// Dell's BMC lockdown, Supermicro's system lockdown, the AMI host
+    /// interface.
     Bmc,
-    /// The BMC's system-lockdown switch without the other BMC restrictions.
+    /// Dell iDRAC's system-lockdown switch alone, without the other BMC
+    /// restrictions. Other platforms do not support it.
     BmcSystemLockdown,
+    /// The platform's full lockdown.
     All,
 }
 
@@ -67,6 +73,11 @@ pub struct LockdownStatus {
 }
 
 /// Host and BMC lockdown status and mutation operations.
+///
+/// [`PlatformError::Unsupported`] means the platform has no such control:
+/// from [`Self::status`], no lockdown at all; from [`Self::set`], nothing for
+/// that [`LockdownScope`]. Callers skip the step rather than fail. Platforms
+/// with no lockdown have no driver, so every call answers `Unsupported`.
 #[async_trait]
 pub trait Lockdown<B: Bmc>: Send + Sync {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError>;

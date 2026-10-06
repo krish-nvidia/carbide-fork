@@ -246,8 +246,6 @@ drivers! {
         LenovoAmiLockdown = "lenovo-ami-lockdown" => lockdown::lenovo::ami::LenovoAmiLockdown,
         LenovoGb300Lockdown = "lenovo-gb300-lockdown" => lockdown::lenovo::gb300::Gb300Lockdown,
         LenovoXccLockdown = "lenovo-xcc-lockdown" => lockdown::lenovo::xcc::XccLockdown,
-        NoopLockdown = "noop-lockdown" => lockdown::noop::NoopLockdown,
-        NvidiaOpenBmcLockdown = "nvidia-openbmc-lockdown" => lockdown::nvidia::openbmc::OpenBmcLockdown,
         NvidiaVikingLockdown = "nvidia-viking-lockdown" => lockdown::nvidia::viking::VikingLockdown,
         SupermicroArs121lLockdown = "supermicro-ars121l-lockdown" => lockdown::supermicro::ars121l::Ars121lLockdown,
         SupermicroSmcLockdown = "supermicro-smc-lockdown" => lockdown::supermicro::smc::SmcLockdown,

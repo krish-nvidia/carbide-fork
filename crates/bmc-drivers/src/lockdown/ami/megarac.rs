@@ -81,6 +81,9 @@ impl<B: Bmc> Lockdown<B> for MegaRacLockdown {
         scope: LockdownScope,
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
+        if scope == LockdownScope::BmcSystemLockdown {
+            return Err(PlatformError::Unsupported);
+        }
         let enabled = desired == LockdownDesiredState::Enabled;
         let mut outcome = DriverOutcome::complete();
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
@@ -97,10 +100,7 @@ impl<B: Bmc> Lockdown<B> for MegaRacLockdown {
                 .collect();
             outcome = outcome.merge(patch_bios_attributes(cx, &attributes).await?);
         }
-        if matches!(
-            scope,
-            LockdownScope::Bmc | LockdownScope::BmcSystemLockdown | LockdownScope::All
-        ) {
+        if matches!(scope, LockdownScope::Bmc | LockdownScope::All) {
             outcome = outcome.merge(set_first_host_interface(cx, !enabled).await?);
         }
         Ok(outcome)

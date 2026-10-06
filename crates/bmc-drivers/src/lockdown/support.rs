@@ -24,14 +24,15 @@ pub(super) async fn host_interfaces<B: Bmc>(
         .map_err(|error| cx.map_redfish_error(error))
 }
 
-/// BMC lockdown state derived from the manager's first host interface.
+/// BMC lockdown state derived from the manager's first host interface, which
+/// is enabled unless it reports otherwise.
 pub(super) async fn host_interface_state<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<(LockdownState, Option<bool>), PlatformError> {
     let enabled = host_interfaces(cx)
         .await?
         .first()
-        .and_then(|interface| interface.interface_enabled());
+        .map(|interface| interface.interface_enabled().unwrap_or(true));
     Ok((state_from_signals(&[signal(enabled, false, true)]), enabled))
 }
 
@@ -105,7 +106,48 @@ pub(super) fn status(host: LockdownState, bmc: LockdownState, message: String) -
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::test_support::Fixture;
+
+    #[tokio::test]
+    async fn a_host_interface_that_omits_interface_enabled_counts_as_enabled() {
+        const MANAGER: &str = "/redfish/v1/Managers/Self";
+        const HOST_INTERFACES: &str = "/redfish/v1/Managers/Self/HostInterfaces";
+        const HOST_INTERFACE: &str = "/redfish/v1/Managers/Self/HostInterfaces/Self";
+        let bmc = Fixture::new("AMI", "AMI Redfish Server", "Self", "Self")
+            .document(
+                MANAGER,
+                json!({
+                    "@odata.id": MANAGER,
+                    "Id": "Self",
+                    "Name": "Manager",
+                    "HostInterfaces": {"@odata.id": HOST_INTERFACES},
+                }),
+            )
+            .document(
+                HOST_INTERFACES,
+                json!({
+                    "@odata.id": HOST_INTERFACES,
+                    "@odata.type": "#HostInterfaceCollection.HostInterfaceCollection",
+                    "Name": "Host Interface Collection",
+                    "Members": [{"@odata.id": HOST_INTERFACE}],
+                }),
+            )
+            .document(
+                HOST_INTERFACE,
+                json!({"@odata.id": HOST_INTERFACE, "Id": "Self", "Name": "Host Interface"}),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+
+        assert_eq!(
+            host_interface_state(&cx).await,
+            Ok((LockdownState::Disabled, Some(true)))
+        );
+    }
 
     #[test]
     fn signal_and_component_aggregation_preserves_partial() {

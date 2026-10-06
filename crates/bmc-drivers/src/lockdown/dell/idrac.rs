@@ -84,6 +84,18 @@ async fn lock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformErr
     Ok(restrictions.merge(lockdown))
 }
 
+/// Flips only the system-lockdown switch, which takes effect at once.
+async fn set_system_lockdown<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    enabled: bool,
+) -> Result<DriverOutcome, PlatformError> {
+    let attributes = attribute_map([(
+        "Lockdown.1.SystemLockdown",
+        json!(if enabled { "Enabled" } else { "Disabled" }),
+    )]);
+    dell::patch_manager_attributes(cx, &attributes, None).await
+}
+
 async fn unlock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
     let boot_device = first_boot_device(cx).await?;
     let attributes = attribute_map([
@@ -149,16 +161,76 @@ where
         let enabled = desired == LockdownDesiredState::Enabled;
         match scope {
             LockdownScope::Host => set_host(cx, enabled).await,
-            LockdownScope::Bmc | LockdownScope::BmcSystemLockdown | LockdownScope::All
-                if enabled =>
-            {
-                lock_bmc(cx).await
-            }
-            LockdownScope::Bmc | LockdownScope::BmcSystemLockdown => unlock_bmc(cx).await,
+            LockdownScope::BmcSystemLockdown => set_system_lockdown(cx, enabled).await,
+            LockdownScope::Bmc | LockdownScope::All if enabled => lock_bmc(cx).await,
+            LockdownScope::Bmc => unlock_bmc(cx).await,
             LockdownScope::All => {
                 let bmc = unlock_bmc(cx).await?;
                 Ok(bmc.merge(unlock_bios(cx).await?))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Method;
+
+    use super::*;
+    use crate::test_support::{Fixture, body, path};
+
+    const MANAGER: &str = "/redfish/v1/Managers/iDRAC.Embedded.1";
+    const ATTRIBUTES: &str =
+        "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/DellAttributes/iDRAC.Embedded.1";
+
+    #[tokio::test]
+    async fn system_lockdown_scope_flips_only_the_switch_at_once() {
+        for (desired, value) in [
+            (LockdownDesiredState::Enabled, "Enabled"),
+            (LockdownDesiredState::Disabled, "Disabled"),
+        ] {
+            let bmc = Fixture::new(
+                "Dell",
+                "Integrated Dell Remote Access Controller",
+                "System.Embedded.1",
+                "iDRAC.Embedded.1",
+            )
+            .document(
+                MANAGER,
+                json!({
+                    "@odata.id": MANAGER,
+                    "Id": "iDRAC.Embedded.1",
+                    "Name": "Manager",
+                    "Links": {"Oem": {"Dell": {"DellAttributes": [{"@odata.id": ATTRIBUTES}]}}},
+                }),
+            )
+            .document(
+                ATTRIBUTES,
+                json!({
+                    "@odata.id": ATTRIBUTES,
+                    "Id": "iDRAC.Embedded.1",
+                    "Name": "Manager Attributes",
+                    "Attributes": {"Lockdown.1.SystemLockdown": "Disabled"},
+                }),
+            )
+            .build()
+            .await;
+            let cx = bmc.cx().await;
+
+            IdracLockdown
+                .set(&cx, LockdownScope::BmcSystemLockdown, desired)
+                .await
+                .expect("system lockdown changes");
+
+            let writes = bmc.writes();
+            assert_eq!(writes.len(), 1, "{value}");
+            assert_eq!(writes[0].method, Method::PATCH, "{value}");
+            assert_eq!(path(&writes[0]), ATTRIBUTES, "{value}");
+            assert_eq!(
+                body(&writes[0]),
+                json!({"Attributes": {"Lockdown.1.SystemLockdown": value}}),
+                "{value}"
+            );
         }
     }
 }

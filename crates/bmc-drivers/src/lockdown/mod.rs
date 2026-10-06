@@ -9,7 +9,6 @@ pub(crate) mod ami;
 pub(crate) mod dell;
 pub(crate) mod hpe;
 pub(crate) mod lenovo;
-pub(crate) mod noop;
 pub(crate) mod nvidia;
 pub(crate) mod supermicro;
 mod support;

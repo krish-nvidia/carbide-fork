@@ -147,8 +147,21 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
             .oem_lenovo()
             .map_err(|error| cx.map_redfish_error(error))?
             .ok_or(PlatformError::Unsupported)?;
-        let fp_mode = lenovo_system.front_panel_mode();
-        let switching = lenovo_system.port_switching_to();
+        // Read the assignment `set_bmc` writes: `FrontPanelUSB` whenever reported.
+        let raw = lenovo_system.raw();
+        let assignment = raw
+            .front_panel_usb
+            .as_ref()
+            .and_then(Option::as_ref)
+            .or_else(|| {
+                raw.usb_management_port_assignment
+                    .as_ref()
+                    .and_then(Option::as_ref)
+            });
+        let fp_mode = assignment.and_then(|value| value.fp_mode).flatten();
+        let switching = assignment
+            .and_then(|value| value.port_switching_to)
+            .flatten();
 
         let host = state_from_signals(&[
             signal(kcs, KcsState::Disabled, KcsState::Enabled),
@@ -181,9 +194,10 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
         let enabled = desired == LockdownDesiredState::Enabled;
         match scope {
             LockdownScope::Host => set_host(cx, enabled).await,
-            LockdownScope::Bmc => set_bmc(cx, enabled).await,
-            // There is no separate system-lockdown switch to change.
-            LockdownScope::BmcSystemLockdown => Ok(DriverOutcome::complete()),
+            // XCC has no BMC-side lock apart from full lockdown.
+            LockdownScope::Bmc | LockdownScope::BmcSystemLockdown => {
+                Err(PlatformError::Unsupported)
+            }
             LockdownScope::All => {
                 let host = set_host(cx, enabled).await?;
                 Ok(host.merge(set_bmc(cx, enabled).await?))

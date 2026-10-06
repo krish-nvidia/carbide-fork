@@ -95,9 +95,9 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
         scope: LockdownScope,
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
-        // There is no separate system-lockdown switch to change.
-        if scope == LockdownScope::BmcSystemLockdown {
-            return Ok(DriverOutcome::complete());
+        // Viking has no BMC-side lock apart from full lockdown.
+        if matches!(scope, LockdownScope::Bmc | LockdownScope::BmcSystemLockdown) {
+            return Err(PlatformError::Unsupported);
         }
         let enabled = desired == LockdownDesiredState::Enabled;
         if enabled {
@@ -122,7 +122,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
             };
             attributes.insert(key.to_string(), kcs.into());
         }
-        if matches!(scope, LockdownScope::Bmc | LockdownScope::All) {
+        if scope == LockdownScope::All {
             attributes.insert(
                 "RedfishEnable".to_string(),
                 (if enabled { "Disabled" } else { "Enabled" }).into(),

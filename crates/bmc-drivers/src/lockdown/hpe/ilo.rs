@@ -110,9 +110,10 @@ impl<B: Bmc> Lockdown<B> for IloLockdown {
         let enabled = desired == LockdownDesiredState::Enabled;
         match scope {
             LockdownScope::Host => set_host(cx, enabled).await,
-            LockdownScope::Bmc => set_bmc(cx, enabled).await,
-            // There is no separate system-lockdown switch to change.
-            LockdownScope::BmcSystemLockdown => Ok(DriverOutcome::complete()),
+            // iLO has no BMC-side lock apart from full lockdown.
+            LockdownScope::Bmc | LockdownScope::BmcSystemLockdown => {
+                Err(PlatformError::Unsupported)
+            }
             LockdownScope::All => {
                 let host = set_host(cx, enabled).await?;
                 Ok(host.merge(set_bmc(cx, enabled).await?))

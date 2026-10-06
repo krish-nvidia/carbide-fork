@@ -9,12 +9,13 @@ use bmc_platform::{
     PlatformError,
 };
 use nv_redfish::core::Bmc;
-use nv_redfish::host_interface::HostInterface;
-use nv_redfish::manager::Manager;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
 
-use super::support::{kcs_privilege, kcs_signal, set_kcs_privilege};
-use crate::lockdown::support::{set_host_interface, signal, state_from_signals, status};
+use super::support::{
+    host_interface_enabled, kcs_privilege, kcs_signal, set_host_interfaces, set_kcs_privilege,
+    set_sys_lockdown, sys_lockdown, sys_lockdown_scope,
+};
+use crate::lockdown::support::{signal, state_from_signals, status};
 
 /// Supermicro lockdown driver.
 ///
@@ -27,21 +28,9 @@ pub(crate) struct SmcLockdown;
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for SmcLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let manager = cx.manager().await?;
-        let smc = manager
-            .oem_supermicro()
-            .map_err(|error| cx.map_redfish_error(error))?
-            .ok_or(PlatformError::Unsupported)?;
-        let lockdown = smc
-            .sys_lockdown()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .and_then(|value| value.sys_lockdown_enabled());
+        let lockdown = sys_lockdown(cx).await?;
         let privilege = kcs_privilege(cx).await?;
-        let host_interface = host_interfaces(cx, manager)
-            .await?
-            .first()
-            .and_then(|value| value.interface_enabled());
+        let host_interface = host_interface_enabled(cx).await?;
 
         let host =
             state_from_signals(&[kcs_signal(privilege), signal(host_interface, false, true)]);
@@ -61,77 +50,24 @@ impl<B: Bmc> Lockdown<B> for SmcLockdown {
         scope: LockdownScope,
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
+        let sys_lockdown = sys_lockdown_scope(scope)?;
         let enabled = desired == LockdownDesiredState::Enabled;
-        let manager = cx.manager().await?;
         let mut outcome = DriverOutcome::complete();
-        if !enabled && bmc_scope(scope) {
-            outcome = outcome.merge(set_sys_lockdown(cx, manager, false).await?);
+        if !enabled && sys_lockdown {
+            outcome = outcome.merge(set_sys_lockdown(cx, false).await?);
         }
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
             if enabled {
-                outcome = outcome.merge(set_host_interfaces(cx, manager, false).await?);
+                outcome = outcome.merge(set_host_interfaces(cx, false).await?);
                 outcome = outcome.merge(set_kcs_privilege(cx, Privilege::Callback).await?);
             } else {
                 outcome = outcome.merge(set_kcs_privilege(cx, Privilege::Administrator).await?);
-                outcome = outcome.merge(set_host_interfaces(cx, manager, true).await?);
+                outcome = outcome.merge(set_host_interfaces(cx, true).await?);
             }
         }
-        if enabled && bmc_scope(scope) {
-            outcome = outcome.merge(set_sys_lockdown(cx, manager, true).await?);
+        if enabled && sys_lockdown {
+            outcome = outcome.merge(set_sys_lockdown(cx, true).await?);
         }
         Ok(outcome)
     }
-}
-
-fn bmc_scope(scope: LockdownScope) -> bool {
-    matches!(
-        scope,
-        LockdownScope::Bmc | LockdownScope::BmcSystemLockdown | LockdownScope::All
-    )
-}
-
-async fn set_sys_lockdown<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    manager: &Manager<B>,
-    enabled: bool,
-) -> Result<DriverOutcome, PlatformError> {
-    let lockdown = manager
-        .oem_supermicro()
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .sys_lockdown()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?;
-    lockdown
-        .set_enabled(enabled)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-async fn host_interfaces<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    manager: &Manager<B>,
-) -> Result<Vec<HostInterface<B>>, PlatformError> {
-    manager
-        .host_interfaces()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-async fn set_host_interfaces<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    manager: &Manager<B>,
-    enabled: bool,
-) -> Result<DriverOutcome, PlatformError> {
-    let mut outcome = DriverOutcome::complete();
-    for interface in host_interfaces(cx, manager).await? {
-        outcome = outcome.merge(set_host_interface(cx, &interface, enabled).await?);
-    }
-    Ok(outcome)
 }

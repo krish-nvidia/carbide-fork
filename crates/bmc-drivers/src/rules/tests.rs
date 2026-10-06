@@ -258,7 +258,7 @@ fn narrower_identity_outranks_broader_rules() {
             identity: identity("Supermicro", Some("GB NVL")),
             expect: vec![
                 (Power, driver(NvidiaOpenBmcPower)),
-                (Lockdown, driver(NvidiaOpenBmcLockdown)),
+                (Lockdown, Unsupported),
                 (BmcControl, Standard),
                 (Console, driver(NvidiaOpenBmcConsole)),
                 (Bios, driver(NvidiaGbx00Bios)),
@@ -310,7 +310,7 @@ fn narrower_identity_outranks_broader_rules() {
                 (Accounts, driver(NvidiaSwitchAccounts)),
                 (Bios, driver(NvidiaSwitchBios)),
                 (Power, Standard),
-                (Lockdown, driver(NoopLockdown)),
+                (Lockdown, Unsupported),
             ],
         },
         Case {
@@ -326,7 +326,7 @@ fn narrower_identity_outranks_broader_rules() {
         Case {
             scenario: "Delta power shelf",
             identity: delta(),
-            expect: vec![(Lockdown, driver(NoopLockdown))],
+            expect: vec![(Lockdown, Unsupported)],
         },
         Case {
             scenario: "Lenovo AMI shadows XCC",
