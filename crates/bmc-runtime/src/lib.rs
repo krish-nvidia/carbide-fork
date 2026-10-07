@@ -18,6 +18,7 @@
 //! Runtime-owned BMC endpoint wiring, identity-based driver selection, and
 //! the status of asynchronous work drivers hand back.
 
+mod capabilities;
 mod connection;
 mod credentials;
 mod endpoint;
@@ -25,6 +26,7 @@ mod error;
 mod ipmi;
 mod status;
 
+pub use capabilities::BoundDriver;
 pub use connection::{AuthRetryError, ConnectionManager};
 pub use credentials::{
     CredentialLease, CredentialRequest, CredentialRequestError, RuntimeAuthMode,

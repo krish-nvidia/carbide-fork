@@ -83,14 +83,14 @@ pub(super) fn checks() -> Vec<Check> {
 }
 
 async fn bios_apply(ctx: &Ctx) -> Step {
-    let bios = ctx.bmc.drivers().bios()?;
+    let bios = ctx.bmc.bios()?;
     let profile = &ctx.inputs.bios_profile;
     let boot_interface = ctx.inputs.boot_interface.as_ref();
     apply_until_in_effect(
         ctx,
         async || {
             let status = bios
-                .status(&ctx.bmc.operation_context(), profile, boot_interface)
+                .status(profile, boot_interface)
                 .await
                 .map_err(failed("status"))?;
             Ok((!status.is_applied).then(|| {
@@ -103,7 +103,7 @@ async fn bios_apply(ctx: &Ctx) -> Step {
             }))
         },
         async || {
-            bios.apply(&ctx.bmc.operation_context(), profile, boot_interface)
+            bios.apply(profile, boot_interface)
                 .await
                 .map_err(failed("apply"))
         },
@@ -112,7 +112,7 @@ async fn bios_apply(ctx: &Ctx) -> Step {
 }
 
 async fn boot_order_configure(ctx: &Ctx) -> Step {
-    let boot_order = ctx.bmc.drivers().boot_order()?;
+    let boot_order = ctx.bmc.boot_order()?;
     let selector = ctx
         .inputs
         .boot_interface
@@ -122,14 +122,14 @@ async fn boot_order_configure(ctx: &Ctx) -> Step {
         ctx,
         async || {
             let status = boot_order
-                .status(&ctx.bmc.operation_context(), selector)
+                .status(selector)
                 .await
                 .map_err(failed("status"))?;
             Ok((!status.is_configured()).then(|| format!("{status:?}")))
         },
         async || {
             boot_order
-                .configure(&ctx.bmc.operation_context(), selector)
+                .configure(selector)
                 .await
                 .map_err(failed("configure"))
         },
@@ -138,23 +138,15 @@ async fn boot_order_configure(ctx: &Ctx) -> Step {
 }
 
 async fn console_setup(ctx: &Ctx) -> Step {
-    let console = ctx.bmc.drivers().console()?;
+    let console = ctx.bmc.console()?;
     apply_until_in_effect(
         ctx,
         async || {
-            let status = console
-                .status(&ctx.bmc.operation_context())
-                .await
-                .map_err(failed("status"))?;
+            let status = console.status().await.map_err(failed("status"))?;
             Ok((status.state != ConsoleState::Enabled)
                 .then(|| format!("{:?} ({})", status.state, status.message)))
         },
-        async || {
-            console
-                .setup(&ctx.bmc.operation_context())
-                .await
-                .map_err(failed("setup"))
-        },
+        async || console.setup().await.map_err(failed("setup")),
     )
     .await
 }
@@ -234,7 +226,7 @@ async fn power_cycle(ctx: &Ctx) -> Step {
 /// Creates a temporary account, logs in with it, deletes it, and confirms
 /// the login stops working; the run's own account is never changed.
 async fn accounts_lifecycle(ctx: &Ctx) -> Step {
-    let accounts = ctx.bmc.drivers().accounts()?;
+    let accounts = ctx.bmc.accounts()?;
     let username = format!("nicoval{:04}", rand::random::<u16>() % 10_000);
     let password = Credentials::generate_password();
     ctx.redactor.add(&password);
@@ -245,14 +237,11 @@ async fn accounts_lifecycle(ctx: &Ctx) -> Step {
         )));
     }
     let created = accounts
-        .create(
-            &ctx.bmc.operation_context(),
-            ManagerAccountCreate::builder(
-                password.clone(),
-                username.clone(),
-                "Administrator".to_string(),
-            ),
-        )
+        .create(ManagerAccountCreate::builder(
+            password.clone(),
+            username.clone(),
+            "Administrator".to_string(),
+        ))
         .await;
     let verified = match created {
         Ok(outcome) => verify_new_account(ctx, &outcome, &username, &password).await,
@@ -262,10 +251,7 @@ async fn accounts_lifecycle(ctx: &Ctx) -> Step {
         return verified;
     }
 
-    let deleted = accounts
-        .delete(&ctx.bmc.operation_context(), &username)
-        .await
-        .map_err(failed("delete"));
+    let deleted = accounts.delete(&username).await.map_err(failed("delete"));
     let gone = match deleted {
         Ok(outcome) => verify_account_gone(ctx, &outcome, &username, &password).await,
         Err(outcome) => Err(outcome),
@@ -327,13 +313,7 @@ async fn verify_account_gone(
 }
 
 async fn listed(ctx: &Ctx, username: &str) -> Result<bool, Outcome> {
-    let accounts = ctx
-        .bmc
-        .drivers()
-        .accounts()?
-        .list(&ctx.bmc.operation_context())
-        .await
-        .map_err(failed("list"))?;
+    let accounts = ctx.bmc.accounts()?.list().await.map_err(failed("list"))?;
     Ok(accounts
         .iter()
         .any(|account| account.user_name.as_deref() == Some(username)))
@@ -360,12 +340,8 @@ async fn log_in(ctx: &Ctx, username: &str, password: &str) -> Result<(), Platfor
 /// Locks down a host that is not locked down, or unlocks one that is, then
 /// restores it.
 async fn lockdown_toggle(ctx: &Ctx) -> Step {
-    let lockdown = ctx.bmc.drivers().lockdown()?;
-    let original = lockdown
-        .status(&ctx.bmc.operation_context())
-        .await
-        .map_err(failed("status"))?
-        .aggregate;
+    let lockdown = ctx.bmc.lockdown()?;
+    let original = lockdown.status().await.map_err(failed("status"))?.aggregate;
     let (away, back) = match original {
         LockdownState::Enabled => (
             LockdownDesiredState::Disabled,
@@ -378,7 +354,7 @@ async fn lockdown_toggle(ctx: &Ctx) -> Step {
     };
     let away_result = set_lockdown(ctx, away).await;
     let back_result = set_lockdown(ctx, back).await;
-    match lockdown.status(&ctx.bmc.operation_context()).await {
+    match lockdown.status().await {
         Ok(status) if status.aggregate == original => {}
         current => ctx.not_restored(format!(
             "lockdown was {original:?}; it now reads {:?}",
@@ -389,26 +365,24 @@ async fn lockdown_toggle(ctx: &Ctx) -> Step {
 }
 
 async fn set_lockdown(ctx: &Ctx, desired: LockdownDesiredState) -> Step {
-    let lockdown = ctx.bmc.drivers().lockdown()?;
+    let lockdown = ctx.bmc.lockdown()?;
     let expected = match desired {
         LockdownDesiredState::Enabled => LockdownState::Enabled,
         LockdownDesiredState::Disabled => LockdownState::Disabled,
     };
     let outcome = lockdown
-        .set(&ctx.bmc.operation_context(), LockdownScope::All, desired)
+        .set(LockdownScope::All, desired)
         .await
         .map_err(failed("set"))?;
     let mut restarted = settle(ctx, &outcome).await?;
     let reached = async |timeout, interval| {
-        poll(timeout, interval, async || {
-            match lockdown.status(&ctx.bmc.operation_context()).await {
-                Ok(status) if status.aggregate == expected => Attempt::Done(()),
-                Ok(status) => Attempt::NotYet(format!(
-                    "status reports {:?} ({})",
-                    status.aggregate, status.message
-                )),
-                Err(error) => Attempt::NotYet(describe("status", &error)),
-            }
+        poll(timeout, interval, async || match lockdown.status().await {
+            Ok(status) if status.aggregate == expected => Attempt::Done(()),
+            Ok(status) => Attempt::NotYet(format!(
+                "status reports {:?} ({})",
+                status.aggregate, status.message
+            )),
+            Err(error) => Attempt::NotYet(describe("status", &error)),
         })
         .await
     };
@@ -438,10 +412,9 @@ async fn set_lockdown(ctx: &Ctx, desired: LockdownDesiredState) -> Step {
 /// The host power state through the selected driver, read afresh.
 async fn power_state(ctx: &Ctx) -> Result<Option<PowerState>, PlatformError> {
     ctx.bmc
-        .drivers()
         .power()
         .map_err(|_| PlatformError::Unsupported)?
-        .state(&ctx.bmc.operation_context())
+        .state()
         .await
 }
 
@@ -452,13 +425,7 @@ async fn set_power(ctx: &Ctx, reset: ResetType) -> Step {
         ResetType::ForceOff | ResetType::GracefulShutdown => PowerState::Off,
         _ => PowerState::On,
     };
-    let outcome = ctx
-        .bmc
-        .drivers()
-        .power()?
-        .set(&ctx.bmc.operation_context(), reset)
-        .await
-        .map_err(failed("set"))?;
+    let outcome = ctx.bmc.power()?.set(reset).await.map_err(failed("set"))?;
     wait_for_operations(ctx, &outcome).await?;
     wait_for_power(ctx, target).await?;
     Ok(format!("{reset:?} reached {target:?}"))

@@ -175,8 +175,8 @@ pub enum BmcRefError {
 /// A live Redfish endpoint using the driver map persisted during exploration.
 ///
 /// The persisted selection is resolved through the compiled catalogue once, on
-/// connect, so a controller writes `bmc.drivers().power()?.set(&cx, reset_type)`
-/// and never sees driver ids.
+/// connect, so a controller writes `bmc.power()?.set(reset_type)` and never
+/// sees driver ids or operation contexts.
 pub struct ConnectedBmc<B: Bmc + 'static> {
     endpoint: BmcRef,
     bmc: Arc<B>,
@@ -213,7 +213,7 @@ where
     }
 
     /// The drivers selected for this BMC.
-    pub const fn drivers(&self) -> &SelectedDrivers<B> {
+    pub(crate) const fn drivers(&self) -> &SelectedDrivers<B> {
         &self.drivers
     }
 
@@ -235,7 +235,7 @@ where
 
     /// Builds an operation context; the selected system and manager are
     /// resolved on first use.
-    pub fn operation_context(&self) -> OpCx<'_, B> {
+    pub(crate) fn operation_context(&self) -> OpCx<'_, B> {
         let context = OpCx::new(
             self.bmc.as_ref(),
             self.service_root.as_ref(),

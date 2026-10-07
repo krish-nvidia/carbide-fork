@@ -91,13 +91,7 @@ pub(super) fn checks() -> Vec<Check> {
 }
 
 async fn power_state(ctx: &Ctx) -> Step {
-    let state = ctx
-        .bmc
-        .drivers()
-        .power()?
-        .state(&ctx.bmc.operation_context())
-        .await
-        .map_err(failed("state"))?;
+    let state = ctx.bmc.power()?.state().await.map_err(failed("state"))?;
     Ok(match state {
         Some(state) => format!("{state:?}"),
         None => "the platform reports no single power state".to_string(),
@@ -107,9 +101,8 @@ async fn power_state(ctx: &Ctx) -> Step {
 async fn ac_power_cycle_supported(ctx: &Ctx) -> Step {
     let supported = ctx
         .bmc
-        .drivers()
         .power()?
-        .ac_power_cycle_supported(&ctx.bmc.operation_context())
+        .ac_power_cycle_supported()
         .await
         .map_err(failed("ac_power_cycle_supported"))?;
     Ok(format!("supported={supported}"))
@@ -118,9 +111,8 @@ async fn ac_power_cycle_supported(ctx: &Ctx) -> Step {
 async fn ipmi_over_lan(ctx: &Ctx) -> Step {
     let enabled = ctx
         .bmc
-        .drivers()
         .bmc_control()?
-        .ipmi_over_lan_enabled(&ctx.bmc.operation_context())
+        .ipmi_over_lan_enabled()
         .await
         .map_err(failed("ipmi_over_lan_enabled"))?;
     Ok(format!("enabled={enabled}"))
@@ -129,9 +121,8 @@ async fn ipmi_over_lan(ctx: &Ctx) -> Step {
 async fn manager_settings_status(ctx: &Ctx) -> Step {
     let status = ctx
         .bmc
-        .drivers()
         .bmc_control()?
-        .settings_status(&ctx.bmc.operation_context())
+        .settings_status()
         .await
         .map_err(failed("settings_status"))?;
     Ok(differences(status.differences.iter().map(|diff| {
@@ -142,13 +133,8 @@ async fn manager_settings_status(ctx: &Ctx) -> Step {
 async fn bios_status(ctx: &Ctx) -> Step {
     let status = ctx
         .bmc
-        .drivers()
         .bios()?
-        .status(
-            &ctx.bmc.operation_context(),
-            &ctx.inputs.bios_profile,
-            ctx.inputs.boot_interface.as_ref(),
-        )
+        .status(&ctx.inputs.bios_profile, ctx.inputs.boot_interface.as_ref())
         .await
         .map_err(failed("status"))?;
     Ok(differences(status.differences.iter().map(|diff| {
@@ -159,9 +145,8 @@ async fn bios_status(ctx: &Ctx) -> Step {
 async fn infinite_boot(ctx: &Ctx) -> Step {
     let enabled = ctx
         .bmc
-        .drivers()
         .bios()?
-        .infinite_boot_enabled(&ctx.bmc.operation_context())
+        .infinite_boot_enabled()
         .await
         .map_err(failed("infinite_boot_enabled"))?;
     Ok(match enabled {
@@ -178,9 +163,8 @@ async fn boot_order_status(ctx: &Ctx) -> Step {
         .ok_or_else(|| Outcome::Skipped("needs --boot-mac".to_string()))?;
     let status = ctx
         .bmc
-        .drivers()
         .boot_order()?
-        .status(&ctx.bmc.operation_context(), selector)
+        .status(selector)
         .await
         .map_err(failed("status"))?;
     Ok(format!("{status:?}"))
@@ -189,9 +173,8 @@ async fn boot_order_status(ctx: &Ctx) -> Step {
 async fn secure_boot_status(ctx: &Ctx) -> Step {
     let status = ctx
         .bmc
-        .drivers()
         .secure_boot()?
-        .status(&ctx.bmc.operation_context())
+        .status()
         .await
         .map_err(failed("status"))?;
     Ok(format!("{status:?}"))
@@ -200,9 +183,8 @@ async fn secure_boot_status(ctx: &Ctx) -> Step {
 async fn platform_key(ctx: &Ctx) -> Step {
     let present = ctx
         .bmc
-        .drivers()
         .secure_boot()?
-        .has_platform_key(&ctx.bmc.operation_context())
+        .has_platform_key()
         .await
         .map_err(failed("has_platform_key"))?;
     Ok(format!("platform key present={present}"))
@@ -211,9 +193,8 @@ async fn platform_key(ctx: &Ctx) -> Step {
 async fn lockdown_status(ctx: &Ctx) -> Step {
     let status = ctx
         .bmc
-        .drivers()
         .lockdown()?
-        .status(&ctx.bmc.operation_context())
+        .status()
         .await
         .map_err(failed("status"))?;
     Ok(format!(
@@ -224,13 +205,7 @@ async fn lockdown_status(ctx: &Ctx) -> Step {
 
 /// The account this run logged in with must be listed.
 async fn accounts_list(ctx: &Ctx) -> Step {
-    let accounts = ctx
-        .bmc
-        .drivers()
-        .accounts()?
-        .list(&ctx.bmc.operation_context())
-        .await
-        .map_err(failed("list"))?;
+    let accounts = ctx.bmc.accounts()?.list().await.map_err(failed("list"))?;
     let names: Vec<&str> = accounts
         .iter()
         .filter_map(|account| account.user_name.as_deref())
@@ -248,9 +223,8 @@ async fn accounts_list(ctx: &Ctx) -> Step {
 async fn firmware_inventory(ctx: &Ctx) -> Step {
     let inventory = ctx
         .bmc
-        .drivers()
         .firmware()?
-        .inventory(&ctx.bmc.operation_context())
+        .inventory()
         .await
         .map_err(failed("inventory"))?;
     let entries: Vec<String> = inventory
@@ -266,9 +240,8 @@ async fn firmware_inventory(ctx: &Ctx) -> Step {
 async fn boot_controller(ctx: &Ctx) -> Step {
     let controller = ctx
         .bmc
-        .drivers()
         .storage()?
-        .boot_controller(&ctx.bmc.operation_context())
+        .boot_controller()
         .await
         .map_err(failed("boot_controller"))?;
     Ok(match controller {
@@ -278,13 +251,7 @@ async fn boot_controller(ctx: &Ctx) -> Step {
 }
 
 async fn dpu_status(ctx: &Ctx) -> Step {
-    let status = ctx
-        .bmc
-        .drivers()
-        .dpu()?
-        .status(&ctx.bmc.operation_context())
-        .await
-        .map_err(failed("status"))?;
+    let status = ctx.bmc.dpu()?.status().await.map_err(failed("status"))?;
     Ok(format!(
         "nic_mode={:?} host_rshim={:?}",
         status.nic_mode, status.host_rshim
@@ -294,9 +261,8 @@ async fn dpu_status(ctx: &Ctx) -> Step {
 async fn attestation_components(ctx: &Ctx) -> Step {
     let components = ctx
         .bmc
-        .drivers()
         .attestation()?
-        .components(&ctx.bmc.operation_context())
+        .components()
         .await
         .map_err(failed("components"))?;
     let ids: Vec<&str> = components
@@ -309,9 +275,9 @@ async fn attestation_components(ctx: &Ctx) -> Step {
 /// Collects signed measurements from the first component, with its
 /// certificate and firmware.
 async fn attestation_evidence(ctx: &Ctx) -> Step {
-    let attestation = ctx.bmc.drivers().attestation()?;
+    let attestation = ctx.bmc.attestation()?;
     let components = attestation
-        .components(&ctx.bmc.operation_context())
+        .components()
         .await
         .map_err(failed("components"))?;
     let Some(component) = components.first() else {
@@ -321,13 +287,10 @@ async fn attestation_evidence(ctx: &Ctx) -> Step {
     };
     let id = component.id.as_str();
     let certificate = attestation
-        .ca_certificate(&ctx.bmc.operation_context(), id)
+        .ca_certificate(id)
         .await
         .map_err(failed("ca_certificate"))?;
-    let firmware = match attestation
-        .firmware_for_component(&ctx.bmc.operation_context(), id)
-        .await
-    {
+    let firmware = match attestation.firmware_for_component(id).await {
         Ok(firmware) => firmware
             .version
             .clone()
@@ -339,7 +302,7 @@ async fn attestation_evidence(ctx: &Ctx) -> Step {
 
     let nonce: [u8; 32] = rand::random();
     let mut progress = attestation
-        .request_evidence(&ctx.bmc.operation_context(), id, &nonce)
+        .request_evidence(id, &nonce)
         .await
         .map_err(failed("request_evidence"))?;
     let deadline = Instant::now() + EVIDENCE_TIMEOUT;
@@ -371,7 +334,7 @@ async fn attestation_evidence(ctx: &Ctx) -> Step {
                 }
                 tokio::time::sleep(EVIDENCE_POLL_INTERVAL).await;
                 progress = attestation
-                    .poll_evidence(&ctx.bmc.operation_context(), &reference)
+                    .poll_evidence(&reference)
                     .await
                     .map_err(failed("poll_evidence"))?;
             }
@@ -382,22 +345,15 @@ async fn attestation_evidence(ctx: &Ctx) -> Step {
 async fn console_status(ctx: &Ctx) -> Step {
     let status = ctx
         .bmc
-        .drivers()
         .console()?
-        .status(&ctx.bmc.operation_context())
+        .status()
         .await
         .map_err(failed("status"))?;
     Ok(format!("{:?} ({})", status.state, status.message))
 }
 
 async fn console_spec(ctx: &Ctx) -> Step {
-    let spec = ctx
-        .bmc
-        .drivers()
-        .console()?
-        .spec(&ctx.bmc.operation_context())
-        .await
-        .map_err(failed("spec"))?;
+    let spec = ctx.bmc.console()?.spec().await.map_err(failed("spec"))?;
     Ok(match spec {
         ConsoleSpec::SshShell(shell) => format!("SSH shell on port {}", shell.port),
         ConsoleSpec::SshDirect { port } => format!("direct SSH on port {port}"),
