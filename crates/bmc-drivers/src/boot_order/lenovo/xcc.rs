@@ -84,12 +84,14 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
         let general = oem_boot_order(cx, &settings, BootOrderKind::General).await?;
         Ok(BootOrderStatus {
             boot_interface_first: network_first && adapter_first,
-            disk_enabled: general
-                .next()
-                .unwrap_or_default()
-                .iter()
-                .any(|entry| entry == GENERAL_HARD_DISK),
-            other_network_options_disabled: true,
+            disk_enabled: Some(
+                general
+                    .next()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|entry| entry == GENERAL_HARD_DISK),
+            ),
+            other_network_options_disabled: None,
         })
     }
 

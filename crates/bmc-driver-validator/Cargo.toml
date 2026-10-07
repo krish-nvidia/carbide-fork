@@ -38,6 +38,7 @@ carbide-redfish = { path = "../redfish" }
 carbide-secrets = { path = "../secrets", default-features = false }
 carbide-uuid = { path = "../uuid" }
 clap = { workspace = true }
+colored = { workspace = true }
 futures = { workspace = true, features = ["std"] }
 mac_address = { workspace = true }
 nv-redfish = { features = [

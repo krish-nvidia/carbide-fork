@@ -57,8 +57,8 @@ impl<B: Bmc> BootOrder<B> for Gb300BootOrder {
         let target = megarac::http_option(&options, &mac);
         Ok(BootOrderStatus {
             boot_interface_first: target.is_some_and(|target| is_first(&order, reference(target))),
-            disk_enabled: true,
-            other_network_options_disabled: target.is_none_or(|target| {
+            disk_enabled: None,
+            other_network_options_disabled: target.map(|target| {
                 wanted_enablement(&options, target)
                     .all(|(option, enabled)| option.enabled() == Some(enabled))
             }),

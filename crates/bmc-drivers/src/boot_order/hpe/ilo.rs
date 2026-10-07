@@ -59,8 +59,8 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
         let order = boot_order(cx.system().await?);
         Ok(BootOrderStatus {
             boot_interface_first: order.first() == Some(&http_option),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

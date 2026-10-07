@@ -99,8 +99,8 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
             boot_interface_first: target
                 .zip(first)
                 .is_some_and(|(target, first)| display_name(&target) == display_name(first)),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

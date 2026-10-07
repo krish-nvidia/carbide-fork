@@ -55,8 +55,8 @@ impl<B: Bmc> BootOrder<B> for Gh200BootOrder {
         let (order, target, _) = http_option(cx, selector).await?;
         Ok(BootOrderStatus {
             boot_interface_first: target.is_some_and(|target| is_first(&order, &target)),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

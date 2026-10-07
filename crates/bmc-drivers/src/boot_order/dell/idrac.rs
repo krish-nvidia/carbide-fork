@@ -108,8 +108,8 @@ where
             boot_interface_first: ordered(&order, &options)
                 .first()
                 .is_some_and(|option| name_matches(&expected, display_name(option))),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

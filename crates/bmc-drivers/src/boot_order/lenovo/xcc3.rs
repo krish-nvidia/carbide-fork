@@ -74,8 +74,8 @@ impl<B: Bmc> BootOrder<B> for Xcc3BootOrder {
             boot_interface_first: network_first
                 && adapter.is_some()
                 && adapter == priorities.get(&1),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

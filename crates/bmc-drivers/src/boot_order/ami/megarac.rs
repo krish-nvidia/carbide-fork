@@ -73,8 +73,8 @@ impl<B: Bmc> BootOrder<B> for MegaRacBootOrder {
         Ok(BootOrderStatus {
             boot_interface_first: http_option(&options, &mac)
                 .is_some_and(|target| is_first(&order, reference(target))),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

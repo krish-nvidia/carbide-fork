@@ -32,7 +32,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bmc_drivers::CatalogError;
-use bmc_platform::{BiosSettings, BootInterfaceSelector, Capability, PlatformError};
+use bmc_platform::{
+    BiosSettings, BootInterfaceSelector, BootOrderStatus, Capability, PlatformError,
+};
 use bmc_runtime::ConnectedBmc;
 use carbide_redfish::nv_redfish::{NvRedfishClientPool, RedfishBmc};
 use futures::StreamExt;
@@ -229,7 +231,7 @@ pub(crate) async fn run(
             .into_iter()
             .map(|planned| run_one(ctx, planned, selection)),
     )
-    .buffer_unordered(jobs);
+    .buffered(jobs);
     while let Some(result) = running.next().await {
         report::progress(ctx, &result);
         results.push(result);
@@ -336,6 +338,36 @@ fn differences<'a>(
         text.push_str(&format!("; {} more", count - SHOWN));
     }
     text
+}
+
+/// The boot-order conditions in words; a condition the driver does not
+/// manage is reported as such rather than as holding.
+fn boot_order_summary(status: BootOrderStatus) -> String {
+    let managed = |holds: Option<bool>, name: &str, yes: &str, no: &str| match holds {
+        Some(true) => yes.to_string(),
+        Some(false) => no.to_string(),
+        None => format!("{name} not managed"),
+    };
+    [
+        if status.boot_interface_first {
+            "boot interface first".to_string()
+        } else {
+            "boot interface not first".to_string()
+        },
+        managed(
+            status.disk_enabled,
+            "disks",
+            "disks enabled",
+            "disks dropped",
+        ),
+        managed(
+            status.other_network_options_disabled,
+            "other network boot",
+            "other network boot off",
+            "other network boot on",
+        ),
+    ]
+    .join(" · ")
 }
 
 /// One attempt of a poll.

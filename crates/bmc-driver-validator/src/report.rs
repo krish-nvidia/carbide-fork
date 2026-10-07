@@ -15,18 +15,37 @@
  * limitations under the License.
  */
 
-//! Progress lines, the summary, and redaction of every secret the run knows.
+//! Terminal output, and redaction of every secret the run knows.
 
+use std::io::IsTerminal;
+use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use bmc_platform::PlatformIdentity;
+use bmc_platform::{Capability, PlatformIdentity};
+use colored::{ColoredString, Colorize};
+use strum::IntoEnumIterator;
 
 use crate::checks::{CheckResult, Ctx, Kind, Outcome, Planned};
 use crate::selection::Selection;
 
 const REDACTED: &str = "********";
+
+/// Width output is fitted to when the terminal does not say.
+const DEFAULT_WIDTH: usize = 120;
+
+/// Columns of the label in key/value rows.
+const KEY_WIDTH: usize = 14;
+
+/// Columns of the check id in check rows.
+const CHECK_WIDTH: usize = 32;
+
+/// Columns of the driver id in plan rows.
+const DRIVER_WIDTH: usize = 30;
+
+/// Narrowest a wrapped text column gets, however wide the columns before it.
+const MIN_TEXT_WIDTH: usize = 30;
 
 /// Replaces every known secret in text bound for the terminal.
 pub(crate) struct Redactor {
@@ -62,126 +81,252 @@ impl Redactor {
     }
 }
 
-pub(crate) fn print_identity(identity: &PlatformIdentity) {
+/// Colors output only on a terminal; `NO_COLOR` and `CLICOLOR_FORCE` still apply.
+pub(crate) fn init() {
+    if !std::io::stdout().is_terminal() {
+        colored::control::set_override(false);
+    }
+}
+
+pub(crate) fn discovering(address: SocketAddr) {
+    println!("{}", format!("Discovering {address} …").dimmed());
+}
+
+pub(crate) fn print_identity(address: SocketAddr, identity: &PlatformIdentity) {
+    heading(&format!("Platform  {}", address.to_string().dimmed()));
     let root = &identity.service_root;
-    println!();
-    println!(
-        "service root: vendor={} product={} oem={}",
-        shown(root.vendor.as_deref()),
-        shown(root.product.as_deref()),
-        root.oem_keys.join(",")
+    let oem = (!root.oem_keys.is_empty()).then(|| format!("oem {}", root.oem_keys.join(", ")));
+    row(
+        "service root",
+        &joined([root.vendor.clone(), root.product.clone(), oem]),
     );
-    match &identity.system {
-        Some(system) => println!(
-            "system {}: manufacturer={} model={} sku={} part={} bios={}",
-            system.id,
-            shown(system.manufacturer.as_deref()),
-            shown(system.model.as_deref()),
-            shown(system.sku.as_deref()),
-            shown(system.part_number.as_deref()),
-            shown(system.bios_version.as_deref()),
-        ),
-        None => println!("system: none listed"),
-    }
-    match &identity.manager {
-        Some(manager) => println!(
-            "manager {}: model={} firmware={}",
-            manager.id,
-            shown(manager.model.as_deref()),
-            shown(manager.firmware.as_deref()),
-        ),
-        None => println!("manager: none listed"),
-    }
+    row(
+        "system",
+        &identity
+            .system
+            .as_ref()
+            .map_or("none listed".to_string(), |system| {
+                joined([
+                    Some(system.id.clone()),
+                    joined_words([system.manufacturer.as_deref(), system.model.as_deref()]),
+                    system.sku.as_ref().map(|sku| format!("sku {sku}")),
+                    system
+                        .part_number
+                        .as_ref()
+                        .map(|part| format!("part {part}")),
+                    system
+                        .bios_version
+                        .as_ref()
+                        .map(|bios| format!("bios {bios}")),
+                ])
+            }),
+    );
+    row(
+        "manager",
+        &identity
+            .manager
+            .as_ref()
+            .map_or("none listed".to_string(), |manager| {
+                joined([
+                    Some(manager.id.clone()),
+                    manager.model.as_ref().map(|model| format!("model {model}")),
+                    manager
+                        .firmware
+                        .as_ref()
+                        .map(|firmware| format!("firmware {firmware}")),
+                ])
+            }),
+    );
     for chassis in &identity.chassis {
-        println!(
-            "chassis {}: manufacturer={} model={} part={}",
-            chassis.id,
-            shown(chassis.manufacturer.as_deref()),
-            shown(chassis.model.as_deref()),
-            shown(chassis.part_number.as_deref()),
+        row(
+            "chassis",
+            &joined([
+                Some(chassis.id.clone()),
+                joined_words([chassis.manufacturer.as_deref(), chassis.model.as_deref()]),
+                chassis
+                    .part_number
+                    .as_ref()
+                    .map(|part| format!("part {part}")),
+            ]),
         );
     }
     let firmware: Vec<String> = identity
         .firmware_inventory
         .iter()
-        .map(|entry| format!("{}={}", entry.id, shown(entry.version.as_deref())))
+        .map(|entry| format!("{}={}", entry.id, entry.version.as_deref().unwrap_or("?")))
         .collect();
-    println!("firmware: {}", firmware.join(", "));
+    row_wrapped("firmware", &firmware.join("  "));
+}
+
+pub(crate) fn print_selection(selection: &Selection) {
+    heading("Drivers");
+    let driver_width = Capability::iter()
+        .map(|capability| selection.driver(capability).len())
+        .max()
+        .unwrap_or_default();
+    for capability in Capability::iter() {
+        let driver = format!("{:<driver_width$}", selection.driver(capability));
+        let driver = if selection.is_supported(capability) {
+            driver.cyan()
+        } else {
+            driver.dimmed()
+        };
+        println!(
+            "  {:<KEY_WIDTH$} {driver}  {}",
+            capability.as_str(),
+            selection.source(capability).dimmed()
+        );
+    }
+    println!();
+    for (id, matchers) in selection.deciding_rules() {
+        row(&format!("rule {id}"), &matchers);
+    }
+    for capability in selection.overridden() {
+        row_wrapped(
+            "override",
+            &format!(
+                "{}: {}",
+                capability.as_str(),
+                selection.override_note(capability)
+            ),
+        );
+    }
+    let quirks = selection.quirks();
+    row(
+        "quirks",
+        &if quirks.is_empty() {
+            "none".to_string()
+        } else {
+            quirks.join(", ")
+        },
+    );
+    row("rules hash", &selection.hash());
 }
 
 pub(crate) fn print_plan(plan: &[Planned], selection: &Selection) {
-    println!();
-    println!("{:<6} {:<32} {:<30} PLAN", "KIND", "CHECK", "DRIVER");
+    heading("Plan");
     for planned in plan {
         let kind = match planned.check.kind {
-            Kind::Read => "read",
+            Kind::Read => "read ",
             Kind::Apply => "apply",
         };
-        let plan = match &planned.skip {
-            Some(outcome) => format!("{}: {}", label(outcome), detail(outcome)),
-            None => "runs".to_string(),
+        let (symbol, note) = match &planned.skip {
+            Some(outcome) => (symbol(outcome), detail(outcome)),
+            None => ("▸".normal(), ""),
         };
-        println!(
-            "{kind:<6} {:<32} {:<30} {plan}",
+        let columns = format!(
+            "  {symbol} {:<CHECK_WIDTH$} {} {:<DRIVER_WIDTH$} ",
             planned.check.id,
+            kind.dimmed(),
             selection.driver(planned.check.capability)
+        );
+        print_in_column(
+            &columns,
+            2 + 2 + CHECK_WIDTH + 1 + 5 + 1 + DRIVER_WIDTH + 1,
+            note,
+            |line| line.dimmed(),
         );
     }
 }
 
+pub(crate) fn checks_heading() {
+    heading("Checks");
+}
+
 pub(crate) fn progress(ctx: &Ctx, result: &CheckResult) {
-    println!(
-        "[{:>11}] {:<32} {:<30} {:>7}  {}",
-        label(&result.outcome),
+    let columns = format!(
+        "  {} {:<CHECK_WIDTH$} {:>7}  ",
+        symbol(&result.outcome),
         result.id,
-        result.driver,
-        seconds(result.elapsed),
-        ctx.redactor.apply(detail(&result.outcome))
+        seconds(result.elapsed).dimmed(),
+    );
+    print_in_column(
+        &columns,
+        2 + 2 + CHECK_WIDTH + 1 + 7 + 2,
+        &ctx.redactor.apply(detail(&result.outcome)),
+        |line| tinted(&result.outcome, line),
     );
 }
 
 /// Prints the summary and returns the exit code: 0 when nothing failed, 1
 /// when a check failed, 3 when a change could not be restored.
-pub(crate) fn summary(ctx: &Ctx, results: &[CheckResult]) -> ExitCode {
+pub(crate) fn summary(ctx: &Ctx, results: &[CheckResult], elapsed: Duration) -> ExitCode {
     let count = |want: fn(&Outcome) -> bool| results.iter().filter(|r| want(&r.outcome)).count();
     let failed = count(|outcome| matches!(outcome, Outcome::Fail(_)));
-    println!();
-    println!(
-        "{} passed, {failed} failed, {} unsupported, {} skipped",
-        count(|outcome| matches!(outcome, Outcome::Pass(_))),
-        count(|outcome| matches!(outcome, Outcome::Unsupported(_))),
-        count(|outcome| matches!(outcome, Outcome::Skipped(_))),
-    );
-    for (heading, want) in [
+    let counts = [
+        format!("{} passed", count(|o| matches!(o, Outcome::Pass(_)))).green(),
+        if failed > 0 {
+            format!("{failed} failed").red().bold()
+        } else {
+            "0 failed".normal()
+        },
+        format!(
+            "{} unsupported",
+            count(|o| matches!(o, Outcome::Unsupported(_)))
+        )
+        .yellow(),
+        format!("{} skipped", count(|o| matches!(o, Outcome::Skipped(_)))).dimmed(),
+    ];
+    heading(&format!(
+        "Summary  {}  {}",
+        counts.map(|count| count.to_string()).join(" · "),
+        seconds(elapsed).dimmed()
+    ));
+
+    let failures: Vec<&CheckResult> = results
+        .iter()
+        .filter(|result| matches!(result.outcome, Outcome::Fail(_)))
+        .collect();
+    if !failures.is_empty() {
+        heading(&"Failed".red().bold().to_string());
+        for result in failures {
+            println!(
+                "  {} {}  {}",
+                symbol(&result.outcome),
+                result.id.bold(),
+                result.driver.dimmed()
+            );
+            for line in wrap(
+                &ctx.redactor.apply(detail(&result.outcome)),
+                width().saturating_sub(6),
+            ) {
+                println!("      {line}");
+            }
+        }
+    }
+    for (title, want) in [
         (
-            "FAILED",
-            (|outcome| matches!(outcome, Outcome::Fail(_))) as fn(&Outcome) -> bool,
+            "Unsupported",
+            (|outcome| matches!(outcome, Outcome::Unsupported(_))) as fn(&Outcome) -> bool,
         ),
-        ("UNSUPPORTED", |outcome| {
-            matches!(outcome, Outcome::Unsupported(_))
-        }),
-        ("SKIPPED", |outcome| matches!(outcome, Outcome::Skipped(_))),
+        ("Skipped", |outcome| matches!(outcome, Outcome::Skipped(_))),
     ] {
         let matching: Vec<&CheckResult> = results.iter().filter(|r| want(&r.outcome)).collect();
         if matching.is_empty() {
             continue;
         }
-        println!("{heading}");
+        heading(title);
         for result in matching {
-            println!(
-                "  {} ({}, {})\n    {}",
-                result.id,
-                result.driver,
-                seconds(result.elapsed),
-                ctx.redactor.apply(detail(&result.outcome))
+            let columns = format!("  {} {:<CHECK_WIDTH$} ", symbol(&result.outcome), result.id);
+            print_in_column(
+                &columns,
+                2 + 2 + CHECK_WIDTH + 1,
+                &ctx.redactor.apply(detail(&result.outcome)),
+                |line| line.dimmed(),
             );
         }
     }
+
     let unrestored = ctx.unrestored();
     if !unrestored.is_empty() {
-        println!("NOT RESTORED");
+        heading(&"Not restored".red().bold().to_string());
         for change in &unrestored {
-            println!("  {}", ctx.redactor.apply(change));
+            print_in_column(
+                &format!("  {} ", "!".red().bold()),
+                4,
+                &ctx.redactor.apply(change),
+                |line| line.normal(),
+            );
         }
         return ExitCode::from(3);
     }
@@ -192,12 +337,39 @@ pub(crate) fn summary(ctx: &Ctx, results: &[CheckResult]) -> ExitCode {
     }
 }
 
-fn label(outcome: &Outcome) -> &'static str {
+fn heading(title: &str) {
+    println!();
+    println!("{}", title.bold());
+}
+
+fn row(key: &str, value: &str) {
+    println!("  {} {value}", format!("{key:<KEY_WIDTH$}").dimmed());
+}
+
+/// A row whose value wraps under itself.
+fn row_wrapped(key: &str, value: &str) {
+    let indent = 2 + KEY_WIDTH + 1;
+    let mut lines = wrap(value, width().saturating_sub(indent)).into_iter();
+    row(key, &lines.next().unwrap_or_default());
+    for line in lines {
+        println!("{:indent$}{line}", "");
+    }
+}
+
+fn symbol(outcome: &Outcome) -> ColoredString {
     match outcome {
-        Outcome::Pass(_) => "PASS",
-        Outcome::Fail(_) => "FAIL",
-        Outcome::Unsupported(_) => "UNSUPPORTED",
-        Outcome::Skipped(_) => "SKIPPED",
+        Outcome::Pass(_) => "✔".green(),
+        Outcome::Fail(_) => "✘".red().bold(),
+        Outcome::Unsupported(_) => "○".yellow(),
+        Outcome::Skipped(_) => "–".dimmed(),
+    }
+}
+
+fn tinted(outcome: &Outcome, text: &str) -> ColoredString {
+    match outcome {
+        Outcome::Pass(_) => text.normal(),
+        Outcome::Fail(_) => text.red(),
+        Outcome::Unsupported(_) | Outcome::Skipped(_) => text.dimmed(),
     }
 }
 
@@ -214,6 +386,61 @@ fn seconds(elapsed: Duration) -> String {
     format!("{:.1}s", elapsed.as_secs_f64())
 }
 
-fn shown(value: Option<&str>) -> &str {
-    value.unwrap_or("-")
+/// The present parts, separated by ` · `.
+fn joined<const N: usize>(parts: [Option<String>; N]) -> String {
+    parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")
+}
+
+/// The present words, separated by spaces, or `None` when there are none.
+fn joined_words<const N: usize>(words: [Option<&str>; N]) -> Option<String> {
+    let words: Vec<&str> = words.into_iter().flatten().collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+fn width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|columns| columns.parse().ok())
+        .unwrap_or(DEFAULT_WIDTH)
+}
+
+/// Prints `columns`, then `text` wrapped to the space left after its
+/// `column_width` characters, with continuation lines aligned under the text.
+fn print_in_column(
+    columns: &str,
+    column_width: usize,
+    text: &str,
+    style: impl Fn(&str) -> ColoredString,
+) {
+    let max = width().saturating_sub(column_width).max(MIN_TEXT_WIDTH);
+    let mut lines = wrap(text, max).into_iter();
+    println!("{columns}{}", style(&lines.next().unwrap_or_default()));
+    for line in lines {
+        println!("{:column_width$}{}", "", style(&line));
+    }
+}
+
+/// Breaks `text` at spaces into lines of at most `max` characters, splitting
+/// any word longer than a line.
+fn wrap(text: &str, max: usize) -> Vec<String> {
+    let max = max.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let chars: Vec<char> = word.chars().collect();
+        for piece in chars.chunks(max) {
+            let piece: String = piece.iter().collect();
+            if !line.is_empty() && line.chars().count() + 1 + piece.chars().count() > max {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&piece);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }

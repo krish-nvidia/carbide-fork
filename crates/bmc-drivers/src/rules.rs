@@ -111,7 +111,8 @@ fn built_ins() -> Vec<Rule> {
     // Lenovo HS350x-class trays run AMI firmware behind a Lenovo service
     // root; the extra OEM-key matcher outranks the plain XCC vendor
     // rule. The AMI firmware takes AMI accounts and standard resets, not
-    // XCC's, and has no XCC AC power cycle.
+    // XCC's, and has no XCC AC power cycle. Its SecureBoot resource reports
+    // a null SecureBootEnable and no current-boot state.
     rules.push(
         Rule::new(
             "lenovo-ami",
@@ -126,7 +127,8 @@ fn built_ins() -> Vec<Rule> {
             AmiMegaRacFirmware,
             LenovoAmiConsole,
         ])
-        .standard([Capability::Power]),
+        .standard([Capability::Power])
+        .unsupported([Capability::SecureBoot]),
     );
 
     // Power shelves have no ServiceRoot vendor; their chassis manufacturer

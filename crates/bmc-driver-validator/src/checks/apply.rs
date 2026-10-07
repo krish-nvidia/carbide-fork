@@ -37,7 +37,9 @@ use nv_redfish::core::ODataId;
 use nv_redfish::resource::{PowerState, ResetType};
 use serde_json::{Map, Value};
 
-use super::{Attempt, Check, Ctx, Outcome, Step, describe, differences, failed, poll};
+use super::{
+    Attempt, Check, Ctx, Outcome, Step, boot_order_summary, describe, differences, failed, poll,
+};
 
 /// How long accepted work may stay queued or running before or after a reset.
 const JOB_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -125,7 +127,7 @@ async fn boot_order_configure(ctx: &Ctx) -> Step {
                 .status(selector)
                 .await
                 .map_err(failed("status"))?;
-            Ok((!status.is_configured()).then(|| format!("{status:?}")))
+            Ok((!status.is_configured()).then(|| boot_order_summary(status)))
         },
         async || {
             boot_order

@@ -26,7 +26,7 @@ use bmc_drivers::{
     CapabilitySelection, Driver, Drivers, ResolvedSelection, Rule, Rules, built_in_rules,
     rules_with_overrides,
 };
-use bmc_platform::{Capability, PlatformIdentity};
+use bmc_platform::{Capability, IdentityField, IdentityMatcher, MatchPattern, PlatformIdentity};
 use bmc_runtime::BmcRef;
 use strum::IntoEnumIterator;
 
@@ -106,67 +106,97 @@ impl Selection {
 
     /// Why `capability` has its selection.
     pub(crate) fn reason(&self, capability: Capability) -> String {
-        let selection = self.resolved.drivers.get(capability);
         if self.overrides.contains_key(&capability) {
-            let built_in = self.built_in.drivers.get(capability);
-            let rules_choice = format!(
-                "{} ({})",
-                label(built_in),
-                rule_reason(&self.built_in, &self.built_in_rules, capability)
-            );
-            if built_in == selection {
-                return format!("--driver override, same as the rules ({rules_choice})");
-            }
-            let mut reason = format!("--driver override; the rules select {rules_choice}");
-            if let CapabilitySelection::Driver(_) = selection {
-                let selecting: Vec<&str> = self
-                    .built_in_rules
-                    .rules()
-                    .iter()
-                    .filter(|rule| rule.selections.get(&capability) == Some(selection))
-                    .map(|rule| rule.id.as_str())
-                    .collect();
-                if selecting.is_empty() {
-                    reason.push_str("; no compiled rule selects this driver");
-                } else {
-                    let _ = write!(
-                        reason,
-                        "; compiled for rule {}, which does not match this BMC",
-                        selecting.join(", ")
-                    );
-                }
-            }
-            return reason;
+            return format!("--driver override; {}", self.override_note(capability));
         }
         rule_reason(&self.resolved, &self.built_in_rules, capability)
     }
 
-    pub(crate) fn print(&self) {
-        println!();
-        println!("{:<13} {:<30} SELECTED BECAUSE", "CAPABILITY", "DRIVER");
-        for capability in Capability::iter() {
-            println!(
-                "{:<13} {:<30} {}",
-                capability.as_str(),
-                self.driver(capability),
-                self.reason(capability)
-            );
+    /// How an overridden capability's pin compares with what the rules select.
+    pub(crate) fn override_note(&self, capability: Capability) -> String {
+        let selection = self.resolved.drivers.get(capability);
+        let built_in = self.built_in.drivers.get(capability);
+        let rules_choice = format!(
+            "{} ({})",
+            label(built_in),
+            rule_reason(&self.built_in, &self.built_in_rules, capability)
+        );
+        if built_in == selection {
+            return format!("same as the rules: {rules_choice}");
         }
-        let quirks: Vec<String> = self
-            .resolved
+        let mut note = format!("the rules select {rules_choice}");
+        if let CapabilitySelection::Driver(_) = selection {
+            let selecting: Vec<&str> = self
+                .built_in_rules
+                .rules()
+                .iter()
+                .filter(|rule| rule.selections.get(&capability) == Some(selection))
+                .map(|rule| rule.id.as_str())
+                .collect();
+            if selecting.is_empty() {
+                note.push_str("; no compiled rule selects this driver");
+            } else {
+                let _ = write!(
+                    note,
+                    "; compiled for rule {}, which does not match this BMC",
+                    selecting.join(", ")
+                );
+            }
+        }
+        note
+    }
+
+    /// What decided `capability`, briefly: a rule id, the compiled default,
+    /// or an override.
+    pub(crate) fn source(&self, capability: Capability) -> String {
+        if self.overrides.contains_key(&capability) {
+            return "--driver override".to_string();
+        }
+        match self.resolved.rule_for(capability) {
+            Some(id) => id.to_string(),
+            None if self.is_supported(capability) => "default".to_string(),
+            None => "no rule, no standard driver".to_string(),
+        }
+    }
+
+    /// Every capability pinned by `--driver`.
+    pub(crate) fn overridden(&self) -> impl Iterator<Item = Capability> + '_ {
+        self.overrides.keys().copied()
+    }
+
+    /// Each compiled rule that decided a capability, with its matchers, in
+    /// the order capabilities first cite them.
+    pub(crate) fn deciding_rules(&self) -> Vec<(&str, String)> {
+        let mut rules: Vec<(&str, String)> = Vec::new();
+        for capability in Capability::iter().filter(|c| !self.overrides.contains_key(c)) {
+            let Some(id) = self.resolved.rule_for(capability) else {
+                continue;
+            };
+            if rules.iter().any(|(seen, _)| *seen == id) {
+                continue;
+            }
+            if let Some(rule) = self
+                .built_in_rules
+                .rules()
+                .iter()
+                .find(|rule| rule.id == id)
+            {
+                rules.push((rule.id.as_str(), matchers(rule)));
+            }
+        }
+        rules
+    }
+
+    pub(crate) fn quirks(&self) -> Vec<String> {
+        self.resolved
             .quirks
             .iter()
             .map(|quirk| format!("{quirk:?}"))
-            .collect();
-        println!(
-            "quirks: {}",
-            if quirks.is_empty() {
-                "none".to_string()
-            } else {
-                quirks.join(", ")
-            }
-        );
-        println!("rules hash: {}", self.resolved.hash);
+            .collect()
+    }
+
+    pub(crate) fn hash(&self) -> String {
+        self.resolved.hash.to_string()
     }
 }
 
@@ -229,15 +259,23 @@ fn label(selection: &CapabilitySelection) -> String {
 }
 
 fn rule_reason(resolved: &ResolvedSelection, rules: &Rules, capability: Capability) -> String {
+    let unsupported = resolved.drivers.get(capability) == &CapabilitySelection::Unsupported;
     match resolved.rule_for(capability) {
-        Some(id) => match rules.rules().iter().find(|rule| rule.id == id) {
-            Some(rule) => format!("rule {id}: {}", matchers(rule)),
-            None => format!("rule {id}"),
-        },
-        None if resolved.drivers.get(capability) == &CapabilitySelection::Standard => {
-            "no rule sets it; compiled standard driver".to_string()
+        Some(id) => {
+            let verb = if unsupported {
+                "marks it unsupported"
+            } else {
+                "selects it"
+            };
+            match rules.rules().iter().find(|rule| rule.id == id) {
+                Some(rule) => format!("rule {id} {verb} ({})", matchers(rule)),
+                None => format!("rule {id} {verb}"),
+            }
         }
-        None => "no rule sets it and no standard driver is compiled".to_string(),
+        None if resolved.drivers.get(capability) == &CapabilitySelection::Standard => {
+            "the compiled default".to_string()
+        }
+        None => "no rule selects a driver and no standard driver is compiled".to_string(),
     }
 }
 
@@ -247,7 +285,44 @@ fn matchers(rule: &Rule) -> String {
     }
     rule.matchers
         .iter()
-        .map(|matcher| format!("{:?} {:?}", matcher.field, matcher.pattern))
+        .map(matcher)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A matcher as `field comparison value`, e.g. `oem key = Ami`.
+fn matcher(matcher: &IdentityMatcher) -> String {
+    let field = match &matcher.field {
+        IdentityField::ServiceRootVendor => "vendor".to_string(),
+        IdentityField::ServiceRootProduct => "product".to_string(),
+        IdentityField::ServiceRootOemKey => "oem key".to_string(),
+        IdentityField::ManagerModel => "manager model".to_string(),
+        IdentityField::ManagerFirmware => "manager firmware".to_string(),
+        IdentityField::ManagerId => "manager id".to_string(),
+        IdentityField::SystemId => "system id".to_string(),
+        IdentityField::SystemManufacturer => "system manufacturer".to_string(),
+        IdentityField::SystemModel => "system model".to_string(),
+        IdentityField::SystemSku => "system sku".to_string(),
+        IdentityField::SystemPartNumber => "system part".to_string(),
+        IdentityField::SystemBiosVersion => "system bios".to_string(),
+        IdentityField::ChassisId => "chassis id".to_string(),
+        IdentityField::ChassisManufacturer => "chassis manufacturer".to_string(),
+        IdentityField::ChassisModel => "chassis model".to_string(),
+        IdentityField::ChassisPartNumber => "chassis part".to_string(),
+        IdentityField::FirmwareInventory(id) => format!("firmware {id}"),
+    };
+    let comparison = match &matcher.pattern {
+        MatchPattern::Exact(value)
+        | MatchPattern::ExactAsciiCaseInsensitive(value)
+        | MatchPattern::VersionEqual(value) => format!("= {value}"),
+        MatchPattern::Prefix(value) => format!("starts with {value}"),
+        MatchPattern::Contains(value) | MatchPattern::ContainsAsciiCaseInsensitive(value) => {
+            format!("contains {value}")
+        }
+        MatchPattern::OneOf(values) => format!("in {}", values.join(" | ")),
+        MatchPattern::FirmwareVersionRange(range) => format!("in {range:?}"),
+        MatchPattern::VersionAtLeast(value) => format!(">= {value}"),
+        MatchPattern::VersionBelow(value) => format!("< {value}"),
+    };
+    format!("{field} {comparison}")
 }

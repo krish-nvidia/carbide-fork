@@ -60,8 +60,8 @@ impl<B: Bmc> BootOrder<B> for Gbx00BootOrder {
             boot_interface_first: expected
                 .zip(listed.first())
                 .is_some_and(|(expected, first)| display_name(first) == expected),
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

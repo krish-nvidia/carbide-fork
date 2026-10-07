@@ -32,11 +32,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bmc_platform::{BiosSettings, BootInterfaceSelector, Capability};
 use bmc_runtime::ConnectionManager;
 use clap::Parser;
+use colored::Colorize;
 use mac_address::MacAddress;
 use nv_redfish::bmc_http::BmcCredentials;
 
@@ -116,11 +117,12 @@ struct Args {
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
+    report::init();
     let redactor = Arc::new(Redactor::new(&args.password));
     match run(args, redactor.clone()).await {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("error: {}", redactor.apply(&error));
+            eprintln!("{} {}", "error:".red().bold(), redactor.apply(&error));
             ExitCode::from(2)
         }
     }
@@ -143,7 +145,7 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
     let credentials = BmcCredentials::new(args.username.clone(), args.password.clone());
     let pool = connect::pool();
 
-    println!("Discovering {address}...");
+    report::discovering(address);
     let identity = tokio::time::timeout(
         DISCOVERY_TIMEOUT,
         connect::discover(&pool, address, credentials.clone()),
@@ -151,8 +153,8 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
     .await
     .map_err(|_| format!("discovery did not finish within {DISCOVERY_TIMEOUT:?}"))??;
     let selection = selection::Selection::resolve(&identity, &args.drivers)?;
-    report::print_identity(&identity);
-    selection.print();
+    report::print_identity(address, &identity);
+    report::print_selection(&selection);
 
     let plan = checks::plan(
         &selection,
@@ -187,6 +189,8 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
         bios_profile,
     };
     let ctx = Ctx::new(bmc, pool, address, inputs, redactor);
+    report::checks_heading();
+    let started = Instant::now();
     let results = checks::run(&ctx, plan, &selection, args.jobs.max(1)).await;
-    Ok(report::summary(&ctx, &results))
+    Ok(report::summary(&ctx, &results, started.elapsed()))
 }

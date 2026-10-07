@@ -244,8 +244,8 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
         };
         Ok(BootOrderStatus {
             boot_interface_first,
-            disk_enabled: true,
-            other_network_options_disabled: true,
+            disk_enabled: None,
+            other_network_options_disabled: None,
         })
     }
 

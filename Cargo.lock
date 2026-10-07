@@ -802,6 +802,7 @@ dependencies = [
  "carbide-secrets",
  "carbide-uuid",
  "clap",
+ "colored",
  "futures",
  "mac_address",
  "nv-redfish",

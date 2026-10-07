@@ -40,17 +40,20 @@ pub enum BootInterfaceSelector {
 pub struct BootOrderStatus {
     /// The selected interface's HTTP boot option is first in the boot order.
     pub boot_interface_first: bool,
-    /// The disks remain in the boot order; true on platforms that cannot drop them.
-    pub disk_enabled: bool,
-    /// The other network boot options are disabled; true on platforms whose
+    /// The disks remain in the boot order; `None` on platforms whose boot
+    /// order setup does not manage disks.
+    pub disk_enabled: Option<bool>,
+    /// The other network boot options are disabled; `None` on platforms whose
     /// boot order setup leaves them alone.
-    pub other_network_options_disabled: bool,
+    pub other_network_options_disabled: Option<bool>,
 }
 
 impl BootOrderStatus {
-    /// True when all three conditions hold.
+    /// True when the boot interface is first and no managed condition fails.
     pub const fn is_configured(self) -> bool {
-        self.boot_interface_first && self.disk_enabled && self.other_network_options_disabled
+        self.boot_interface_first
+            && !matches!(self.disk_enabled, Some(false))
+            && !matches!(self.other_network_options_disabled, Some(false))
     }
 }
 
@@ -108,44 +111,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn boot_order_is_configured_only_when_every_policy_check_passes() {
+    fn boot_order_is_configured_unless_a_managed_check_fails() {
+        let status = |first, disk, network| BootOrderStatus {
+            boot_interface_first: first,
+            disk_enabled: disk,
+            other_network_options_disabled: network,
+        };
         let cases = [
-            (
-                BootOrderStatus {
-                    boot_interface_first: true,
-                    disk_enabled: true,
-                    other_network_options_disabled: true,
-                },
-                true,
-            ),
-            (
-                BootOrderStatus {
-                    boot_interface_first: false,
-                    disk_enabled: true,
-                    other_network_options_disabled: true,
-                },
-                false,
-            ),
-            (
-                BootOrderStatus {
-                    boot_interface_first: true,
-                    disk_enabled: false,
-                    other_network_options_disabled: true,
-                },
-                false,
-            ),
-            (
-                BootOrderStatus {
-                    boot_interface_first: true,
-                    disk_enabled: true,
-                    other_network_options_disabled: false,
-                },
-                false,
-            ),
+            (status(true, Some(true), Some(true)), true),
+            (status(true, None, None), true),
+            (status(false, None, None), false),
+            (status(true, Some(false), None), false),
+            (status(true, None, Some(false)), false),
         ];
 
         for (status, expected) in cases {
-            assert_eq!(status.is_configured(), expected);
+            assert_eq!(status.is_configured(), expected, "{status:?}");
         }
     }
 }

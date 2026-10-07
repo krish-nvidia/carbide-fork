@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use bmc_platform::{Capability, ConsoleSpec, EvidenceProgress, PlatformError};
 
-use super::{Check, Ctx, Outcome, Step, differences, failed};
+use super::{Check, Ctx, Outcome, Step, boot_order_summary, differences, failed};
 
 /// How long a signed-measurement request may stay pending.
 const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -167,7 +167,7 @@ async fn boot_order_status(ctx: &Ctx) -> Step {
         .status(selector)
         .await
         .map_err(failed("status"))?;
-    Ok(format!("{status:?}"))
+    Ok(boot_order_summary(status))
 }
 
 async fn secure_boot_status(ctx: &Ctx) -> Step {
@@ -269,7 +269,11 @@ async fn attestation_components(ctx: &Ctx) -> Step {
         .iter()
         .map(|component| component.id.as_str())
         .collect();
-    Ok(format!("{} components: {}", ids.len(), ids.join(", ")))
+    Ok(if ids.is_empty() {
+        "none listed".to_string()
+    } else {
+        format!("{} components: {}", ids.len(), ids.join(", "))
+    })
 }
 
 /// Collects signed measurements from the first component, with its

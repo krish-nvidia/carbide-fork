@@ -339,6 +339,7 @@ fn narrower_identity_outranks_broader_rules() {
                 (Lockdown, driver(LenovoAmiLockdown)),
                 (Accounts, driver(AmiMegaRacAccounts)),
                 (Power, Standard),
+                (SecureBoot, Unsupported),
             ],
         },
         Case {
