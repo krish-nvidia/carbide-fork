@@ -9,7 +9,7 @@ use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::ResetType;
 
 use crate::power::standard::StandardPower;
-use crate::power::support::force_off_and_wait;
+use crate::power::support::RedfishPowerExt as _;
 
 /// HPE iLO power behavior.
 ///
@@ -55,7 +55,7 @@ where
         match reset_type {
             ResetType::ForceRestart => self.standard().set(cx, ResetType::GracefulRestart).await,
             ResetType::FullPowerCycle => {
-                force_off_and_wait(cx).await?;
+                cx.force_off_and_wait().await?;
                 aux_power_cycle(cx).await
             }
             other => self.standard().set(cx, other).await,

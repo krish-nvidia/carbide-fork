@@ -6,3 +6,5 @@
 //! Secure Boot capability drivers.
 
 pub(crate) mod standard;
+
+mod support;

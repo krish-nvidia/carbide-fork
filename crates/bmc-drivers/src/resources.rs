@@ -3,36 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! BIOS resources reached from the ComputerSystem exploration selected.
+//! Standard Redfish resources drivers of any capability reach: the selected
+//! system, chassis, and the BIOS with its attribute reads and writes.
 
 use std::collections::BTreeMap;
 
-use bmc_platform::{DriverOutcome, OpCx, PlatformError};
+use bmc_platform::{BiosSettings, DriverOutcome, OpCx, PlatformError};
+use nv_redfish::chassis::Chassis;
 use nv_redfish::computer_system::{AttributesUpdate, Bios, BiosUpdate};
-use nv_redfish::core::{Bmc, DynamicProperties, EdmPrimitiveType, ModificationResponse};
+use nv_redfish::core::{Bmc, DynamicProperties, EdmPrimitiveType, ModificationResponse, ODataId};
 use nv_redfish::schema::bios::Bios as BiosSchema;
 use serde_json::Value;
-
-/// Returns the BIOS resource of the selected ComputerSystem.
-pub(crate) async fn selected_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Bios<B>, PlatformError> {
-    cx.system()
-        .await?
-        .bios()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)
-}
-
-/// Returns the pending-settings resource the BIOS advertises through `@Redfish.Settings`.
-pub(crate) async fn bios_settings<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    bios: &Bios<B>,
-) -> Result<Bios<B>, PlatformError> {
-    bios.settings()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)
-}
 
 /// Attribute values keyed by name, from `(name, value)` pairs.
 pub(crate) fn attribute_map<const N: usize>(
@@ -44,47 +25,6 @@ pub(crate) fn attribute_map<const N: usize>(
         .collect()
 }
 
-/// Stages, on the pending-settings resource, the entries of `attributes` the
-/// BIOS would not hold after the next reset, judged by the staged value or,
-/// when nothing is staged, the current one. Repeating a stage writes nothing.
-pub(crate) async fn stage_bios_attributes<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    attributes: &BTreeMap<String, Value>,
-) -> Result<DriverOutcome, PlatformError> {
-    if attributes.is_empty() {
-        return Ok(DriverOutcome::complete());
-    }
-    let bios = selected_bios(cx).await?;
-    let current = bios_attributes(&bios.raw());
-    let settings = bios_settings(cx, &bios).await?;
-    let pending = bios_attributes(&settings.raw());
-    let staged: BTreeMap<String, Value> = attributes
-        .iter()
-        .filter(|(key, value)| pending.get(*key).or_else(|| current.get(*key)) != Some(value))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    if staged.is_empty() {
-        return Ok(DriverOutcome::complete());
-    }
-    settings
-        .update(&bios_update(&staged)?)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// Writes every entry of `attributes` to the pending-settings resource without
-/// reading the BIOS first, for write-only attributes and for BIOSes that cannot
-/// be read at the time, such as a BlueField in NIC mode on older firmware.
-pub(crate) async fn write_bios_attributes<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    attributes: &BTreeMap<String, Value>,
-) -> Result<DriverOutcome, PlatformError> {
-    update_bios_settings(cx, &bios_update(attributes)?)
-        .await
-        .map(DriverOutcome::from)
-}
-
 /// The BIOS update writing `attributes`.
 pub(crate) fn bios_update(
     attributes: &BTreeMap<String, Value>,
@@ -92,20 +32,6 @@ pub(crate) fn bios_update(
     Ok(BiosUpdate::builder()
         .with_attributes(attributes_update(attributes)?)
         .build())
-}
-
-/// Writes `body` to the BIOS pending-settings resource and returns the
-/// response, whose task location callers such as Dell track as a job.
-pub(crate) async fn update_bios_settings<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    body: &BiosUpdate,
-) -> Result<ModificationResponse<Bios<B>>, PlatformError> {
-    let bios = selected_bios(cx).await?;
-    bios_settings(cx, &bios)
-        .await?
-        .update(body)
-        .await
-        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Converts the BIOS `Attributes` object into plain JSON values, skipping null attributes.
@@ -169,6 +95,144 @@ pub(crate) fn dynamic_properties(
             Ok((key.clone(), value))
         })
         .collect()
+}
+
+/// Standard Redfish resources and BIOS attribute mechanics shared across capabilities.
+pub(crate) trait RedfishResourcesExt<B: Bmc> {
+    /// The selected system's resource, or the resource at `suffix` beneath it,
+    /// such as its `Settings`, `SD` or `Pending` object.
+    async fn system_uri(&self, suffix: Option<&str>) -> Result<ODataId, PlatformError>;
+
+    /// Every chassis the BMC lists; `Unsupported` when it has no chassis collection.
+    async fn all_chassis(&self) -> Result<Vec<Chassis<B>>, PlatformError>;
+
+    /// The chassis with id `chassis_id`; `None` when the BMC does not list it.
+    async fn chassis_by_id(&self, chassis_id: &str) -> Result<Option<Chassis<B>>, PlatformError>;
+
+    /// Returns the BIOS resource of the selected ComputerSystem.
+    async fn bios(&self) -> Result<Bios<B>, PlatformError>;
+
+    /// The attributes the BIOS currently runs with, excluding nulls.
+    async fn current_bios_settings(&self) -> Result<BiosSettings, PlatformError>;
+    /// Stages, on the pending-settings resource, the entries of `attributes` the
+    /// BIOS would not hold after the next reset, judged by the staged value or,
+    /// when nothing is staged, the current one. Repeating a stage writes nothing.
+    async fn stage_bios_attributes(
+        &self,
+        attributes: &BTreeMap<String, Value>,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// Writes every entry of `attributes` to the pending-settings resource without
+    /// comparing current or staged values, for attributes that cannot be read back.
+    async fn write_bios_attributes(
+        &self,
+        attributes: &BTreeMap<String, Value>,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// Writes `body` to the BIOS pending-settings resource and returns the
+    /// response, whose task location callers such as Dell track as a job.
+    async fn update_bios_settings(
+        &self,
+        body: &BiosUpdate,
+    ) -> Result<ModificationResponse<Bios<B>>, PlatformError>;
+}
+
+impl<B: Bmc> RedfishResourcesExt<B> for OpCx<'_, B> {
+    async fn system_uri(&self, suffix: Option<&str>) -> Result<ODataId, PlatformError> {
+        let system = self.system().await?.raw().odata_id.to_string();
+        Ok(ODataId::from(match suffix {
+            Some(suffix) => format!("{system}/{suffix}"),
+            None => system,
+        }))
+    }
+
+    async fn all_chassis(&self) -> Result<Vec<Chassis<B>>, PlatformError> {
+        self.service_root()
+            .chassis()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .members()
+            .await
+            .map_err(|error| self.map_redfish_error(error))
+    }
+
+    async fn chassis_by_id(&self, chassis_id: &str) -> Result<Option<Chassis<B>>, PlatformError> {
+        Ok(self
+            .all_chassis()
+            .await?
+            .into_iter()
+            .find(|chassis| chassis.raw().id == chassis_id))
+    }
+
+    async fn bios(&self) -> Result<Bios<B>, PlatformError> {
+        self.system()
+            .await?
+            .bios()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)
+    }
+
+    async fn current_bios_settings(&self) -> Result<BiosSettings, PlatformError> {
+        Ok(BiosSettings {
+            attributes: bios_attributes(&self.bios().await?.raw()),
+        })
+    }
+
+    async fn stage_bios_attributes(
+        &self,
+        attributes: &BTreeMap<String, Value>,
+    ) -> Result<DriverOutcome, PlatformError> {
+        if attributes.is_empty() {
+            return Ok(DriverOutcome::complete());
+        }
+        let bios = self.bios().await?;
+        let current = bios_attributes(&bios.raw());
+        let settings = bios
+            .settings()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?;
+        let pending = bios_attributes(&settings.raw());
+        let staged: BTreeMap<String, Value> = attributes
+            .iter()
+            .filter(|(key, value)| pending.get(*key).or_else(|| current.get(*key)) != Some(value))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if staged.is_empty() {
+            return Ok(DriverOutcome::complete());
+        }
+        settings
+            .update(&bios_update(&staged)?)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
+    }
+
+    async fn write_bios_attributes(
+        &self,
+        attributes: &BTreeMap<String, Value>,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.update_bios_settings(&bios_update(attributes)?)
+            .await
+            .map(DriverOutcome::from)
+    }
+
+    async fn update_bios_settings(
+        &self,
+        body: &BiosUpdate,
+    ) -> Result<ModificationResponse<Bios<B>>, PlatformError> {
+        self.bios()
+            .await?
+            .settings()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .update(body)
+            .await
+            .map_err(|error| self.map_redfish_error(error))
+    }
 }
 
 #[cfg(test)]

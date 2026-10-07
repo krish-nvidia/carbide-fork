@@ -17,7 +17,7 @@ use crate::dpu::nvidia::support::{
     bios_error_reports_nic_mode, bios_nic_mode, enable_bmc_rshim, host_rshim_state, nic_mode_value,
     oem_nic_mode, set_bios_host_privilege_level, system_oem,
 };
-use crate::resources::selected_bios;
+use crate::resources::RedfishResourcesExt as _;
 
 /// BlueField-3: mode and host rshim are the system `Oem.Nvidia` properties
 /// and actions; host privilege is a BIOS attribute.
@@ -57,7 +57,8 @@ where
             });
         }
         if cx.has_quirk(Quirk::BlueFieldOemTimeoutInNicMode) {
-            let nic_mode_reported = selected_bios(cx)
+            let nic_mode_reported = cx
+                .bios()
                 .await
                 .err()
                 .is_some_and(|error| bios_error_reports_nic_mode(&error));

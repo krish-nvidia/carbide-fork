@@ -12,7 +12,7 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::lockdown::support::{signal, state_from_signals, status};
-use crate::resources::{attribute_map, selected_bios, stage_bios_attributes};
+use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// HPE iLO lockdown driver: KCS and USB boot for the host, the virtual NIC
 /// for the BMC.
@@ -59,8 +59,9 @@ async fn set_kcs<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcom
 async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcome, PlatformError> {
     let kcs = set_kcs(cx, !enabled).await?;
     let usb_boot_value = if enabled { "Disabled" } else { "Enabled" };
-    let usb_boot =
-        stage_bios_attributes(cx, &attribute_map([("UsbBoot", json!(usb_boot_value))])).await?;
+    let usb_boot = cx
+        .stage_bios_attributes(&attribute_map([("UsbBoot", json!(usb_boot_value))]))
+        .await?;
     Ok(kcs.merge(usb_boot))
 }
 
@@ -80,7 +81,8 @@ async fn set_bmc<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutcom
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for IloLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let usb_boot = selected_bios(cx)
+        let usb_boot = cx
+            .bios()
             .await?
             .attribute("UsbBoot")
             .and_then(|value| value.str_value().map(str::to_owned));

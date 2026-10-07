@@ -5,61 +5,193 @@
 
 //! Firmware mechanics shared by several vendor drivers.
 
-use bmc_platform::{OpCx, PlatformError};
-use nv_redfish::core::{Bmc, EntityTypeRef};
+use std::pin::Pin;
 
-use crate::firmware::standard::{advertised_multipart_uri, update_service};
+use bmc_platform::{DriverOutcome, FirmwareUpload, OpCx, OperationReference, PlatformError};
+use nv_redfish::core::{
+    Bmc, EntityTypeRef, ModificationResponse, MultipartUpdateRequest, ODataId, OemMultipartPart,
+    UploadReader,
+};
+use nv_redfish::schema::message::Message;
+use nv_redfish::update_service::UpdateService;
+use serde::{Deserialize, Serialize};
 
-/// The advertised `MultipartHttpPushUri`, or `fallback` for firmware that
-/// implements multipart push without advertising it.
-pub(super) async fn upload_uri<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    fallback: &str,
-) -> Result<String, PlatformError> {
-    let service = update_service(cx).await?;
-    Ok(advertised_multipart_uri(&service).unwrap_or_else(|| fallback.to_string()))
+use crate::resources::RedfishResourcesExt as _;
+
+/// Firmware discovery and upload mechanics shared by firmware drivers.
+pub(super) trait RedfishFirmwareExt<B: Bmc> {
+    /// The advertised `MultipartHttpPushUri`, or `fallback` for firmware that
+    /// implements multipart push without advertising it.
+    async fn firmware_upload_uri(&self, fallback: &str) -> Result<String, PlatformError>;
+
+    /// The `@odata.id` of each firmware inventory entry in `ids`, for update
+    /// targets; `Unsupported` when the BMC lists one of them under no such id.
+    async fn firmware_inventory_targets(&self, ids: &[&str]) -> Result<Vec<String>, PlatformError>;
+
+    /// The `@odata.id` of the chassis `id`, for update targets.
+    async fn firmware_chassis_target(&self, id: &str) -> Result<String, PlatformError>;
+
+    /// The service root's update service.
+    async fn update_service(&self) -> Result<UpdateService<B>, PlatformError>;
+
+    /// Uploads `upload` to `uri` with `parameters` and any OEM parts; a 404 means
+    /// the BMC does not implement multipart push.
+    async fn multipart_upload<V>(
+        &self,
+        upload: FirmwareUpload,
+        parameters: &V,
+        oem_parts: Vec<OemMultipartPart>,
+        uri: &str,
+    ) -> Result<DriverOutcome, PlatformError>
+    where
+        V: Serialize + Send + Sync;
 }
 
-/// The `@odata.id` of each firmware inventory entry in `ids`, for update
-/// targets; `Unsupported` when the BMC lists one of them under no such id.
-pub(super) async fn inventory_targets<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    ids: &[&str],
-) -> Result<Vec<String>, PlatformError> {
-    let inventories = update_service(cx)
-        .await?
-        .firmware_inventories()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?;
-    ids.iter()
-        .map(|id| {
-            inventories
-                .iter()
-                .map(|inventory| inventory.raw())
-                .find(|inventory| inventory.id == *id)
-                .map(|inventory| inventory.odata_id().to_string())
-                .ok_or(PlatformError::Unsupported)
-        })
-        .collect()
+impl<B: Bmc> RedfishFirmwareExt<B> for OpCx<'_, B> {
+    async fn firmware_upload_uri(&self, fallback: &str) -> Result<String, PlatformError> {
+        let service = self.update_service().await?;
+        Ok(advertised_multipart_uri(&service).unwrap_or_else(|| fallback.to_string()))
+    }
+
+    async fn firmware_inventory_targets(&self, ids: &[&str]) -> Result<Vec<String>, PlatformError> {
+        let inventories = self
+            .update_service()
+            .await?
+            .firmware_inventories()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?;
+        ids.iter()
+            .map(|id| {
+                inventories
+                    .iter()
+                    .map(|inventory| inventory.raw())
+                    .find(|inventory| inventory.id == *id)
+                    .map(|inventory| inventory.odata_id().to_string())
+                    .ok_or(PlatformError::Unsupported)
+            })
+            .collect()
+    }
+
+    async fn firmware_chassis_target(&self, id: &str) -> Result<String, PlatformError> {
+        self.chassis_by_id(id)
+            .await?
+            .map(|chassis| chassis.raw().odata_id().to_string())
+            .ok_or(PlatformError::Unsupported)
+    }
+
+    async fn update_service(&self) -> Result<UpdateService<B>, PlatformError> {
+        self.service_root()
+            .update_service()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)
+    }
+
+    async fn multipart_upload<V>(
+        &self,
+        upload: FirmwareUpload,
+        parameters: &V,
+        oem_parts: Vec<OemMultipartPart>,
+        uri: &str,
+    ) -> Result<DriverOutcome, PlatformError>
+    where
+        V: Serialize + Send + Sync,
+    {
+        let request: MultipartUpdateRequest<'_, Pin<Box<dyn UploadReader>>, V> =
+            MultipartUpdateRequest {
+                update_parameters: parameters,
+                update_stream: upload.image,
+                oem_parts,
+                upload_timeout: upload.timeout,
+            };
+        self.bmc()
+            .multipart_update::<_, _, UploadResponse>(uri, request)
+            .await
+            .map(upload_outcome)
+            .map_err(|error| match self.map_bmc_error(error) {
+                PlatformError::Bmc { status: 404, .. } => PlatformError::Unsupported,
+                other => other,
+            })
+    }
 }
 
-/// The `@odata.id` of the chassis `id`, for update targets.
-pub(super) async fn chassis_target<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    id: &str,
-) -> Result<String, PlatformError> {
-    cx.service_root()
-        .chassis()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .iter()
-        .map(|chassis| chassis.raw())
-        .find(|chassis| chassis.id == id)
-        .map(|chassis| chassis.odata_id().to_string())
-        .ok_or(PlatformError::Unsupported)
+/// The non-empty `MultipartHttpPushUri` the update service advertises, if any.
+pub(super) fn advertised_multipart_uri<B: Bmc>(service: &UpdateService<B>) -> Option<String> {
+    service
+        .raw()
+        .multipart_http_push_uri
+        .clone()
+        .filter(|uri| !uri.trim().is_empty())
+}
+
+/// The message announcing the task an upload started.
+const TASK_STARTED: &str = "Task.1.0.New";
+
+/// An upload answered without `202 Accepted`: the started task is announced
+/// in `Messages`, or the body is the task itself.
+#[derive(Deserialize)]
+pub(super) struct UploadResponse {
+    #[serde(rename = "@odata.id")]
+    odata_id: Option<ODataId>,
+    #[serde(rename = "@odata.type")]
+    odata_type: Option<String>,
+    #[serde(rename = "Messages", default)]
+    messages: Vec<Message>,
+}
+
+/// The task an upload started, or completion when it started none.
+pub(super) fn upload_outcome(response: ModificationResponse<UploadResponse>) -> DriverOutcome {
+    let ModificationResponse::Entity(body) = response else {
+        return DriverOutcome::from(response);
+    };
+    let announced = body.messages.iter().find_map(|message| {
+        (message.message_id == TASK_STARTED)
+            .then(|| message.message_args.as_ref()?.first().cloned())
+            .flatten()
+    });
+    let task = body
+        .odata_type
+        .as_deref()
+        .is_some_and(|odata_type| odata_type.starts_with("#Task."));
+    match announced
+        .map(ODataId::from)
+        .or(body.odata_id.filter(|_| task))
+    {
+        Some(uri) => DriverOutcome::accepted(OperationReference::RedfishTask {
+            uri,
+            retry_after_seconds: None,
+        }),
+        None => DriverOutcome::complete(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn an_upload_answered_with_a_task_message_is_tracked_as_that_task() {
+        let entity = |body| {
+            ModificationResponse::Entity(
+                serde_json::from_value::<UploadResponse>(body).expect("upload response"),
+            )
+        };
+        assert_eq!(
+            upload_outcome(entity(json!({"Messages": [{
+                "MessageId": TASK_STARTED,
+                "MessageArgs": ["/redfish/v1/TaskService/Tasks/3"],
+            }]}))),
+            DriverOutcome::accepted(OperationReference::RedfishTask {
+                uri: "/redfish/v1/TaskService/Tasks/3".to_string().into(),
+                retry_after_seconds: None,
+            })
+        );
+        assert_eq!(
+            upload_outcome(entity(json!({"Messages": []}))),
+            DriverOutcome::complete()
+        );
+    }
 }

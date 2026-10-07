@@ -13,7 +13,7 @@ use nv_redfish::oem::dell::IdracVersion;
 use nv_redfish::schema::manager_account::ManagerAccount;
 
 use crate::accounts::standard::StandardAccounts;
-use crate::accounts::support::{create_account, delete_account, list_accounts};
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// Dell iDRAC account behavior.
 ///
@@ -29,7 +29,13 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
     }
 
     async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError> {
-        list_accounts(cx, slot_config(cx).await?).await
+        let accounts = cx
+            .account_collection(slot_config(cx).await?)
+            .await?
+            .all_accounts_data()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
+        Ok(accounts.into_iter().map(|account| account.raw()).collect())
     }
 
     async fn create(
@@ -37,7 +43,12 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
         cx: &OpCx<'_, B>,
         request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        create_account(cx, slot_config(cx).await?, request).await
+        cx.account_collection(slot_config(cx).await?)
+            .await?
+            .create_account(request)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn delete(
@@ -45,7 +56,12 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
         cx: &OpCx<'_, B>,
         username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        delete_account(cx, slot_config(cx).await?, username).await
+        cx.account_by_username(slot_config(cx).await?, username)
+            .await?
+            .delete()
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn apply_default_policy(

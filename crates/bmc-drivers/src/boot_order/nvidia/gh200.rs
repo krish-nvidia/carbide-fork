@@ -10,12 +10,13 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use super::{boots, device_options_first, http_option_name, settings_override};
+use super::{boots, http_option_name};
+use crate::boot_order::nvidia::{device_options_first, settings_override};
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
-    boot_interface_mac, boot_options, boot_order, display_name, is_first, persistent_device,
-    put_first, reference, system_uri,
+    RedfishBootOrderExt as _, boot_order, display_name, is_first, persistent_device, reference,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA GH200 boot behavior.
 ///
@@ -29,9 +30,10 @@ async fn http_option<B: Bmc>(
     cx: &OpCx<'_, B>,
     selector: &BootInterfaceSelector,
 ) -> Result<(Vec<String>, Option<String>, String), PlatformError> {
-    let name = http_option_name(&boot_interface_mac(cx, selector).await?);
+    let name = http_option_name(&cx.boot_interface_mac(selector).await?);
     let order = boot_order(cx.system().await?);
-    let target = boot_options(cx)
+    let target = cx
+        .boot_options()
         .await?
         .iter()
         .find(|option| display_name(option).eq_ignore_ascii_case(&name))
@@ -76,7 +78,7 @@ impl<B: Bmc> BootOrder<B> for Gh200BootOrder {
     ) -> Result<DriverOutcome, PlatformError> {
         let (order, target, name) = http_option(cx, selector).await?;
         let target = target.ok_or(PlatformError::MissingBootOption { description: name })?;
-        let settings = system_uri(cx, Some("Settings")).await?;
-        put_first(cx, &settings, order, &target).await
+        let settings = cx.system_uri(Some("Settings")).await?;
+        cx.put_boot_option_first(&settings, order, &target).await
     }
 }

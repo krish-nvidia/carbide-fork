@@ -15,9 +15,9 @@ use nv_redfish::schema::computer_system::{BootSource, BootSourceOverrideEnabled,
 
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
-    boot_interface_mac, boot_options, boot_order, display_name, is_first, persistent_device,
-    put_first, reference, system_uri, write_override,
+    RedfishBootOrderExt as _, boot_order, display_name, is_first, persistent_device, reference,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// Supermicro boot behavior.
 ///
@@ -116,7 +116,7 @@ async fn standard_adapter_first<B: Bmc>(
     if order.is_empty() {
         return Ok(None);
     }
-    let options = boot_options(cx).await?;
+    let options = cx.boot_options().await?;
     let target = options
         .iter()
         .find(|option| names_adapter(display_name(option), mac))
@@ -124,8 +124,10 @@ async fn standard_adapter_first<B: Bmc>(
         .ok_or_else(|| PlatformError::MissingBootOption {
             description: format!("HTTP IPv4 Mellanox or Nvidia adapter boot option for {mac}"),
         })?;
-    let system = system_uri(cx, None).await?;
-    put_first(cx, &system, order, target).await.map(Some)
+    let system = cx.system_uri(None).await?;
+    cx.put_boot_option_first(&system, order, target)
+        .await
+        .map(Some)
 }
 
 /// Puts the network class first and disks second in the fixed boot order,
@@ -216,8 +218,8 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
-        let mac = boot_interface_mac(cx, selector).await?;
-        let first = match boot_options(cx).await {
+        let mac = cx.boot_interface_mac(selector).await?;
+        let first = match cx.boot_options().await {
             Ok(options) => {
                 let order = boot_order(cx.system().await?);
                 if order.is_empty() {
@@ -254,9 +256,11 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let system = system_uri(cx, None).await?;
+        let system = cx.system_uri(None).await?;
         let Some(device) = persistent_device(override_setting) else {
-            return write_override(cx, &system, override_setting, true, None).await;
+            return cx
+                .write_boot_override(&system, override_setting, true, None)
+                .await;
         };
         match fixed_device_first(cx, device).await {
             Err(PlatformError::Unsupported | PlatformError::Bmc { status: 404, .. }) => {
@@ -264,7 +268,8 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
                     .with_boot_source_override_target(device)
                     .with_boot_source_override_enabled(BootSourceOverrideEnabled::Continuous)
                     .build();
-                write_override(cx, &system, &continuous, true, None).await
+                cx.write_boot_override(&system, &continuous, true, None)
+                    .await
             }
             result => result,
         }
@@ -275,7 +280,7 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        let mac = boot_interface_mac(cx, selector).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
         match standard_adapter_first(cx, &mac).await {
             Ok(Some(outcome)) => Ok(outcome),
             Ok(None) => fixed_adapter_first(cx, &mac).await,

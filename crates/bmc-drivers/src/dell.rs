@@ -28,10 +28,82 @@ use nv_redfish::schema::network_device_function::NetworkDeviceFunction as Networ
 use nv_redfish::schema::settings::ApplyTime;
 use serde_json::Value;
 
-use crate::resources::{bios_update, dynamic_properties, selected_bios, update_bios_settings};
+use crate::resources::{RedfishResourcesExt as _, bios_update, dynamic_properties};
 
 /// The iDRAC attribute that blocks configuration changes while enabled.
 const SYSTEM_LOCKDOWN: &str = "Lockdown.1.SystemLockdown";
+
+/// The Dell resources the selected Manager advertises.
+async fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, PlatformError> {
+    cx.manager()
+        .await?
+        .oem_dell()
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)
+}
+
+/// The selected Manager's iDRAC attributes.
+async fn manager_attributes<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellAttributes<B>, PlatformError> {
+    cx.manager()
+        .await?
+        .oem_dell_attributes()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .ok_or(PlatformError::Unsupported)
+}
+
+/// Escapes XML character data.
+fn xml_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+/// `@Redfish.SettingsApplyTime` for settings iDRAC applies on the next reset.
+pub(crate) fn on_reset() -> SettingsApplyTimeUpdate {
+    SettingsApplyTimeUpdate::builder()
+        .with_apply_time(ApplyTime::OnReset)
+        .build()
+}
+
+/// Whether iDRAC rejected a write because an attribute is read-only
+/// (MessageId `IDRAC.*.SYS410`).
+pub(crate) fn is_read_only_attribute(error: &PlatformError) -> bool {
+    matches!(
+        error,
+        PlatformError::Bmc {
+            status: 400,
+            message_id,
+            message,
+        } if message_id.as_deref().is_some_and(|id| id.ends_with("SYS410"))
+            || message.contains("SYS410")
+            || message.contains("read-only")
+    )
+}
+
+fn function_matches(
+    function: &NetworkDeviceFunctionSchema,
+    selector: &BootInterfaceSelector,
+) -> bool {
+    match selector {
+        BootInterfaceSelector::Mac(mac) => function
+            .ethernet
+            .as_ref()
+            .and_then(|ethernet| ethernet.mac_address.as_ref().and_then(Option::as_ref))
+            .is_some_and(|reported| reported.eq_ignore_ascii_case(&mac.to_string())),
+        BootInterfaceSelector::InterfaceId(interface_id)
+        | BootInterfaceSelector::Pair { interface_id, .. } => {
+            *interface_id == function.id || interface_id.starts_with(&format!("{}-", function.id))
+        }
+    }
+}
 
 /// Maps a mutation response, reporting iDRAC jobs as vendor jobs.
 ///
@@ -69,25 +141,6 @@ pub(crate) async fn job_outcome<B: Bmc, T>(
             retry_after_seconds,
         },
     }))
-}
-
-/// The Dell resources the selected Manager advertises.
-async fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, PlatformError> {
-    cx.manager()
-        .await?
-        .oem_dell()
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)
-}
-
-/// The selected Manager's iDRAC attributes.
-async fn manager_attributes<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellAttributes<B>, PlatformError> {
-    cx.manager()
-        .await?
-        .oem_dell_attributes()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)
 }
 
 /// Deletes every queued iDRAC job.
@@ -182,25 +235,11 @@ where
     job_outcome(cx, response).await
 }
 
-/// Escapes XML character data.
-fn xml_escape(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            other => escaped.push(other),
-        }
-    }
-    escaped
-}
-
 /// Creates the configuration job that applies staged BIOS settings on the next reset.
 pub(crate) async fn create_bios_config_job<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<DriverOutcome, PlatformError> {
-    let bios = selected_bios(cx).await?;
+    let bios = cx.bios().await?;
     let settings = bios
         .raw()
         .settings_object()
@@ -225,30 +264,8 @@ where
 {
     clear_job_queue(cx).await?;
     let body = bios_update(attributes)?.with_settings_apply_time(on_reset());
-    let response = update_bios_settings(cx, &body).await?;
+    let response = cx.update_bios_settings(&body).await?;
     job_outcome(cx, response).await
-}
-
-/// `@Redfish.SettingsApplyTime` for settings iDRAC applies on the next reset.
-pub(crate) fn on_reset() -> SettingsApplyTimeUpdate {
-    SettingsApplyTimeUpdate::builder()
-        .with_apply_time(ApplyTime::OnReset)
-        .build()
-}
-
-/// Whether iDRAC rejected a write because an attribute is read-only
-/// (MessageId `IDRAC.*.SYS410`).
-pub(crate) fn is_read_only_attribute(error: &PlatformError) -> bool {
-    matches!(
-        error,
-        PlatformError::Bmc {
-            status: 400,
-            message_id,
-            message,
-        } if message_id.as_deref().is_some_and(|id| id.ends_with("SYS410"))
-            || message.contains("SYS410")
-            || message.contains("read-only")
-    )
 }
 
 /// The `Oem/Dell/DellNIC` object of the network device function `selector`
@@ -315,23 +332,6 @@ pub(crate) async fn nic<B: Bmc>(
     Err(PlatformError::InvalidResponse {
         message: format!("no network device function matches {selector:?}"),
     })
-}
-
-fn function_matches(
-    function: &NetworkDeviceFunctionSchema,
-    selector: &BootInterfaceSelector,
-) -> bool {
-    match selector {
-        BootInterfaceSelector::Mac(mac) => function
-            .ethernet
-            .as_ref()
-            .and_then(|ethernet| ethernet.mac_address.as_ref().and_then(Option::as_ref))
-            .is_some_and(|reported| reported.eq_ignore_ascii_case(&mac.to_string())),
-        BootInterfaceSelector::InterfaceId(interface_id)
-        | BootInterfaceSelector::Pair { interface_id, .. } => {
-            *interface_id == function.id || interface_id.starts_with(&format!("{}-", function.id))
-        }
-    }
 }
 
 /// The NIC slot iDRAC's `HttpDev1Interface` names: the selector's interface

@@ -8,7 +8,8 @@ use bmc_platform::{BmcControl, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::ResetType;
 
-use crate::bmc_control::standard::{self, StandardBmcControl};
+use crate::bmc_control::standard::StandardBmcControl;
+use crate::bmc_control::support::RedfishBmcControlExt as _;
 
 /// AMI MegaRAC accepts at most two NTP servers and only restarts through `ForceRestart`.
 pub(crate) struct MegaRacBmcControl;
@@ -25,7 +26,7 @@ where
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        standard::reset(cx, ResetType::ForceRestart).await
+        cx.reset_manager(ResetType::ForceRestart).await
     }
 
     async fn set_ntp_servers(

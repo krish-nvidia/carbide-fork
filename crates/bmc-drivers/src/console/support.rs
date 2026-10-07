@@ -12,7 +12,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::Value;
 
-use crate::resources::{self, selected_bios, stage_bios_attributes};
+use crate::resources::RedfishResourcesExt as _;
 
 pub(super) const SSH_PORT: NonZeroU16 = NonZeroU16::new(22).expect("22 is nonzero");
 pub(super) const DPU_SSH_PORT: NonZeroU16 = NonZeroU16::new(2200).expect("2200 is nonzero");
@@ -83,21 +83,6 @@ fn attr_value(text: &str) -> Value {
     }
 }
 
-/// Writes each attribute's first enabled value, skipping optional attributes
-/// the BIOS does not report.
-pub(super) async fn setup_bios_attributes<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    attrs: &[AttrExpectation],
-) -> Result<DriverOutcome, PlatformError> {
-    let current = bios_attributes(cx).await?;
-    let attributes: BTreeMap<String, Value> = attrs
-        .iter()
-        .filter(|attr| !attr.optional || current.contains_key(attr.key))
-        .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
-        .collect();
-    stage_bios_attributes(cx, &attributes).await
-}
-
 /// Rates the checked attributes `attrs` reports: enabled when every one
 /// holds an enabled value, disabled when every one holds a disabled value,
 /// partial otherwise. Unreported attributes are skipped.
@@ -132,12 +117,6 @@ pub(super) fn attr_status(
     }
 }
 
-pub(super) async fn bios_attributes<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<BTreeMap<String, Value>, PlatformError> {
-    Ok(resources::bios_attributes(&selected_bios(cx).await?.raw()))
-}
-
 pub(super) fn ipmi_sol_spec() -> Result<ConsoleSpec, PlatformError> {
     Ok(ConsoleSpec::IpmiSol {
         port: IPMI_PORT,
@@ -149,6 +128,31 @@ pub(super) fn ipmi_sol_spec() -> Result<ConsoleSpec, PlatformError> {
 pub(super) fn spec_error(error: impl std::fmt::Display) -> PlatformError {
     PlatformError::InvalidResponse {
         message: error.to_string(),
+    }
+}
+
+/// BIOS console setup shared by console drivers.
+pub(super) trait RedfishConsoleExt<B: Bmc> {
+    /// Writes each attribute's first enabled value, skipping optional attributes
+    /// the BIOS does not report.
+    async fn setup_console_bios_attributes(
+        &self,
+        attrs: &[AttrExpectation],
+    ) -> Result<DriverOutcome, PlatformError>;
+}
+
+impl<B: Bmc> RedfishConsoleExt<B> for OpCx<'_, B> {
+    async fn setup_console_bios_attributes(
+        &self,
+        attrs: &[AttrExpectation],
+    ) -> Result<DriverOutcome, PlatformError> {
+        let current = self.current_bios_settings().await?.attributes;
+        let attributes: BTreeMap<String, Value> = attrs
+            .iter()
+            .filter(|attr| !attr.optional || current.contains_key(attr.key))
+            .map(|attr| (attr.key.to_string(), attr_value(attr.enabled[0])))
+            .collect();
+        self.stage_bios_attributes(&attributes).await
     }
 }
 

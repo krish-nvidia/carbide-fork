@@ -9,7 +9,7 @@ use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 
 use crate::power::standard::StandardPower;
-use crate::power::support::{power_state_from_supplies, power_supplies};
+use crate::power::support::{RedfishPowerExt as _, power_state_from_supplies};
 
 /// Delta power-shelf power behavior.
 ///
@@ -60,7 +60,7 @@ where
 
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
         let mut states = Vec::new();
-        for supply in power_supplies(cx).await? {
+        for supply in cx.power_supplies().await? {
             states.push(
                 supply
                     .oem_delta()

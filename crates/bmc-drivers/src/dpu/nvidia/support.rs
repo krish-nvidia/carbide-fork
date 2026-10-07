@@ -16,7 +16,7 @@ use nv_redfish::oem::nvidia::NvidiaComputerSystem;
 use nv_redfish::oem::nvidia::computer_system::{HostRshim, Mode};
 use serde_json::{Value, json};
 
-use crate::resources::{attribute_map, bios_update, selected_bios, write_bios_attributes};
+use crate::resources::{RedfishResourcesExt as _, attribute_map, bios_update};
 
 /// BMC 24.10 dropped the spaces from BIOS attribute names; see
 /// [`Quirk::BlueFieldSpacedBiosAttributeNames`].
@@ -63,10 +63,28 @@ fn reported_nic_mode<B: Bmc>(bios: &Bios<B>) -> Result<NicMode, PlatformError> {
         })
 }
 
+/// The mode the system `Oem.Nvidia` resource reports; BlueField-3 falls
+/// back to BIOS without one.
+pub(super) fn oem_nic_mode(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<NicMode> {
+    match oem.mode()? {
+        Mode::NicMode => Some(NicMode::Nic),
+        Mode::DpuMode => Some(NicMode::Dpu),
+        Mode::UnsupportedValue => None,
+    }
+}
+
+pub(super) fn host_rshim_state(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<RshimState> {
+    match oem.host_rshim()? {
+        HostRshim::Enabled => Some(RshimState::Enabled),
+        HostRshim::Disabled => Some(RshimState::Disabled),
+        HostRshim::UnsupportedValue => None,
+    }
+}
+
 /// Reads `NicMode` from the BIOS attributes, reading NIC mode out of the 500
 /// that firmware with [`Quirk::BlueFieldNicModeBiosError`] answers with.
 pub(super) async fn bios_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> Result<NicMode, PlatformError> {
-    match selected_bios(cx).await {
+    match cx.bios().await {
         Ok(bios) => reported_nic_mode(&bios),
         Err(error)
             if cx.has_quirk(Quirk::BlueFieldNicModeBiosError)
@@ -88,24 +106,6 @@ pub(super) async fn system_oem<B: Bmc>(
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)
-}
-
-/// The mode the system `Oem.Nvidia` resource reports; BlueField-3 falls
-/// back to BIOS without one.
-pub(super) fn oem_nic_mode(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<NicMode> {
-    match oem.mode()? {
-        Mode::NicMode => Some(NicMode::Nic),
-        Mode::DpuMode => Some(NicMode::Dpu),
-        Mode::UnsupportedValue => None,
-    }
-}
-
-pub(super) fn host_rshim_state(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<RshimState> {
-    match oem.host_rshim()? {
-        HostRshim::Enabled => Some(RshimState::Enabled),
-        HostRshim::Disabled => Some(RshimState::Disabled),
-        HostRshim::UnsupportedValue => None,
-    }
 }
 
 /// Enables the BMC side of rshim through the manager's `Oem.Nvidia` resource.
@@ -132,7 +132,7 @@ pub(super) async fn write_bios<B: Bmc>(
     attributes: &BTreeMap<String, Value>,
 ) -> Result<DriverOutcome, PlatformError> {
     if !cx.has_quirk(Quirk::BlueFieldNicModeBiosError) {
-        return write_bios_attributes(cx, attributes).await;
+        return cx.write_bios_attributes(attributes).await;
     }
     let bios = cx
         .system()

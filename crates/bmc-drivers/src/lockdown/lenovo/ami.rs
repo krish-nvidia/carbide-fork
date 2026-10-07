@@ -14,7 +14,7 @@ use nv_redfish::oem::ami::config_bmc::{
     LockoutBiosVariableWriteMode, LockoutHostControlState,
 };
 
-use crate::lockdown::support::{set_first_host_interface, signal, state_from_signals, status};
+use crate::lockdown::support::{RedfishLockdownExt as _, signal, state_from_signals, status};
 
 /// Lenovo AMI lockdown driver.
 ///
@@ -83,7 +83,7 @@ impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
             LockdownScope::All => {}
             LockdownScope::Bmc => {
                 let enabled = desired == LockdownDesiredState::Enabled;
-                return set_first_host_interface(cx, !enabled).await;
+                return cx.set_first_host_interface(!enabled).await;
             }
             LockdownScope::Host | LockdownScope::BmcSystemLockdown => {
                 return Err(PlatformError::Unsupported);

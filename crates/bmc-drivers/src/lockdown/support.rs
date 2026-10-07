@@ -10,60 +10,6 @@ use bmc_platform::{DriverOutcome, LockdownState, LockdownStatus, OpCx, PlatformE
 use nv_redfish::core::Bmc;
 use nv_redfish::host_interface::{HostInterface, HostInterfaceUpdate};
 
-pub(super) async fn host_interfaces<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<Vec<HostInterface<B>>, PlatformError> {
-    cx.manager()
-        .await?
-        .host_interfaces()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// BMC lockdown state derived from the manager's first host interface, which
-/// is enabled unless it reports otherwise.
-pub(super) async fn host_interface_state<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<(LockdownState, Option<bool>), PlatformError> {
-    let enabled = host_interfaces(cx)
-        .await?
-        .first()
-        .map(|interface| interface.interface_enabled().unwrap_or(true));
-    Ok((state_from_signals(&[signal(enabled, false, true)]), enabled))
-}
-
-pub(super) async fn set_first_host_interface<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    enabled: bool,
-) -> Result<DriverOutcome, PlatformError> {
-    let interface = host_interfaces(cx)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or(PlatformError::NoContent)?;
-    set_host_interface(cx, &interface, enabled).await
-}
-
-/// Enables or disables one host interface.
-pub(super) async fn set_host_interface<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    interface: &HostInterface<B>,
-    enabled: bool,
-) -> Result<DriverOutcome, PlatformError> {
-    let body = HostInterfaceUpdate::builder()
-        .with_interface_enabled(enabled)
-        .build();
-    interface
-        .update(&body)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
 /// One control's observation: `(locked, unlocked)`, both false when unknown.
 pub(super) type Signal = (bool, bool);
 
@@ -101,6 +47,76 @@ pub(super) fn status(host: LockdownState, bmc: LockdownState, message: String) -
         message,
         host,
         bmc,
+    }
+}
+
+/// Host-interface discovery and controls shared by lockdown drivers.
+pub(super) trait RedfishLockdownExt<B: Bmc> {
+    async fn host_interfaces(&self) -> Result<Vec<HostInterface<B>>, PlatformError>;
+
+    /// BMC lockdown state derived from the manager's first host interface, which
+    /// is enabled unless it reports otherwise.
+    async fn host_interface_state(&self) -> Result<(LockdownState, Option<bool>), PlatformError>;
+
+    async fn set_first_host_interface(&self, enabled: bool)
+    -> Result<DriverOutcome, PlatformError>;
+
+    /// Enables or disables one host interface.
+    async fn set_host_interface(
+        &self,
+        interface: &HostInterface<B>,
+        enabled: bool,
+    ) -> Result<DriverOutcome, PlatformError>;
+}
+
+impl<B: Bmc> RedfishLockdownExt<B> for OpCx<'_, B> {
+    async fn host_interfaces(&self) -> Result<Vec<HostInterface<B>>, PlatformError> {
+        self.manager()
+            .await?
+            .host_interfaces()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .members()
+            .await
+            .map_err(|error| self.map_redfish_error(error))
+    }
+
+    async fn host_interface_state(&self) -> Result<(LockdownState, Option<bool>), PlatformError> {
+        let enabled = self
+            .host_interfaces()
+            .await?
+            .first()
+            .map(|interface| interface.interface_enabled().unwrap_or(true));
+        Ok((state_from_signals(&[signal(enabled, false, true)]), enabled))
+    }
+
+    async fn set_first_host_interface(
+        &self,
+        enabled: bool,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let interface = self
+            .host_interfaces()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(PlatformError::NoContent)?;
+        self.set_host_interface(&interface, enabled).await
+    }
+
+    async fn set_host_interface(
+        &self,
+        interface: &HostInterface<B>,
+        enabled: bool,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let body = HostInterfaceUpdate::builder()
+            .with_interface_enabled(enabled)
+            .build();
+        interface
+            .update(&body)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
     }
 }
 
@@ -144,7 +160,7 @@ mod tests {
         let cx = bmc.cx().await;
 
         assert_eq!(
-            host_interface_state(&cx).await,
+            cx.host_interface_state().await,
             Ok((LockdownState::Disabled, Some(true)))
         );
     }

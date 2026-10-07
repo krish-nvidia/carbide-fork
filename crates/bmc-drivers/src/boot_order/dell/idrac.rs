@@ -13,11 +13,9 @@ use nv_redfish::schema::computer_system::{BootSource, BootSourceOverrideEnabled,
 use serde_json::{Value, json};
 
 use crate::boot_order::standard::StandardBootOrder;
-use crate::boot_order::support::{
-    boot_options, boot_order, display_name, patch_boot, reference, system_uri,
-};
+use crate::boot_order::support::{RedfishBootOrderExt as _, boot_order, display_name, reference};
 use crate::dell::{self, ManagerApplyTime};
-use crate::resources::{attribute_map, bios_update, update_bios_settings};
+use crate::resources::{RedfishResourcesExt as _, attribute_map, bios_update};
 
 /// Dell iDRAC boot behavior.
 ///
@@ -82,7 +80,8 @@ async fn pin_http_boot_uri<B: Bmc>(
         ("HttpDev1Protocol", json!("IPv4")),
     ]))?
     .with_settings_apply_time(dell::on_reset());
-    let response = update_bios_settings(cx, &body)
+    let response = cx
+        .update_bios_settings(&body)
         .await
         .map_err(read_only_attribute_is_unsupported)?;
     dell::job_outcome(cx, response).await
@@ -104,7 +103,7 @@ where
     ) -> Result<BootOrderStatus, PlatformError> {
         let expected = http_device_name(cx, selector).await?;
         let order = boot_order(cx.system().await?);
-        let options = boot_options(cx).await?;
+        let options = cx.boot_options().await?;
         Ok(BootOrderStatus {
             boot_interface_first: ordered(&order, &options)
                 .first()
@@ -148,7 +147,7 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         let expected = http_device_name(cx, selector).await?;
         let order = boot_order(cx.system().await?);
-        let options = boot_options(cx).await?;
+        let options = cx.boot_options().await?;
         let ordered = ordered(&order, &options);
         let position = ordered
             .iter()
@@ -160,11 +159,11 @@ where
             return Ok(DriverOutcome::complete());
         }
         dell::clear_job_queue(cx).await?;
-        let settings = system_uri(cx, Some("Settings")).await?;
+        let settings = cx.system_uri(Some("Settings")).await?;
         let boot = BootUpdate::builder()
             .with_boot_order(vec![ordered[position].raw().id.clone()])
             .build();
-        let response = patch_boot(cx, &settings, boot, None).await?;
+        let response = cx.patch_boot(&settings, boot, None).await?;
         dell::job_outcome(cx, response).await
     }
 }

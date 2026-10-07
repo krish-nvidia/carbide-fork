@@ -9,7 +9,8 @@ use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::oem::nvidia::AuxPowerResetType;
 use nv_redfish::resource::ResetType;
 
-use crate::power::standard::{self, StandardPower};
+use crate::power::standard::StandardPower;
+use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA OpenBMC platforms cycle auxiliary power through the BMC chassis.
 pub(crate) struct OpenBmcPower;
@@ -22,8 +23,9 @@ async fn aux_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Plat
 where
     B::Error: ActionError,
 {
-    standard::chassis(cx, BMC_CHASSIS_ID)
+    cx.chassis_by_id(BMC_CHASSIS_ID)
         .await?
+        .ok_or(PlatformError::Unsupported)?
         .oem_nvidia_actions()
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?

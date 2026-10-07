@@ -21,9 +21,9 @@ use nv_redfish::oem::lenovo::boot_manager::{
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 
 use crate::boot_order::support::{
-    boot_options, boot_order, listed_option, one_time_device, persistent_device, system_uri,
-    write_boot_order, write_override,
+    RedfishBootOrderExt as _, boot_order, listed_option, one_time_device, persistent_device,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// The name of the network device group's boot option.
 pub(crate) const NETWORK: &str = "Network";
@@ -37,7 +37,7 @@ async fn set_group_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     name: &str,
 ) -> Result<DriverOutcome, PlatformError> {
-    let options = boot_options(cx).await?;
+    let options = cx.boot_options().await?;
     let group = options
         .iter()
         .rfind(|option| option.raw().name == name)
@@ -48,7 +48,46 @@ async fn set_group_first<B: Bmc>(
         .chain(options.iter().filter(|option| option.raw().name != name))
         .map(|option| option.raw().id.clone())
         .collect();
-    write_boot_order(cx, &system_uri(cx, Some("Pending")).await?, order).await
+    cx.write_boot_order(&cx.system_uri(Some("Pending")).await?, order)
+        .await
+}
+
+/// Puts `Network` first in the OEM general boot order, for firmware that
+/// lists no `Network` boot option until the group is in that order.
+async fn set_general_network_first<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    settings: &LenovoBootManagerCollection<B>,
+) -> Result<DriverOutcome, PlatformError> {
+    const GENERAL_NETWORK: &str = "Network";
+    let general = oem_boot_order(cx, settings, BootOrderKind::General).await?;
+    let mut next = general.next().unwrap_or_default().to_vec();
+    match next.iter().position(|entry| entry == GENERAL_NETWORK) {
+        Some(0) => return Ok(DriverOutcome::complete()),
+        Some(position) => next.swap(0, position),
+        None => next.insert(0, GENERAL_NETWORK.to_string()),
+    }
+    set_next(cx, &general, next).await
+}
+
+/// XCC boots the network or disk group once through the standard override,
+/// sent without a mode, and from now on by putting the group first. It has
+/// no HTTP boot override and takes no HTTP boot URI.
+async fn set_override<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    setting: &BootUpdate,
+) -> Result<DriverOutcome, PlatformError> {
+    if matches!(
+        one_time_device(setting),
+        Some(BootSource::Pxe | BootSource::Hdd)
+    ) {
+        let system = cx.system_uri(None).await?;
+        return cx.write_boot_override(&system, setting, false, None).await;
+    }
+    match persistent_device(setting) {
+        Some(BootSource::Pxe) => set_group_first(cx, NETWORK).await,
+        Some(BootSource::Hdd) => set_group_first(cx, HARD_DISK).await,
+        _ => Err(PlatformError::Unsupported),
+    }
 }
 
 /// Puts the network device group first in the boot order. Firmware that
@@ -72,7 +111,7 @@ pub(crate) async fn first_group<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Option<Strin
     let Some(first) = boot_order(cx.system().await?).into_iter().next() else {
         return Ok(None);
     };
-    let options = boot_options(cx).await?;
+    let options = cx.boot_options().await?;
     Ok(Some(listed_option(&first, &options)?.raw().name.clone()))
 }
 
@@ -125,42 +164,4 @@ async fn set_next<B: Bmc>(
         .await
         .map(DriverOutcome::from)
         .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// Puts `Network` first in the OEM general boot order, for firmware that
-/// lists no `Network` boot option until the group is in that order.
-async fn set_general_network_first<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    settings: &LenovoBootManagerCollection<B>,
-) -> Result<DriverOutcome, PlatformError> {
-    const GENERAL_NETWORK: &str = "Network";
-    let general = oem_boot_order(cx, settings, BootOrderKind::General).await?;
-    let mut next = general.next().unwrap_or_default().to_vec();
-    match next.iter().position(|entry| entry == GENERAL_NETWORK) {
-        Some(0) => return Ok(DriverOutcome::complete()),
-        Some(position) => next.swap(0, position),
-        None => next.insert(0, GENERAL_NETWORK.to_string()),
-    }
-    set_next(cx, &general, next).await
-}
-
-/// XCC boots the network or disk group once through the standard override,
-/// sent without a mode, and from now on by putting the group first. It has
-/// no HTTP boot override and takes no HTTP boot URI.
-async fn set_override<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    setting: &BootUpdate,
-) -> Result<DriverOutcome, PlatformError> {
-    if matches!(
-        one_time_device(setting),
-        Some(BootSource::Pxe | BootSource::Hdd)
-    ) {
-        let system = system_uri(cx, None).await?;
-        return write_override(cx, &system, setting, false, None).await;
-    }
-    match persistent_device(setting) {
-        Some(BootSource::Pxe) => set_group_first(cx, NETWORK).await,
-        Some(BootSource::Hdd) => set_group_first(cx, HARD_DISK).await,
-        _ => Err(PlatformError::Unsupported),
-    }
 }

@@ -13,10 +13,8 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::Value;
 
-use crate::lockdown::support::{
-    host_interface_state, set_first_host_interface, signal, state_from_signals, status,
-};
-use crate::resources::{selected_bios, stage_bios_attributes};
+use crate::lockdown::support::{RedfishLockdownExt as _, signal, state_from_signals, status};
+use crate::resources::RedfishResourcesExt as _;
 
 /// A BIOS attribute whose two values mean locked and unlocked.
 struct LockedAttribute {
@@ -45,7 +43,7 @@ const HOST: &[LockedAttribute] = &[
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for MegaRacLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let bios = selected_bios(cx).await?;
+        let bios = cx.bios().await?;
         let values: Vec<(&str, Option<String>)> = HOST
             .iter()
             .map(|attribute| {
@@ -62,7 +60,7 @@ impl<B: Bmc> Lockdown<B> for MegaRacLockdown {
                 signal(value.as_deref(), attribute.locked, attribute.unlocked)
             })
             .collect();
-        let (bmc, interface) = host_interface_state(cx).await?;
+        let (bmc, interface) = cx.host_interface_state().await?;
         let mut message: Vec<String> = values
             .iter()
             .map(|(key, value)| format!("{key}={value:?}"))
@@ -98,10 +96,10 @@ impl<B: Bmc> Lockdown<B> for MegaRacLockdown {
                     (attribute.key.to_string(), Value::from(value))
                 })
                 .collect();
-            outcome = outcome.merge(stage_bios_attributes(cx, &attributes).await?);
+            outcome = outcome.merge(cx.stage_bios_attributes(&attributes).await?);
         }
         if matches!(scope, LockdownScope::Bmc | LockdownScope::All) {
-            outcome = outcome.merge(set_first_host_interface(cx, !enabled).await?);
+            outcome = outcome.merge(cx.set_first_host_interface(!enabled).await?);
         }
         Ok(outcome)
     }

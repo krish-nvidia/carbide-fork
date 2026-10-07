@@ -13,7 +13,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 
 use crate::lockdown::support::{signal, state_from_signals};
-use crate::resources::{selected_bios, stage_bios_attributes};
+use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA Viking lockdown driver; both host and BMC lockdown are BIOS attributes.
 ///
@@ -27,7 +27,7 @@ pub(crate) struct VikingLockdown;
 #[async_trait]
 impl<B: Bmc> Lockdown<B> for VikingLockdown {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let bios = selected_bios(cx).await?;
+        let bios = cx.bios().await?;
         let kcs = bios
             .attribute("KcsInterfaceDisable")
             .or_else(|| bios.attribute("IPMIKCSInterfaceDisable"))
@@ -70,7 +70,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
         if enabled && !cx.has_quirk(Quirk::VikingLockdownFirmware) {
             return Err(PlatformError::Unsupported);
         }
-        let bios = selected_bios(cx).await?;
+        let bios = cx.bios().await?;
         let mut attributes = BTreeMap::new();
         if matches!(scope, LockdownScope::Host | LockdownScope::All) {
             let key = if bios.attribute("KcsInterfaceDisable").is_some() {
@@ -95,7 +95,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
                 (if enabled { "Disabled" } else { "Enabled" }).into(),
             );
         }
-        stage_bios_attributes(cx, &attributes).await
+        cx.stage_bios_attributes(&attributes).await
     }
 }
 

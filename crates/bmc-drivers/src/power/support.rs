@@ -15,40 +15,13 @@ use nv_redfish::schema::computer_system::ComputerSystem;
 use tokio::time::Instant;
 
 use crate::power::standard::StandardPower;
+use crate::resources::RedfishResourcesExt as _;
 
 /// How often the power state is re-read while waiting for a forced power-off.
 const POWER_OFF_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How long a forced power-off may take to show in the reported power state.
 const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Forces the host off and returns once the BMC reports it off, for
-/// operations a platform accepts only on a powered-off host.
-pub(super) async fn force_off_and_wait<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), PlatformError>
-where
-    B::Error: ActionError,
-{
-    if current_power_state(cx).await? == Some(PowerState::Off) {
-        return Ok(());
-    }
-    StandardPower.set(cx, ResetType::ForceOff).await?;
-    let deadline = Instant::now() + POWER_OFF_TIMEOUT;
-    loop {
-        tokio::time::sleep(POWER_OFF_POLL_INTERVAL).await;
-        let state = current_power_state(cx).await?;
-        if state == Some(PowerState::Off) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(PlatformError::Timeout {
-                message: format!(
-                    "host still reports power state {state:?} {}s after ForceOff",
-                    POWER_OFF_TIMEOUT.as_secs()
-                ),
-            });
-        }
-    }
-}
 
 /// The selected system's power state as the BMC reports it now; the
 /// context's resolved system keeps the state it was fetched with.
@@ -62,16 +35,6 @@ async fn current_power_state<B: Bmc>(
         .await
         .map_err(|error| cx.map_bmc_error(error))?;
     Ok(system.power_state.flatten())
-}
-
-/// Restarts the host over IPMI when the runtime attached it, for hosts whose
-/// Redfish restart cuts power to their DPUs.
-pub(super) async fn ipmi_restart<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-    cx.ipmi()
-        .ok_or(PlatformError::Unsupported)?
-        .chassis_power_reset()
-        .await
-        .map(|()| DriverOutcome::complete())
 }
 
 /// Aggregates per-supply states into one shelf state; `None` when there are no
@@ -88,29 +51,69 @@ pub(super) fn power_state_from_supplies(states: &[Option<bool>]) -> Option<Power
     }
 }
 
-/// The power supplies of the first chassis that has any.
-pub(super) async fn power_supplies<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<Vec<PowerSupply<B>>, PlatformError> {
-    let chassis = cx
-        .service_root()
-        .chassis()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?;
-    for chassis in &chassis {
-        let supplies = chassis
-            .power_supplies()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?;
-        if !supplies.is_empty() {
-            return Ok(supplies);
+/// Power resources and reset workflows shared by power drivers.
+pub(super) trait RedfishPowerExt<B: Bmc> {
+    /// Forces the host off and returns once the BMC reports it off, for
+    /// operations a platform accepts only on a powered-off host.
+    async fn force_off_and_wait(&self) -> Result<(), PlatformError>
+    where
+        B::Error: ActionError;
+
+    /// Restarts the host over IPMI when the runtime attached it, for hosts whose
+    /// Redfish restart cuts power to their DPUs.
+    async fn ipmi_restart(&self) -> Result<DriverOutcome, PlatformError>;
+
+    /// The power supplies of the first chassis that has any.
+    async fn power_supplies(&self) -> Result<Vec<PowerSupply<B>>, PlatformError>;
+}
+
+impl<B: Bmc> RedfishPowerExt<B> for OpCx<'_, B> {
+    async fn force_off_and_wait(&self) -> Result<(), PlatformError>
+    where
+        B::Error: ActionError,
+    {
+        if current_power_state(self).await? == Some(PowerState::Off) {
+            return Ok(());
+        }
+        StandardPower.set(self, ResetType::ForceOff).await?;
+        let deadline = Instant::now() + POWER_OFF_TIMEOUT;
+        loop {
+            tokio::time::sleep(POWER_OFF_POLL_INTERVAL).await;
+            let state = current_power_state(self).await?;
+            if state == Some(PowerState::Off) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(PlatformError::Timeout {
+                    message: format!(
+                        "host still reports power state {state:?} {}s after ForceOff",
+                        POWER_OFF_TIMEOUT.as_secs()
+                    ),
+                });
+            }
         }
     }
-    Ok(Vec::new())
+
+    async fn ipmi_restart(&self) -> Result<DriverOutcome, PlatformError> {
+        self.ipmi()
+            .ok_or(PlatformError::Unsupported)?
+            .chassis_power_reset()
+            .await
+            .map(|()| DriverOutcome::complete())
+    }
+
+    async fn power_supplies(&self) -> Result<Vec<PowerSupply<B>>, PlatformError> {
+        for chassis in &self.all_chassis().await? {
+            let supplies = chassis
+                .power_supplies()
+                .await
+                .map_err(|error| self.map_redfish_error(error))?;
+            if !supplies.is_empty() {
+                return Ok(supplies);
+            }
+        }
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]
@@ -141,7 +144,7 @@ mod tests {
         let cx = bmc.cx().await;
 
         assert!(matches!(
-            force_off_and_wait(&cx).await,
+            cx.force_off_and_wait().await,
             Err(PlatformError::Timeout { .. })
         ));
         assert_eq!(

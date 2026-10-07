@@ -9,7 +9,7 @@ use nv_redfish::account::AccountServiceUpdate;
 use nv_redfish::core::Bmc;
 
 use crate::accounts::standard::StandardAccounts;
-use crate::accounts::support::{apply_policy, set_password};
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// NVIDIA OpenBMC trays: newer tray firmware rejects a zero lockout
 /// threshold, so the policy keeps a short lockout. OpenBMC account ids are
@@ -28,12 +28,12 @@ impl<B: Bmc> Accounts<B> for OpenBmcAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_password(cx, username, password, Some(username)).await
+        cx.set_account_password(username, password, Some(username))
+            .await
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        apply_policy(
-            cx,
+        cx.apply_account_policy(
             AccountServiceUpdate::builder()
                 .with_account_lockout_threshold(4)
                 .with_account_lockout_duration(600)

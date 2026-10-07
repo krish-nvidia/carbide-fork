@@ -11,9 +11,10 @@ use nv_redfish::core::Bmc;
 use nv_redfish::oem::lenovo::boot_manager::{BootOrderKind, LenovoBootManagerCollection};
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use super::{NETWORK, boot_settings, first_group, oem_boot_order, set_next};
+use super::NETWORK;
+use crate::boot_order::lenovo::{boot_settings, first_group, oem_boot_order, set_next};
 use crate::boot_order::standard::StandardBootOrder;
-use crate::boot_order::support::boot_interface_mac;
+use crate::boot_order::support::RedfishBootOrderExt as _;
 
 /// Lenovo XCC 2 boot behavior.
 ///
@@ -70,7 +71,7 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
         let network_first = first_group(cx).await?.as_deref() == Some(NETWORK);
-        let mac = boot_interface_mac(cx, selector).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
         let settings = settings(cx).await?;
         let network = oem_boot_order(cx, &settings, BootOrderKind::Network).await?;
         let adapter = network
@@ -105,7 +106,7 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        let mac = boot_interface_mac(cx, selector).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
         let settings = settings(cx).await?;
         let hard_disk = restore_hard_disk(cx, &settings).await?;
         let network = oem_boot_order(cx, &settings, BootOrderKind::Network).await?;

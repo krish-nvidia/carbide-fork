@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bmc_platform::{Attestation, EvidenceProgress, OpCx, OperationReference, PlatformError};
-use nv_redfish::Error as RedfishError;
 use nv_redfish::component_integrity::{ComponentIntegrity, SpdmGetSignedMeasurementsResponse};
 use nv_redfish::core::action::ActionTarget;
 use nv_redfish::core::{Action, AsyncTask, Bmc};
@@ -21,6 +20,8 @@ use nv_redfish::schema::component_integrity::{
 };
 use nv_redfish::schema::software_inventory::SoftwareInventory;
 use nv_redfish::task_service::AsyncActionResult;
+
+use crate::attestation::support::{RedfishAttestationExt as _, pending};
 
 /// Standard ComponentIntegrity attestation.
 pub(crate) struct StandardAttestation;
@@ -35,7 +36,8 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
         &self,
         cx: &OpCx<'_, B>,
     ) -> Result<Vec<Arc<ComponentIntegritySchema>>, PlatformError> {
-        Ok(components(cx)
+        Ok(cx
+            .integrity_components()
             .await?
             .iter()
             .map(ComponentIntegrity::raw)
@@ -57,7 +59,8 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
         cx: &OpCx<'_, B>,
         component_id: &str,
     ) -> Result<Arc<Certificate>, PlatformError> {
-        Ok(component(cx, component_id)
+        Ok(cx
+            .integrity_component(component_id)
             .await?
             .component_certificate()
             .await
@@ -74,14 +77,15 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
         component_id: &str,
         nonce: &[u8],
     ) -> Result<EvidenceProgress, PlatformError> {
-        let result = component(cx, component_id)
+        let result = cx
+            .integrity_component(component_id)
             .await?
             .spdm_get_signed_measurements(Some(hex::encode(nonce)), None, None)
             .await
             .map_err(|error| cx.map_redfish_error(error))?;
         match result.pending_task() {
             Some(task) => Ok(EvidenceProgress::Pending(pending(task))),
-            None => advance(cx, result).await,
+            None => cx.poll_signed_measurements(result).await,
         }
     }
 
@@ -94,7 +98,8 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
             location: pending.uri().clone().into(),
             retry_after: pending.retry_after_seconds().map(Duration::from_secs),
         };
-        advance(cx, AsyncActionResult::resume(&signed_measurements(), task)).await
+        cx.poll_signed_measurements(AsyncActionResult::resume(&signed_measurements(), task))
+            .await
     }
 }
 
@@ -103,58 +108,6 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
 fn signed_measurements()
 -> Action<ComponentIntegritySPDMGetSignedMeasurementsAction, SpdmGetSignedMeasurementsResponse> {
     Action::new(ActionTarget::new(String::new()))
-}
-
-async fn components<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Vec<ComponentIntegrity<B>>, PlatformError> {
-    cx.service_root()
-        .component_integrity()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-async fn component<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    component_id: &str,
-) -> Result<ComponentIntegrity<B>, PlatformError> {
-    components(cx)
-        .await?
-        .into_iter()
-        .find(|component| component.raw().id == component_id)
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("ComponentIntegrity resource {component_id} was not found"),
-        })
-}
-
-/// Runs one polling step.
-async fn advance<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    mut result: AsyncActionResult<SpdmGetSignedMeasurementsResponse>,
-) -> Result<EvidenceProgress, PlatformError> {
-    match result.poll_result(cx.bmc()).await {
-        Ok(Some(measurements)) => Ok(EvidenceProgress::Ready(measurements)),
-        Ok(None) => result
-            .pending_task()
-            .map(|task| EvidenceProgress::Pending(pending(task)))
-            .ok_or_else(|| PlatformError::InvalidResponse {
-                message: "signed-measurements request reported neither a result nor a task"
-                    .to_string(),
-            }),
-        Err(RedfishError::TaskFailed { state, messages }) => {
-            Ok(EvidenceProgress::Failed { state, messages })
-        }
-        Err(error) => Err(cx.map_redfish_error(error)),
-    }
-}
-
-fn pending(task: &AsyncTask) -> OperationReference {
-    OperationReference::RedfishTask {
-        uri: task.location.0.clone(),
-        retry_after_seconds: task.retry_after.map(|delay| delay.as_secs()),
-    }
 }
 
 #[cfg(test)]

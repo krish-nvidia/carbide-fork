@@ -10,6 +10,7 @@ use nv_redfish::resource::PowerState;
 
 use crate::power::standard::StandardPower;
 use crate::power::support::power_state_from_supplies;
+use crate::resources::RedfishResourcesExt as _;
 
 /// Lite-On power-shelf power behavior.
 ///
@@ -28,17 +29,8 @@ where
 
     /// Read from the supplies of the first chassis that links any.
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
-        let chassis = cx
-            .service_root()
-            .chassis()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .ok_or(PlatformError::Unsupported)?
-            .members()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?;
         let mut states = Vec::new();
-        for chassis in &chassis {
+        for chassis in &cx.all_chassis().await? {
             let supplies = chassis
                 .oem_liteon_power_supply_links()
                 .await

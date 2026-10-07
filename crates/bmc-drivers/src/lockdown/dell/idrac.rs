@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::dell::{self, ManagerApplyTime};
 use crate::lockdown::support::{signal, state_from_signals};
-use crate::resources::{attribute_map, bios_update, selected_bios, update_bios_settings};
+use crate::resources::{RedfishResourcesExt as _, attribute_map, bios_update};
 
 /// Dell iDRAC lockdown driver.
 ///
@@ -60,7 +60,7 @@ async fn unlock_bios<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platform
         ("UefiVariableAccess", json!("Standard")),
     ]))?
     .with_settings_apply_time(dell::on_reset());
-    match update_bios_settings(cx, &body).await {
+    match cx.update_bios_settings(&body).await {
         Ok(response) => dell::job_outcome(cx, response).await,
         Err(error) if dell::is_read_only_attribute(&error) => Ok(DriverOutcome::complete()),
         Err(error) => Err(error),
@@ -113,7 +113,7 @@ where
     B::Error: ActionError,
 {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError> {
-        let bios = selected_bios(cx).await?;
+        let bios = cx.bios().await?;
         let in_band = bios
             .attribute("InBandManageabilityInterface")
             .and_then(|value| value.str_value().map(str::to_owned));

@@ -17,10 +17,9 @@ use crate::bios::dell::idrac::{
     CON_TERM_TYPE, FAIL_SAFE_BAUD, NEWER_SERIAL_COMM, NEWER_SERIAL_PORT_ADDRESS, OLDER_SERIAL_COMM,
     OLDER_SERIAL_PORT_ADDRESS, REDIR_AFTER_BOOT,
 };
-use crate::console::support::{
-    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, spec_error,
-};
+use crate::console::support::{AttrExpectation, SSH_PORT, attr, attr_status, spec_error};
 use crate::dell;
+use crate::resources::RedfishResourcesExt as _;
 
 /// Dell iDRAC console driver.
 ///
@@ -124,7 +123,7 @@ where
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
         let bmc = attr_status(&manager_attributes(cx).await?, MANAGER_ATTRS);
-        let bios = attr_status(&bios_attributes(cx).await?, BIOS_ATTRS);
+        let bios = attr_status(&cx.current_bios_settings().await?.attributes, BIOS_ATTRS);
         Ok(combined(bmc, bios))
     }
 

@@ -12,7 +12,7 @@ use nv_redfish::oem::lenovo::account_service::{
 };
 
 use crate::accounts::standard::StandardAccounts;
-use crate::accounts::support::{apply_policy, set_password};
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// Lenovo XCC rejects a zero lockout duration and enforces password rotation
 /// through `Oem.Lenovo`, which the default policy disables. A factory-state
@@ -32,7 +32,7 @@ impl<B: Bmc> Accounts<B> for XccAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_password(cx, username, password, Some("1")).await
+        cx.set_account_password(username, password, Some("1")).await
     }
 
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -52,6 +52,6 @@ impl<B: Bmc> Accounts<B> for XccAccounts {
             .map_err(|error| PlatformError::InvalidResponse {
                 message: format!("failed to build the Lenovo account policy: {error}"),
             })?;
-        apply_policy(cx, policy).await
+        cx.apply_account_policy(policy).await
     }
 }

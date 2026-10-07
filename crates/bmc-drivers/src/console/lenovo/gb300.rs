@@ -8,8 +8,9 @@ use bmc_platform::{Console, ConsoleSpec, ConsoleStatus, DriverOutcome, OpCx, Pla
 use nv_redfish::core::Bmc;
 
 use crate::console::support::{
-    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, setup_bios_attributes,
+    AttrExpectation, RedfishConsoleExt as _, SSH_PORT, attr, attr_status,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// Lenovo GB300 AMI console; this BIOS prefixes enum values with the attribute
 /// name, and SSH login lands on the serial console directly.
@@ -29,11 +30,14 @@ const ATTRS: &[AttrExpectation] = &[
 #[async_trait]
 impl<B: Bmc> Console<B> for Gb300Console {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS).await
+        cx.setup_console_bios_attributes(ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
-        Ok(attr_status(&bios_attributes(cx).await?, ATTRS))
+        Ok(attr_status(
+            &cx.current_bios_settings().await?.attributes,
+            ATTRS,
+        ))
     }
 
     async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {

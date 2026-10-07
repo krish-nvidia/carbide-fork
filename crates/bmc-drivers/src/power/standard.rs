@@ -7,11 +7,11 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power, Quirk};
-use nv_redfish::chassis::Chassis;
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
 
-use crate::power::support::ipmi_restart;
+use crate::power::support::RedfishPowerExt as _;
+use crate::resources::RedfishResourcesExt as _;
 
 /// Spec-compliant Redfish power control.
 ///
@@ -28,7 +28,11 @@ where
     }
 
     async fn state(&self, cx: &OpCx<'_, B>) -> Result<Option<PowerState>, PlatformError> {
-        state(cx).await.map(Some)
+        cx.system()
+            .await?
+            .power_state()
+            .map(Some)
+            .ok_or(PlatformError::NoContent)
     }
 
     /// Standard Redfish offers no AC power cycle.
@@ -47,9 +51,16 @@ where
             ResetType::ForceRestart | ResetType::GracefulRestart
                 if cx.has_quirk(Quirk::RedfishRestartCutsDpuPower) =>
             {
-                ipmi_restart(cx).await
+                cx.ipmi_restart().await
             }
-            other => reset(cx, other).await,
+            other => already_satisfied_is_complete(
+                cx.system()
+                    .await?
+                    .reset(Some(other))
+                    .await
+                    .map(DriverOutcome::from)
+                    .map_err(|error| cx.map_redfish_error(error)),
+            ),
         }
     }
 
@@ -59,71 +70,16 @@ where
         chassis_id: &str,
         reset_type: ResetType,
     ) -> Result<DriverOutcome, PlatformError> {
-        chassis_reset(cx, chassis_id, reset_type).await
+        already_satisfied_is_complete(
+            cx.chassis_by_id(chassis_id)
+                .await?
+                .ok_or(PlatformError::Unsupported)?
+                .reset(Some(reset_type))
+                .await
+                .map(DriverOutcome::from)
+                .map_err(|error| cx.map_redfish_error(error)),
+        )
     }
-}
-
-/// The selected system's reported power state.
-pub(super) async fn state<B: Bmc>(cx: &OpCx<'_, B>) -> Result<PowerState, PlatformError> {
-    cx.system()
-        .await?
-        .power_state()
-        .ok_or(PlatformError::NoContent)
-}
-
-/// Resets the selected system through its advertised `ComputerSystem.Reset` action.
-async fn reset<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    reset_type: ResetType,
-) -> Result<DriverOutcome, PlatformError>
-where
-    B::Error: ActionError,
-{
-    already_satisfied_is_complete(
-        cx.system()
-            .await?
-            .reset(Some(reset_type))
-            .await
-            .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error)),
-    )
-}
-
-/// Resets the chassis with id `chassis_id` through its advertised `Chassis.Reset` action.
-async fn chassis_reset<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    chassis_id: &str,
-    reset_type: ResetType,
-) -> Result<DriverOutcome, PlatformError>
-where
-    B::Error: ActionError,
-{
-    already_satisfied_is_complete(
-        chassis(cx, chassis_id)
-            .await?
-            .reset(Some(reset_type))
-            .await
-            .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error)),
-    )
-}
-
-/// The chassis with id `chassis_id`; `Unsupported` when the BMC lists none.
-pub(super) async fn chassis<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    chassis_id: &str,
-) -> Result<Chassis<B>, PlatformError> {
-    cx.service_root()
-        .chassis()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .into_iter()
-        .find(|chassis| chassis.raw().id == chassis_id)
-        .ok_or(PlatformError::Unsupported)
 }
 
 /// BMCs answer a reset that would not change the power state with 409, which

@@ -14,10 +14,11 @@ use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 use serde_json::Value;
 
-use super::{NETWORK, first_group};
+use super::NETWORK;
+use crate::boot_order::lenovo::first_group;
 use crate::boot_order::standard::StandardBootOrder;
-use crate::boot_order::support::boot_interface_mac;
-use crate::resources::{bios_attributes, selected_bios, stage_bios_attributes};
+use crate::boot_order::support::RedfishBootOrderExt as _;
+use crate::resources::{RedfishResourcesExt as _, bios_attributes};
 
 /// Lenovo XCC 3 boot behavior.
 ///
@@ -43,7 +44,7 @@ fn names_adapter(value: &str, mac: &str) -> bool {
 async fn network_priorities<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<BTreeMap<u32, String>, PlatformError> {
-    let attributes = bios_attributes(&selected_bios(cx).await?.raw());
+    let attributes = bios_attributes(&cx.bios().await?.raw());
     Ok(NETWORK_PRIORITY_SLOTS
         .filter_map(|slot| {
             attributes
@@ -66,7 +67,7 @@ impl<B: Bmc> BootOrder<B> for Xcc3BootOrder {
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
         let network_first = first_group(cx).await?.as_deref() == Some(NETWORK);
-        let mac = boot_interface_mac(cx, selector).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
         let priorities = network_priorities(cx).await?;
         let adapter = priorities.values().find(|value| names_adapter(value, &mac));
         Ok(BootOrderStatus {
@@ -92,7 +93,7 @@ impl<B: Bmc> BootOrder<B> for Xcc3BootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        let mac = boot_interface_mac(cx, selector).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
         let priorities = network_priorities(cx).await?;
         let (slot, adapter) = priorities
             .iter()
@@ -113,7 +114,7 @@ impl<B: Bmc> BootOrder<B> for Xcc3BootOrder {
                 Value::from(first.as_str()),
             );
         }
-        stage_bios_attributes(cx, &swapped).await
+        cx.stage_bios_attributes(&swapped).await
     }
 }
 

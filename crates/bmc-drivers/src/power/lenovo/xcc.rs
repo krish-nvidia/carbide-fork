@@ -8,11 +8,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power, Quirk};
 use nv_redfish::core::{ActionError, Bmc};
+use nv_redfish::oem::lenovo::SystemResetType;
 use nv_redfish::resource::ResetType;
 
-use crate::power::lenovo::support::ac_power_cycle;
 use crate::power::standard::StandardPower;
-use crate::power::support::force_off_and_wait;
+use crate::power::support::RedfishPowerExt as _;
 
 /// Lenovo XClarity Controller power behavior.
 ///
@@ -28,7 +28,7 @@ async fn off_then_on<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Platform
 where
     B::Error: ActionError,
 {
-    force_off_and_wait(cx).await?;
+    cx.force_off_and_wait().await?;
     tokio::time::sleep(FORCE_RESTART_OFF_TIME).await;
     StandardPower.set(cx, ResetType::On).await
 }
@@ -55,7 +55,16 @@ where
             ResetType::ForceRestart if cx.has_quirk(Quirk::LenovoForceRestartHangs) => {
                 off_then_on(cx).await
             }
-            ResetType::FullPowerCycle => ac_power_cycle(cx).await,
+            ResetType::FullPowerCycle => cx
+                .system()
+                .await?
+                .oem_lenovo_actions()
+                .map_err(|error| cx.map_redfish_error(error))?
+                .ok_or(PlatformError::Unsupported)?
+                .system_reset(SystemResetType::AcPowerCycle)
+                .await
+                .map(DriverOutcome::from)
+                .map_err(|error| cx.map_redfish_error(error)),
             other => self.standard().set(cx, other).await,
         }
     }

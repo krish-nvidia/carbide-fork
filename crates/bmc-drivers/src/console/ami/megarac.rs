@@ -7,9 +7,8 @@ use async_trait::async_trait;
 use bmc_platform::{Console, ConsoleSpec, ConsoleStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 
-use crate::console::support::{
-    AttrExpectation, attr, attr_status, bios_attributes, setup_bios_attributes,
-};
+use crate::console::support::{AttrExpectation, RedfishConsoleExt as _, attr, attr_status};
+use crate::resources::RedfishResourcesExt as _;
 
 /// AMI MegaRAC BIOS console attributes; the console transport is not identified.
 pub(crate) struct MegaRacConsole;
@@ -28,11 +27,14 @@ pub(in crate::console) const ATTRS: &[AttrExpectation] = &[
 #[async_trait]
 impl<B: Bmc> Console<B> for MegaRacConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS).await
+        cx.setup_console_bios_attributes(ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
-        Ok(attr_status(&bios_attributes(cx).await?, ATTRS))
+        Ok(attr_status(
+            &cx.current_bios_settings().await?.attributes,
+            ATTRS,
+        ))
     }
 
     async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {

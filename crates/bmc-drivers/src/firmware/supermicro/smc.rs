@@ -14,11 +14,9 @@ use nv_redfish::update_service::{
 };
 use serde_json::{Value, json};
 
-use crate::firmware::standard::{
-    StandardFirmware, advertised_multipart_uri, multipart_upload, update_service,
-};
-use crate::firmware::support::inventory_targets;
-use crate::resources::selected_bios;
+use crate::firmware::standard::StandardFirmware;
+use crate::firmware::support::{RedfishFirmwareExt as _, advertised_multipart_uri};
+use crate::resources::RedfishResourcesExt as _;
 
 /// Supermicro: the component's resource is the update target, BIOS and BMC
 /// images keep their configuration through the Supermicro preservation flags,
@@ -32,7 +30,7 @@ async fn target<B: Bmc>(
 ) -> Result<(String, Option<Value>), PlatformError> {
     Ok(match component {
         FirmwareComponent::Uefi => (
-            selected_bios(cx).await?.raw().odata_id.to_string(),
+            cx.bios().await?.raw().odata_id.to_string(),
             Some(json!({"Supermicro": {"BIOS": {
                 "PreserveME": true,
                 "PreserveNVRAM": true,
@@ -56,7 +54,7 @@ async fn target<B: Bmc>(
 }
 
 async fn inventory_target<B: Bmc>(cx: &OpCx<'_, B>, id: &str) -> Result<String, PlatformError> {
-    inventory_targets(cx, &[id])
+    cx.firmware_inventory_targets(&[id])
         .await?
         .pop()
         .ok_or(PlatformError::Unsupported)
@@ -73,7 +71,7 @@ impl<B: Bmc> Firmware<B> for SmcFirmware {
         cx: &OpCx<'_, B>,
         upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
-        let service = update_service(cx).await?;
+        let service = cx.update_service().await?;
         let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
         let (target, oem) = target(cx, upload.component).await?;
         let mut parameters = MultipartUpdateParameters::builder().with_targets(vec![target]);
@@ -86,6 +84,7 @@ impl<B: Bmc> Firmware<B> for SmcFirmware {
             parameters: parameters.build(),
             operation_apply_time: Some(OperationApplyTime::Immediate),
         };
-        multipart_upload(cx, upload, &parameters, Vec::new(), &uri).await
+        cx.multipart_upload(upload, &parameters, Vec::new(), &uri)
+            .await
     }
 }

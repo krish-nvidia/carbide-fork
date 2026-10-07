@@ -13,11 +13,9 @@ use serde_json::{Value, json};
 
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{
-    attribute_holds, change_password, compare, current_settings, expected, settings,
-};
+use crate::bios::support::{RedfishBiosExt as _, compare, expected, settings};
 use crate::boot_order::lenovo::{NETWORK, first_group, network_group_first};
-use crate::resources::stage_bios_attributes;
+use crate::resources::RedfishResourcesExt as _;
 
 /// Lenovo XCC names the UEFI administrator password `UefiAdminPassword`.
 pub(crate) struct XccBios;
@@ -99,9 +97,10 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let current = current_settings(cx).await?;
-        let settings =
-            stage_bios_attributes(cx, &expected_settings(&current, profile)?.attributes).await?;
+        let current = cx.current_bios_settings().await?;
+        let settings = cx
+            .stage_bios_attributes(&expected_settings(&current, profile)?.attributes)
+            .await?;
         Ok(settings.merge(network_group_first(cx).await?))
     }
 
@@ -111,7 +110,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         let mut status = compare(&current, &expected_settings(&current, profile)?);
         let group = first_group(cx).await?;
         if group.as_deref() != Some(NETWORK) {
@@ -131,15 +130,16 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await
+        cx.change_bios_password(UEFI_PASSWORD_NAME, current_password, new_password)
+            .await
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage_bios_attributes(cx, &tpm_clear().attributes).await
+        cx.stage_bios_attributes(&tpm_clear().attributes).await
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
-        attribute_holds(cx, INFINITE_BOOT).await
+        cx.bios_attribute_holds(INFINITE_BOOT).await
     }
 }
 

@@ -13,11 +13,8 @@ use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
-use crate::boot_order::support::{
-    boot_interface_mac, boot_options, boot_order, display_name, reference, system_uri,
-    write_boot_order,
-};
-use crate::resources::{attribute_map, selected_bios, stage_bios_attributes};
+use crate::boot_order::support::{RedfishBootOrderExt as _, boot_order, display_name, reference};
+use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// HPE iLO boot behavior.
 ///
@@ -38,14 +35,12 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
         if let Some(uri) = override_setting.http_boot_uri.as_deref() {
-            return stage_bios_attributes(
-                cx,
-                &attribute_map([
+            return cx
+                .stage_bios_attributes(&attribute_map([
                     ("UrlBootFile", json!(uri)),
                     ("PreBootNetwork", json!("IPv4")),
-                ]),
-            )
-            .await;
+                ]))
+                .await;
         }
         let category = match override_setting.boot_source_override_target {
             Some(BootSource::Pxe | BootSource::UefiHttp) => "nic.",
@@ -86,7 +81,10 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
                 description: format!("BootOrder entry {http_option}"),
             })?;
         order.swap(0, position);
-        match write_boot_order(cx, &system_uri(cx, None).await?, order).await {
+        match cx
+            .write_boot_order(&cx.system_uri(None).await?, order)
+            .await
+        {
             Err(PlatformError::Bmc {
                 message_id,
                 message,
@@ -111,8 +109,8 @@ async fn http_option<B: Bmc>(
     cx: &OpCx<'_, B>,
     selector: &BootInterfaceSelector,
 ) -> Result<String, PlatformError> {
-    let mac = boot_interface_mac(cx, selector).await?.to_uppercase();
-    boot_options(cx)
+    let mac = cx.boot_interface_mac(selector).await?.to_uppercase();
+    cx.boot_options()
         .await?
         .iter()
         .find(|option| {
@@ -130,7 +128,8 @@ async fn set_persistent_boot_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     category: &str,
 ) -> Result<DriverOutcome, PlatformError> {
-    let boot = selected_bios(cx)
+    let boot = cx
+        .bios()
         .await?
         .oem_hpe()
         .map_err(|error| cx.map_redfish_error(error))?

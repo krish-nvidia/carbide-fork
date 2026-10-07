@@ -11,7 +11,8 @@ use nv_redfish::core::{ActionError, Bmc, Reference};
 use nv_redfish::oem::dell::OperationApplyTime;
 use nv_redfish::schema::volume::{LinksCreate, RaidType, VolumeCreate};
 
-use crate::dell::{job_outcome, require_lifecycle_controller_ready};
+use crate::dell;
+use crate::storage::support::RedfishStorageExt as _;
 
 /// Dell iDRAC boot-storage driver; the Lifecycle Controller must be ready
 /// before the BOSS controller is reconfigured.
@@ -27,42 +28,13 @@ fn raid_type(drive_count: usize) -> Result<RaidType, PlatformError> {
     }
 }
 
-async fn find_controller<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    controller_id: &str,
-) -> Result<nv_redfish::computer_system::Storage<B>, PlatformError> {
-    let controllers = cx
-        .system()
-        .await?
-        .storage_controllers()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .unwrap_or_default();
-    if let Some(controller) = controllers
-        .into_iter()
-        .find(|controller| controller.raw().odata_id.last_segment() == Some(controller_id))
-    {
-        return Ok(controller);
-    }
-
-    Err(PlatformError::InvalidResponse {
-        message: format!("storage controller {controller_id} was not found"),
-    })
-}
-
 #[async_trait]
 impl<B: Bmc> Storage<B> for IdracBossStorage
 where
     B::Error: ActionError,
 {
     async fn boot_controller(&self, cx: &OpCx<'_, B>) -> Result<Option<String>, PlatformError> {
-        let controllers = cx
-            .system()
-            .await?
-            .storage_controllers()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .unwrap_or_default();
+        let controllers = cx.storage_controllers().await?;
         for controller in controllers {
             let raw = controller.raw();
             let id = &raw.odata_id;
@@ -85,8 +57,9 @@ where
         cx: &OpCx<'_, B>,
         controller_id: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        require_lifecycle_controller_ready(cx).await?;
-        let response = find_controller(cx, controller_id)
+        dell::require_lifecycle_controller_ready(cx).await?;
+        let response = cx
+            .storage_controller(controller_id)
             .await?
             .oem_dell_actions()
             .map_err(|error| cx.map_redfish_error(error))?
@@ -94,7 +67,7 @@ where
             .decommission_controller_drives(Some(OperationApplyTime::Immediate))
             .await
             .map_err(|error| cx.map_redfish_error(error))?;
-        job_outcome(cx, response).await
+        dell::job_outcome(cx, response).await
     }
 
     async fn create_volume(
@@ -109,8 +82,8 @@ where
             });
         }
 
-        require_lifecycle_controller_ready(cx).await?;
-        let controller = find_controller(cx, controller_id).await?;
+        dell::require_lifecycle_controller_ready(cx).await?;
+        let controller = cx.storage_controller(controller_id).await?;
         let raw = controller.raw();
         let drive_refs = raw
             .drives
@@ -133,7 +106,7 @@ where
             .create(&request)
             .await
             .map_err(|error| cx.map_redfish_error(error))?;
-        job_outcome(cx, response).await
+        dell::job_outcome(cx, response).await
     }
 }
 

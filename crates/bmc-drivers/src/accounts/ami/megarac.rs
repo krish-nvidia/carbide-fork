@@ -8,7 +8,7 @@ use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 
 use crate::accounts::standard::StandardAccounts;
-use crate::accounts::support::set_password;
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// Generic AMI MegaRAC: a factory-state BMC that demands a password change
 /// without naming the account means the administrator, account 2.
@@ -26,6 +26,6 @@ impl<B: Bmc> Accounts<B> for MegaRacAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_password(cx, username, password, Some("2")).await
+        cx.set_account_password(username, password, Some("2")).await
     }
 }

@@ -11,7 +11,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 
 use crate::console::support::{
-    AttrExpectation, SSH_PORT, setup_bios_attributes, spec_error, write_only,
+    AttrExpectation, RedfishConsoleExt as _, SSH_PORT, spec_error, write_only,
 };
 
 /// HPE iLO console; the virtual serial port is reached with `vsp`. Status
@@ -42,7 +42,7 @@ fn hpe_spec() -> Result<ConsoleSpec, PlatformError> {
 #[async_trait]
 impl<B: Bmc> Console<B> for IloConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS).await
+        cx.setup_console_bios_attributes(ATTRS).await
     }
 
     async fn status(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {

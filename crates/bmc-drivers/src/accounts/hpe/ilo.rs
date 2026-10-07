@@ -10,7 +10,7 @@ use nv_redfish::core::Bmc;
 use nv_redfish::oem::hpe::{HpeAccountServiceUpdate, HpeAccountServiceUpdateExt};
 
 use crate::accounts::standard::StandardAccounts;
-use crate::accounts::support::apply_policy;
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// HPE iLO: the lockout policy lives under `Oem.Hpe`.
 pub(crate) struct IloAccounts;
@@ -35,6 +35,6 @@ impl<B: Bmc> Accounts<B> for IloAccounts {
             .map_err(|error| PlatformError::InvalidResponse {
                 message: format!("failed to build the HPE account policy: {error}"),
             })?;
-        apply_policy(cx, policy).await
+        cx.apply_account_policy(policy).await
     }
 }

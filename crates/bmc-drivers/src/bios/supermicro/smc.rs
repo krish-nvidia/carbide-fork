@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 
 use crate::bios::attributes::AttributeValue::{self, Bool, String as Text};
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{compare, current_settings, with_profile};
-use crate::resources::{bios_attributes, bios_update, selected_bios, stage_bios_attributes};
+use crate::bios::support::{compare, with_profile};
+use crate::resources::{RedfishResourcesExt as _, bios_attributes, bios_update};
 
 /// Supermicro hosts: the BIOS appends a registry suffix to every attribute
 /// name, as in `IPv4HTTPSupport_009F`, and a TPM clear is a pending operation
@@ -88,12 +88,9 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let current = current_settings(cx).await?;
-        stage_bios_attributes(
-            cx,
-            &with_profile(expected_settings(&current)?, profile).attributes,
-        )
-        .await
+        let current = cx.current_bios_settings().await?;
+        cx.stage_bios_attributes(&with_profile(expected_settings(&current)?, profile).attributes)
+            .await
     }
 
     async fn status(
@@ -102,7 +99,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         Ok(compare(
             &current,
             &with_profile(expected_settings(&current)?, profile),
@@ -112,7 +109,7 @@ where
     /// The board names its TPM pending operation `PendingOperation*`, and
     /// takes it on the current BIOS resource rather than the settings resource.
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        let bios = selected_bios(cx).await?;
+        let bios = cx.bios().await?;
         let operation = bios_attributes(&bios.raw())
             .into_keys()
             .find(|key| key.starts_with("PendingOperation"))

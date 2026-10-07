@@ -15,9 +15,10 @@ use nv_redfish::schema::computer_system::{
 
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
-    alias, boot_interface_mac, boot_options, boot_order, display_name, matching_first,
-    persistent_device, reference, system_uri, write_boot_order, write_override,
+    RedfishBootOrderExt as _, alias, boot_order, display_name, matching_first, persistent_device,
+    reference,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA DGX Viking boot behavior.
 ///
@@ -32,11 +33,12 @@ async fn http_option<B: Bmc>(
     cx: &OpCx<'_, B>,
     selector: &BootInterfaceSelector,
 ) -> Result<Option<BootOption<B>>, PlatformError> {
-    let mac = boot_interface_mac(cx, selector)
+    let mac = cx
+        .boot_interface_mac(selector)
         .await?
         .replace(':', "")
         .to_uppercase();
-    Ok(boot_options(cx).await?.into_iter().find(|option| {
+    Ok(cx.boot_options().await?.into_iter().find(|option| {
         let path = option
             .uefi_device_path()
             .map(|path| path.inner().to_uppercase())
@@ -89,7 +91,7 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
     ) -> Result<BootOrderStatus, PlatformError> {
         let target = http_option(cx, selector).await?;
         let order = boot_order(cx.system().await?);
-        let options = boot_options(cx).await?;
+        let options = cx.boot_options().await?;
         let first = order
             .first()
             .and_then(|first| options.iter().find(|option| reference(option) == first));
@@ -109,18 +111,20 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let sd = system_uri(cx, Some("SD")).await?;
+        let sd = cx.system_uri(Some("SD")).await?;
         let Some(device) = persistent_device(override_setting) else {
             let etag = system_etag(cx, &sd).await?;
-            return write_override(cx, &sd, override_setting, true, Some(&etag)).await;
+            return cx
+                .write_boot_override(&sd, override_setting, true, Some(&etag))
+                .await;
         };
         let order = boot_order(cx.system().await?);
-        let options = boot_options(cx).await?;
+        let options = cx.boot_options().await?;
         let ordered = matching_first(&order, &options, |option| alias(option) == Some(device))?
             .into_iter()
             .map(|option| format!("Boot{}", option.raw().id))
             .collect();
-        write_boot_order(cx, &sd, ordered).await
+        cx.write_boot_order(&sd, ordered).await
     }
 
     async fn configure(
@@ -144,6 +148,7 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
             })?;
         order.remove(position);
         order.insert(0, target);
-        write_boot_order(cx, &system_uri(cx, Some("SD")).await?, order).await
+        cx.write_boot_order(&cx.system_uri(Some("SD")).await?, order)
+            .await
     }
 }

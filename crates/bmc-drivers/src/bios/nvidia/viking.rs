@@ -12,10 +12,8 @@ use serde_json::json;
 
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{
-    attribute_holds, change_password, compare, current_settings, expected, settings,
-};
-use crate::resources::stage_bios_attributes;
+use crate::bios::support::{RedfishBiosExt as _, compare, expected, settings};
+use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA DGX Viking: AMI firmware naming the password `AdminPassword`; BIOS
 /// defaults are restored by clearing the host BIOS NVRAM through the
@@ -95,8 +93,9 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let current = current_settings(cx).await?;
-        stage_bios_attributes(cx, &expected(ATTRIBUTES, &current, profile).attributes).await
+        let current = cx.current_bios_settings().await?;
+        cx.stage_bios_attributes(&expected(ATTRIBUTES, &current, profile).attributes)
+            .await
     }
 
     async fn status(
@@ -105,7 +104,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         Ok(compare(&current, &expected(ATTRIBUTES, &current, profile)))
     }
 
@@ -124,14 +123,15 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await
+        cx.change_bios_password(UEFI_PASSWORD_NAME, current_password, new_password)
+            .await
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage_bios_attributes(cx, &tpm_clear().attributes).await
+        cx.stage_bios_attributes(&tpm_clear().attributes).await
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
-        attribute_holds(cx, INFINITE_BOOT).await
+        cx.bios_attribute_holds(INFINITE_BOOT).await
     }
 }

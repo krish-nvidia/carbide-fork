@@ -8,7 +8,7 @@ use bmc_platform::{Accounts, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 
 use crate::accounts::standard::StandardAccounts;
-use crate::accounts::support::set_password;
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// NVIDIA BlueField: the DPU BMC exposes its lockout policy read-only, so
 /// there is nothing to apply. OpenBMC account ids are usernames.
@@ -26,7 +26,8 @@ impl<B: Bmc> Accounts<B> for BlueFieldAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_password(cx, username, password, Some(username)).await
+        cx.set_account_password(username, password, Some(username))
+            .await
     }
 
     async fn apply_default_policy(

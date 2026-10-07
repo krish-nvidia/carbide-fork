@@ -12,10 +12,9 @@ use serde_json::{Value, json};
 
 use crate::bios::attributes::{BiosAttribute, desired_settings};
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{
-    attribute_holds, change_password, compare, current_settings, settings, with_profile,
-};
+use crate::bios::support::{RedfishBiosExt as _, compare, settings, with_profile};
 use crate::dell;
+use crate::resources::RedfishResourcesExt as _;
 
 /// Dell iDRAC BIOS behavior.
 ///
@@ -137,7 +136,8 @@ where
     B::Error: ActionError,
 {
     dell::clear_job_queue(cx).await?;
-    change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await?;
+    cx.change_bios_password(UEFI_PASSWORD_NAME, current_password, new_password)
+        .await?;
     dell::create_bios_config_job(cx).await
 }
 
@@ -158,7 +158,7 @@ where
         boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let nic_slot = dell::nic_slot(cx, boot_interface).await?;
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         let writes = staged_settings(&current, profile, &nic_slot);
         dell::stage_bios_attributes(cx, &writes.attributes).await
     }
@@ -170,7 +170,7 @@ where
         boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let nic_slot = dell::nic_slot(cx, boot_interface).await?;
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         Ok(compare(
             &current,
             &expected_settings(&current, profile, &nic_slot),
@@ -207,7 +207,7 @@ where
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
-        attribute_holds(cx, INFINITE_BOOT).await
+        cx.bios_attribute_holds(INFINITE_BOOT).await
     }
 }
 

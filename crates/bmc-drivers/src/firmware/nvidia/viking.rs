@@ -10,8 +10,8 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::update_service::MultipartUpdateParameters;
 
-use crate::firmware::standard::{StandardFirmware, multipart_upload};
-use crate::firmware::support::{inventory_targets, upload_uri};
+use crate::firmware::standard::StandardFirmware;
+use crate::firmware::support::RedfishFirmwareExt as _;
 
 /// NVIDIA DGX Viking: its AMI firmware uploads through `upload` rather than
 /// `MultipartUpload`, targeting the firmware inventory entry of the component.
@@ -51,9 +51,11 @@ impl<B: Bmc> Firmware<B> for VikingFirmware {
     ) -> Result<DriverOutcome, PlatformError> {
         let mut parameters = MultipartUpdateParameters::builder();
         if let Some(id) = inventory_id(upload.component)? {
-            parameters = parameters.with_targets(inventory_targets(cx, &[id.as_str()]).await?);
+            parameters =
+                parameters.with_targets(cx.firmware_inventory_targets(&[id.as_str()]).await?);
         }
-        let uri = upload_uri(cx, MULTIPART_UPLOAD).await?;
-        multipart_upload(cx, upload, &parameters.build(), Vec::new(), &uri).await
+        let uri = cx.firmware_upload_uri(MULTIPART_UPLOAD).await?;
+        cx.multipart_upload(upload, &parameters.build(), Vec::new(), &uri)
+            .await
     }
 }

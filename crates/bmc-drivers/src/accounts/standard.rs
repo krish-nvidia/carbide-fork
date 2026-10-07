@@ -13,9 +13,7 @@ use nv_redfish::account::{AccountServiceConfig, AccountServiceUpdate, ManagerAcc
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::manager_account::ManagerAccount;
 
-use crate::accounts::support::{
-    apply_policy, create_account, delete_account, list_accounts, rename_account, set_password,
-};
+use crate::accounts::support::RedfishAccountsExt as _;
 
 /// Redfish-standard account operations.
 pub(crate) struct StandardAccounts;
@@ -27,7 +25,13 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
     }
 
     async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError> {
-        list_accounts(cx, AccountServiceConfig::standard()).await
+        let accounts = cx
+            .account_collection(AccountServiceConfig::standard())
+            .await?
+            .all_accounts_data()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
+        Ok(accounts.into_iter().map(|account| account.raw()).collect())
     }
 
     async fn create(
@@ -35,7 +39,12 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         cx: &OpCx<'_, B>,
         request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        create_account(cx, AccountServiceConfig::standard(), request).await
+        cx.account_collection(AccountServiceConfig::standard())
+            .await?
+            .create_account(request)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn delete(
@@ -43,7 +52,12 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         cx: &OpCx<'_, B>,
         username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        delete_account(cx, AccountServiceConfig::standard(), username).await
+        cx.account_by_username(AccountServiceConfig::standard(), username)
+            .await?
+            .delete()
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn change_password(
@@ -52,7 +66,7 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         username: &str,
         password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_password(cx, username, password, None).await
+        cx.set_account_password(username, password, None).await
     }
 
     async fn change_username(
@@ -61,13 +75,17 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         old_username: &str,
         new_username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        rename_account(cx, old_username, new_username).await
+        cx.account_by_username(AccountServiceConfig::standard(), old_username)
+            .await?
+            .update_user_name(new_username.to_string())
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     /// Disables account lockout so NICo cannot lock itself out during automation.
     async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        apply_policy(
-            cx,
+        cx.apply_account_policy(
             AccountServiceUpdate::builder()
                 .with_account_lockout_threshold(0)
                 .with_account_lockout_duration(0)

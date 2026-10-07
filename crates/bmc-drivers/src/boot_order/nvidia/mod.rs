@@ -16,9 +16,9 @@ use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 
 use crate::boot_order::support::{
-    boot_options, boot_order, display_name, matching_first, system_uri, write_boot_order,
-    write_override,
+    RedfishBootOrderExt as _, boot_order, display_name, matching_first,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// The display name prefix of NVIDIA UEFI HTTP boot options.
 const HTTP: &str = "UEFI HTTPv4";
@@ -52,8 +52,9 @@ async fn settings_override<B: Bmc>(
     setting: &BootUpdate,
     uefi_by_default: bool,
 ) -> Result<DriverOutcome, PlatformError> {
-    let settings = system_uri(cx, Some("Settings")).await?;
-    write_override(cx, &settings, setting, uefi_by_default, None).await
+    let settings = cx.system_uri(Some("Settings")).await?;
+    cx.write_boot_override(&settings, setting, uefi_by_default, None)
+        .await
 }
 
 /// Writes `order` as the boot order of the system's `Settings` object.
@@ -61,17 +62,18 @@ async fn write_settings_boot_order<B: Bmc>(
     cx: &OpCx<'_, B>,
     order: Vec<String>,
 ) -> Result<DriverOutcome, PlatformError> {
-    write_boot_order(cx, &system_uri(cx, Some("Settings")).await?, order).await
+    cx.write_boot_order(&cx.system_uri(Some("Settings")).await?, order)
+        .await
 }
 
-/// Moves every boot option `boots` accepts for `device` ahead of the rest of
-/// the boot order, staged on the `Settings` object.
+/// Moves every option accepted by `boots` ahead of the rest of the boot
+/// order, staged on the `Settings` object.
 async fn device_options_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     boots: impl Fn(&BootOption<B>) -> bool,
 ) -> Result<DriverOutcome, PlatformError> {
     let order = boot_order(cx.system().await?);
-    let options = boot_options(cx).await?;
+    let options = cx.boot_options().await?;
     let ordered = matching_first(&order, &options, boots)?
         .into_iter()
         .map(|option| option.raw().id.clone())

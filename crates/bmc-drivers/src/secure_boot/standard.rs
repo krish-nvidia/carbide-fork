@@ -5,12 +5,12 @@
 
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, SecureBoot, SecureBootStatus};
-use nv_redfish::certificate::{CertificateCollection, CertificateCreate, CertificateType};
-use nv_redfish::computer_system::{SecureBoot as SecureBootResource, SecureBootCurrentBootType};
+use nv_redfish::certificate::{CertificateCreate, CertificateType};
+use nv_redfish::computer_system::SecureBootCurrentBootType;
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::secure_boot::SecureBootUpdate;
 
-const PLATFORM_KEY_DATABASE: &str = "PK";
+use crate::secure_boot::support::RedfishSecureBootExt as _;
 
 /// Standard Redfish Secure Boot state and platform-key operations.
 pub(crate) struct StandardSecureBoot;
@@ -22,7 +22,11 @@ impl<B: Bmc> SecureBoot<B> for StandardSecureBoot {
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<SecureBootStatus, PlatformError> {
-        status(cx).await
+        let secure_boot = cx.secure_boot_resource().await?;
+        normalize_status(
+            secure_boot.secure_boot_enable(),
+            secure_boot.secure_boot_current_boot(),
+        )
     }
 
     async fn set(
@@ -30,11 +34,21 @@ impl<B: Bmc> SecureBoot<B> for StandardSecureBoot {
         cx: &OpCx<'_, B>,
         update: &SecureBootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_state(cx, update).await
+        cx.secure_boot_resource()
+            .await?
+            .update(update)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn has_platform_key(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-        has_platform_key(cx).await
+        Ok(!cx
+            .platform_key_certificates()
+            .await?
+            .raw()
+            .members
+            .is_empty())
     }
 
     async fn add_platform_key(
@@ -42,27 +56,18 @@ impl<B: Bmc> SecureBoot<B> for StandardSecureBoot {
         cx: &OpCx<'_, B>,
         pem: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        add_platform_key(cx, pem).await
+        if pem.trim().is_empty() {
+            return Err(PlatformError::InvalidResponse {
+                message: "platform key PEM is empty".to_string(),
+            });
+        }
+        cx.platform_key_certificates()
+            .await?
+            .create(&CertificateCreate::builder(pem.to_string(), CertificateType::Pem).build())
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
-}
-
-async fn secure_boot_resource<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<SecureBootResource<B>, PlatformError> {
-    cx.system()
-        .await?
-        .secure_boot()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)
-}
-
-async fn status<B: Bmc>(cx: &OpCx<'_, B>) -> Result<SecureBootStatus, PlatformError> {
-    let secure_boot = secure_boot_resource(cx).await?;
-    normalize_status(
-        secure_boot.secure_boot_enable(),
-        secure_boot.secure_boot_current_boot(),
-    )
 }
 
 fn normalize_status(
@@ -89,66 +94,6 @@ fn normalize_status(
         _ if configured => SecureBootStatus::Enabled,
         _ => SecureBootStatus::Disabled,
     })
-}
-
-async fn set_state<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    update: &SecureBootUpdate,
-) -> Result<DriverOutcome, PlatformError> {
-    secure_boot_resource(cx)
-        .await?
-        .update(update)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// The certificates of the `PK` Secure Boot database.
-async fn platform_key_certificates<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<CertificateCollection<B>, PlatformError> {
-    let databases = secure_boot_resource(cx)
-        .await?
-        .databases()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?;
-    databases
-        .iter()
-        .find(|database| database.raw().id == PLATFORM_KEY_DATABASE)
-        .ok_or(PlatformError::Unsupported)?
-        .certificates()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)
-}
-
-async fn has_platform_key<B: Bmc>(cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-    Ok(!platform_key_certificates(cx)
-        .await?
-        .raw()
-        .members
-        .is_empty())
-}
-
-async fn add_platform_key<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    pem: &str,
-) -> Result<DriverOutcome, PlatformError> {
-    if pem.trim().is_empty() {
-        return Err(PlatformError::InvalidResponse {
-            message: "platform key PEM is empty".to_string(),
-        });
-    }
-    platform_key_certificates(cx)
-        .await?
-        .create(&CertificateCreate::builder(pem.to_string(), CertificateType::Pem).build())
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[cfg(test)]

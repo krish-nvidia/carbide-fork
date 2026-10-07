@@ -11,9 +11,9 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 
 use crate::console::support::{
-    AttrExpectation, SSH_PORT, attr, attr_status, bios_attributes, setup_bios_attributes,
-    spec_error,
+    AttrExpectation, RedfishConsoleExt as _, SSH_PORT, attr, attr_status, spec_error,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// Lenovo XClarity Controller console, reached through the `console 1` shell command.
 pub(crate) struct XccConsole;
@@ -70,11 +70,14 @@ fn xcc_spec() -> Result<ConsoleSpec, PlatformError> {
 #[async_trait]
 impl<B: Bmc> Console<B> for XccConsole {
     async fn setup(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        setup_bios_attributes(cx, ATTRS).await
+        cx.setup_console_bios_attributes(ATTRS).await
     }
 
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<ConsoleStatus, PlatformError> {
-        Ok(attr_status(&bios_attributes(cx).await?, ATTRS))
+        Ok(attr_status(
+            &cx.current_bios_settings().await?.attributes,
+            ATTRS,
+        ))
     }
 
     async fn spec(&self, _cx: &OpCx<'_, B>) -> Result<ConsoleSpec, PlatformError> {

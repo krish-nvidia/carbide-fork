@@ -13,8 +13,8 @@ use serde_json::json;
 
 use crate::bios::attributes::{BiosAttribute, desired_settings};
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{compare, current_settings, with_profile};
-use crate::resources::{attribute_map, stage_bios_attributes, write_bios_attributes};
+use crate::bios::support::{compare, with_profile};
+use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// NVIDIA BlueField: the DPU BIOS exposes no `ResetBios` or `ChangePassword`
 /// actions; both are write-only attributes on the pending settings.
@@ -118,11 +118,12 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         let expected = expected_settings(cx, &current, profile);
-        match stage_bios_attributes(cx, &expected.attributes).await {
+        match cx.stage_bios_attributes(&expected.attributes).await {
             Err(PlatformError::Bmc { message, .. }) if rejects_spelling(&expected, &message) => {
-                stage_bios_attributes(cx, &respelled(expected).attributes).await
+                cx.stage_bios_attributes(&respelled(expected).attributes)
+                    .await
             }
             result => result,
         }
@@ -134,12 +135,13 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
-        let current = current_settings(cx).await?;
+        let current = cx.current_bios_settings().await?;
         Ok(compare(&current, &expected_settings(cx, &current, profile)))
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        stage_bios_attributes(cx, &attribute_map([("ResetEfiVars", json!(true))])).await
+        cx.stage_bios_attributes(&attribute_map([("ResetEfiVars", json!(true))]))
+            .await
     }
 
     /// Written unconditionally: the password attributes are write-only, so a
@@ -150,13 +152,10 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        write_bios_attributes(
-            cx,
-            &attribute_map([
-                ("CurrentUefiPassword", json!(current_password)),
-                ("UefiPassword", json!(new_password)),
-            ]),
-        )
+        cx.write_bios_attributes(&attribute_map([
+            ("CurrentUefiPassword", json!(current_password)),
+            ("UefiPassword", json!(new_password)),
+        ]))
         .await
     }
 }

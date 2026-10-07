@@ -14,6 +14,8 @@ use nv_redfish::manager::{ManagerNetworkProtocolUpdate, ManagerResetToDefaultsTy
 use nv_redfish::resource::ResetType;
 use nv_redfish::schema::manager_network_protocol::{NtpProtocolUpdate, ProtocolUpdate};
 
+use crate::bmc_control::support::RedfishBmcControlExt as _;
+
 /// DMTF manager control.
 pub(crate) struct StandardBmcControl;
 
@@ -27,14 +29,19 @@ where
     }
 
     async fn reset(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        reset(cx, ResetType::GracefulRestart).await
+        cx.reset_manager(ResetType::GracefulRestart).await
     }
 
     async fn reset_to_factory_defaults(
         &self,
         cx: &OpCx<'_, B>,
     ) -> Result<DriverOutcome, PlatformError> {
-        reset_to_factory_defaults(cx).await
+        cx.manager()
+            .await?
+            .reset_to_defaults(ManagerResetToDefaultsType::ResetAll)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     /// An empty list leaves the NTP configuration unchanged.
@@ -46,8 +53,7 @@ where
         if servers.is_empty() {
             return Ok(DriverOutcome::complete());
         }
-        update_network_protocol(
-            cx,
+        cx.update_manager_network_protocol(
             ManagerNetworkProtocolUpdate::builder()
                 .with_ntp(
                     NtpProtocolUpdate::builder()
@@ -85,8 +91,7 @@ where
         cx: &OpCx<'_, B>,
         enabled: bool,
     ) -> Result<DriverOutcome, PlatformError> {
-        update_network_protocol(
-            cx,
+        cx.update_manager_network_protocol(
             ManagerNetworkProtocolUpdate::builder()
                 .with_ipmi(
                     ProtocolUpdate::builder()
@@ -120,59 +125,4 @@ where
             differences: Vec::new(),
         })
     }
-}
-
-/// Resets the manager over Redfish, falling back to an IPMI cold reset when
-/// the runtime attached IPMI and Redfish refused or could not be reached.
-pub(super) async fn reset<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    reset_type: ResetType,
-) -> Result<DriverOutcome, PlatformError>
-where
-    B::Error: ActionError,
-{
-    let redfish = cx
-        .manager()
-        .await?
-        .reset(Some(reset_type))
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error));
-    match (redfish, cx.ipmi()) {
-        (Err(_), Some(ipmi)) => ipmi
-            .bmc_cold_reset()
-            .await
-            .map(|()| DriverOutcome::complete()),
-        (result, _) => result,
-    }
-}
-
-/// Restores every manager setting through the `Manager.ResetToDefaults` action.
-async fn reset_to_factory_defaults<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
-where
-    B::Error: ActionError,
-{
-    cx.manager()
-        .await?
-        .reset_to_defaults(ManagerResetToDefaultsType::ResetAll)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// Writes to the manager's advertised `NetworkProtocol` resource.
-async fn update_network_protocol<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    body: ManagerNetworkProtocolUpdate,
-) -> Result<DriverOutcome, PlatformError> {
-    cx.manager()
-        .await?
-        .network_protocol()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .update(&body)
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
 }

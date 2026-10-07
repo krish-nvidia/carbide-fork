@@ -17,21 +17,6 @@ use nv_redfish::schema::computer_system::{
 };
 use serde_json::Value;
 
-/// The selected system's boot options, in collection order.
-pub(crate) async fn boot_options<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<Vec<BootOption<B>>, PlatformError> {
-    cx.system()
-        .await?
-        .boot_options()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))
-}
-
 /// The option's display name; empty when the BMC omits it.
 pub(crate) fn display_name<B: Bmc>(option: &BootOption<B>) -> &str {
     option.display_name().map_or("", |name| *name.inner())
@@ -103,20 +88,6 @@ pub(crate) fn is_first(order: &[String], reference: &str) -> bool {
         .is_some_and(|entry| entry_reference(entry) == reference)
 }
 
-/// Writes `order` with the entry naming `reference` first to the system
-/// resource at `uri`, unless `order` already starts with it.
-pub(crate) async fn put_first<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    uri: &ODataId,
-    order: Vec<String>,
-    reference: &str,
-) -> Result<DriverOutcome, PlatformError> {
-    if is_first(&order, reference) {
-        return Ok(DriverOutcome::complete());
-    }
-    write_boot_order(cx, uri, with_first(order, reference)).await
-}
-
 /// The boot option `entry` of a `BootOrder` names.
 pub(crate) fn listed_option<'a, B: Bmc>(
     entry: &str,
@@ -159,117 +130,6 @@ pub(crate) fn matching_first<'a, B: Bmc>(
     Ok(ordered)
 }
 
-/// The selected interface's MAC: the selector's own, or the one the system's
-/// Ethernet interface with the selector's id reports.
-pub(crate) async fn boot_interface_mac<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    selector: &BootInterfaceSelector,
-) -> Result<String, PlatformError> {
-    let interface_id = match selector {
-        BootInterfaceSelector::Mac(mac)
-        | BootInterfaceSelector::Pair {
-            mac_address: mac, ..
-        } => return Ok(mac.to_string()),
-        BootInterfaceSelector::InterfaceId(interface_id) => interface_id,
-    };
-    let interfaces = cx
-        .system()
-        .await?
-        .ethernet_interfaces()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?;
-    interfaces
-        .iter()
-        .find(|interface| interface.raw().id == *interface_id)
-        .and_then(|interface| interface.mac_address())
-        .map(|mac| mac.as_str().to_string())
-        .filter(|mac| !mac.is_empty())
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("EthernetInterface {interface_id} reports no MACAddress"),
-        })
-}
-
-/// The selected system's resource, or the resource at `suffix` beneath it,
-/// such as its `Settings`, `SD` or `Pending` object.
-pub(crate) async fn system_uri<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    suffix: Option<&str>,
-) -> Result<ODataId, PlatformError> {
-    let system = cx.system().await?.raw().odata_id.to_string();
-    Ok(ODataId::from(match suffix {
-        Some(suffix) => format!("{system}/{suffix}"),
-        None => system,
-    }))
-}
-
-/// Writes `boot` to the system resource at `uri`, with `If-Match` set to
-/// `etag` or `*`.
-pub(crate) async fn patch_boot<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    uri: &ODataId,
-    boot: BootUpdate,
-    etag: Option<&ODataETag>,
-) -> Result<ModificationResponse<Value>, PlatformError> {
-    cx.bmc()
-        .update(
-            uri,
-            etag,
-            &ComputerSystemUpdate::builder().with_boot(boot).build(),
-        )
-        .await
-        .map_err(|error| cx.map_bmc_error(error))
-}
-
-/// Writes `order` as the `Boot.BootOrder` of the system resource at `uri`.
-pub(crate) async fn write_boot_order<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    uri: &ODataId,
-    order: Vec<String>,
-) -> Result<DriverOutcome, PlatformError> {
-    let boot = BootUpdate::builder().with_boot_order(order).build();
-    patch_boot(cx, uri, boot, None)
-        .await
-        .map(DriverOutcome::from)
-}
-
-/// Writes the override fields of `setting` to the system resource at `uri`:
-/// target, enablement, the mode (UEFI when `uefi_by_default` and the caller
-/// left it unset), and the HTTP boot URI.
-pub(crate) async fn write_override<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    uri: &ODataId,
-    setting: &BootUpdate,
-    uefi_by_default: bool,
-    etag: Option<&ODataETag>,
-) -> Result<DriverOutcome, PlatformError> {
-    let mode = match setting.boot_source_override_mode {
-        None if uefi_by_default => Some(BootSourceOverrideMode::Uefi),
-        mode => mode,
-    };
-    let boot = BootUpdate {
-        boot_source_override_target: Some(
-            setting
-                .boot_source_override_target
-                .ok_or(PlatformError::Unsupported)?,
-        ),
-        boot_source_override_enabled: Some(
-            setting
-                .boot_source_override_enabled
-                .ok_or(PlatformError::Unsupported)?,
-        ),
-        boot_source_override_mode: mode,
-        http_boot_uri: setting.http_boot_uri.clone(),
-        ..BootUpdate::default()
-    };
-    patch_boot(cx, uri, boot, etag)
-        .await
-        .map(DriverOutcome::from)
-}
-
 /// The device a request to boot one of the network, HTTP or disk devices
 /// persistently names: a `Continuous` override with no mode or HTTP boot URI.
 /// Platforms reorder their boot order for it rather than set an override.
@@ -296,6 +156,172 @@ fn device_for(setting: &BootUpdate, enabled: BootSourceOverrideEnabled) -> Optio
             BootSource::Pxe | BootSource::Hdd | BootSource::UefiHttp
         )
     })
+}
+
+/// Redfish boot discovery and writes shared by boot-order drivers.
+pub(super) trait RedfishBootOrderExt<B: Bmc> {
+    /// The selected system's boot options, in collection order.
+    async fn boot_options(&self) -> Result<Vec<BootOption<B>>, PlatformError>;
+
+    /// Writes `order` with the entry naming `reference` first to the system
+    /// resource at `uri`, unless `order` already starts with it.
+    async fn put_boot_option_first(
+        &self,
+        uri: &ODataId,
+        order: Vec<String>,
+        reference: &str,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// The selected interface's MAC: the selector's own, or the one the system's
+    /// Ethernet interface with the selector's id reports.
+    async fn boot_interface_mac(
+        &self,
+        selector: &BootInterfaceSelector,
+    ) -> Result<String, PlatformError>;
+
+    /// Writes `boot` to the system resource at `uri`, with `If-Match` set to
+    /// `etag` or `*`.
+    async fn patch_boot(
+        &self,
+        uri: &ODataId,
+        boot: BootUpdate,
+        etag: Option<&ODataETag>,
+    ) -> Result<ModificationResponse<Value>, PlatformError>;
+
+    /// Writes `order` as the `Boot.BootOrder` of the system resource at `uri`.
+    async fn write_boot_order(
+        &self,
+        uri: &ODataId,
+        order: Vec<String>,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// Writes the override fields of `setting` to the system resource at `uri`:
+    /// target, enablement, the mode (UEFI when `uefi_by_default` and the caller
+    /// left it unset), and the HTTP boot URI.
+    async fn write_boot_override(
+        &self,
+        uri: &ODataId,
+        setting: &BootUpdate,
+        uefi_by_default: bool,
+        etag: Option<&ODataETag>,
+    ) -> Result<DriverOutcome, PlatformError>;
+}
+
+impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
+    async fn boot_options(&self) -> Result<Vec<BootOption<B>>, PlatformError> {
+        self.system()
+            .await?
+            .boot_options()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .members()
+            .await
+            .map_err(|error| self.map_redfish_error(error))
+    }
+
+    async fn put_boot_option_first(
+        &self,
+        uri: &ODataId,
+        order: Vec<String>,
+        reference: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        if is_first(&order, reference) {
+            return Ok(DriverOutcome::complete());
+        }
+        self.write_boot_order(uri, with_first(order, reference))
+            .await
+    }
+
+    async fn boot_interface_mac(
+        &self,
+        selector: &BootInterfaceSelector,
+    ) -> Result<String, PlatformError> {
+        let interface_id = match selector {
+            BootInterfaceSelector::Mac(mac)
+            | BootInterfaceSelector::Pair {
+                mac_address: mac, ..
+            } => return Ok(mac.to_string()),
+            BootInterfaceSelector::InterfaceId(interface_id) => interface_id,
+        };
+        let interfaces = self
+            .system()
+            .await?
+            .ethernet_interfaces()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?
+            .ok_or(PlatformError::Unsupported)?
+            .members()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?;
+        interfaces
+            .iter()
+            .find(|interface| interface.raw().id == *interface_id)
+            .and_then(|interface| interface.mac_address())
+            .map(|mac| mac.as_str().to_string())
+            .filter(|mac| !mac.is_empty())
+            .ok_or_else(|| PlatformError::InvalidResponse {
+                message: format!("EthernetInterface {interface_id} reports no MACAddress"),
+            })
+    }
+
+    async fn patch_boot(
+        &self,
+        uri: &ODataId,
+        boot: BootUpdate,
+        etag: Option<&ODataETag>,
+    ) -> Result<ModificationResponse<Value>, PlatformError> {
+        self.bmc()
+            .update(
+                uri,
+                etag,
+                &ComputerSystemUpdate::builder().with_boot(boot).build(),
+            )
+            .await
+            .map_err(|error| self.map_bmc_error(error))
+    }
+
+    async fn write_boot_order(
+        &self,
+        uri: &ODataId,
+        order: Vec<String>,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let boot = BootUpdate::builder().with_boot_order(order).build();
+        self.patch_boot(uri, boot, None)
+            .await
+            .map(DriverOutcome::from)
+    }
+
+    async fn write_boot_override(
+        &self,
+        uri: &ODataId,
+        setting: &BootUpdate,
+        uefi_by_default: bool,
+        etag: Option<&ODataETag>,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let mode = match setting.boot_source_override_mode {
+            None if uefi_by_default => Some(BootSourceOverrideMode::Uefi),
+            mode => mode,
+        };
+        let boot = BootUpdate {
+            boot_source_override_target: Some(
+                setting
+                    .boot_source_override_target
+                    .ok_or(PlatformError::Unsupported)?,
+            ),
+            boot_source_override_enabled: Some(
+                setting
+                    .boot_source_override_enabled
+                    .ok_or(PlatformError::Unsupported)?,
+            ),
+            boot_source_override_mode: mode,
+            http_boot_uri: setting.http_boot_uri.clone(),
+            ..BootUpdate::default()
+        };
+        self.patch_boot(uri, boot, etag)
+            .await
+            .map(DriverOutcome::from)
+    }
 }
 
 #[cfg(test)]

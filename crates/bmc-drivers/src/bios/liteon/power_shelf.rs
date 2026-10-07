@@ -10,7 +10,7 @@ use bmc_platform::{
 use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::standard::StandardBios;
-use crate::bios::support::change_password;
+use crate::bios::support::RedfishBiosExt as _;
 
 /// Lite-On power shelves expose no BIOS attributes, but accept
 /// `Bios.ChangePassword` for the `AdminPassword` slot.
@@ -59,6 +59,7 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        change_password(cx, UEFI_PASSWORD_NAME, current_password, new_password).await
+        cx.change_bios_password(UEFI_PASSWORD_NAME, current_password, new_password)
+            .await
     }
 }

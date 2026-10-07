@@ -5,25 +5,16 @@
 
 //! BIOS operations shared by the BIOS drivers.
 //!
-//! A driver reads the BIOS's [`current_settings`], works out the settings it
-//! expects from them, then either [`compare`]s or stages those with
-//! [`crate::resources::stage_bios_attributes`].
+//! A driver reads [`RedfishResourcesExt::current_bios_settings`], works out
+//! the settings it expects, then either [`compare`]s or stages those with
+//! [`RedfishResourcesExt::stage_bios_attributes`].
 
 use bmc_platform::{BiosDiff, BiosSettings, BiosStatus, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::Value;
 
 use crate::bios::attributes::{BiosAttribute, desired_settings};
-use crate::resources::{attribute_map, bios_attributes, selected_bios};
-
-/// The attributes the BIOS currently runs with.
-pub(super) async fn current_settings<B: Bmc>(
-    cx: &OpCx<'_, B>,
-) -> Result<BiosSettings, PlatformError> {
-    Ok(BiosSettings {
-        attributes: bios_attributes(&selected_bios(cx).await?.raw()),
-    })
-}
+use crate::resources::{RedfishResourcesExt, attribute_map};
 
 /// The settings `attributes` call for on a BIOS reporting `current`, with the
 /// caller's `profile` taking precedence.
@@ -75,41 +66,62 @@ pub(super) fn compare(current: &BiosSettings, expected: &BiosSettings) -> BiosSt
     }
 }
 
-/// Whether the current BIOS holds `attribute`'s expected value; `None` when
-/// the BIOS does not report the attribute.
-pub(super) async fn attribute_holds<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    attribute: BiosAttribute,
-) -> Result<Option<bool>, PlatformError> {
-    Ok(current_settings(cx)
-        .await?
-        .attributes
-        .get(attribute.name)
-        .map(|value| attribute.value.matches(value)))
+/// BIOS attribute checks and password mechanics shared by BIOS drivers.
+pub(super) trait RedfishBiosExt<B: Bmc> {
+    /// Whether the current BIOS holds `attribute`'s expected value; `None` when
+    /// the BIOS does not report the attribute.
+    async fn bios_attribute_holds(
+        &self,
+        attribute: BiosAttribute,
+    ) -> Result<Option<bool>, PlatformError>;
+
+    /// Changes the UEFI password named `password_name` through the advertised
+    /// `Bios.ChangePassword` action; an empty `new_password` clears it.
+    async fn change_bios_password(
+        &self,
+        password_name: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<DriverOutcome, PlatformError>
+    where
+        B::Error: ActionError;
 }
 
-/// Changes the UEFI password named `password_name` through the advertised
-/// `Bios.ChangePassword` action; an empty `new_password` clears it.
-pub(super) async fn change_password<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    password_name: &str,
-    current_password: &str,
-    new_password: &str,
-) -> Result<DriverOutcome, PlatformError>
-where
-    B::Error: ActionError,
-{
-    selected_bios(cx)
-        .await?
-        .change_password(
-            password_name.to_string(),
-            Some(current_password.to_string()),
-            new_password.to_string(),
-        )
-        .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))
+impl<B: Bmc> RedfishBiosExt<B> for OpCx<'_, B> {
+    async fn bios_attribute_holds(
+        &self,
+        attribute: BiosAttribute,
+    ) -> Result<Option<bool>, PlatformError> {
+        Ok(self
+            .current_bios_settings()
+            .await?
+            .attributes
+            .get(attribute.name)
+            .map(|value| attribute.value.matches(value)))
+    }
+
+    async fn change_bios_password(
+        &self,
+        password_name: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<DriverOutcome, PlatformError>
+    where
+        B::Error: ActionError,
+    {
+        self.bios()
+            .await?
+            .change_password(
+                password_name.to_string(),
+                Some(current_password.to_string()),
+                new_password.to_string(),
+            )
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

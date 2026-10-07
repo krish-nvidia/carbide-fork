@@ -13,9 +13,10 @@ use nv_redfish::schema::computer_system::BootUpdate;
 
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
-    self, alias, boot_interface_mac, boot_options, boot_order, display_name, is_first,
-    persistent_device, reference, system_uri, write_override,
+    RedfishBootOrderExt as _, alias, boot_order, display_name, is_first, persistent_device,
+    reference,
 };
+use crate::resources::RedfishResourcesExt as _;
 
 /// AMI MegaRAC boot behavior.
 ///
@@ -45,33 +46,14 @@ pub(crate) fn missing_http_option(mac: &str) -> PlatformError {
 
 /// Moves `target` first in the `SD` boot order unless `order` already starts
 /// with it.
-pub(crate) async fn put_first<B: Bmc>(
+async fn put_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     order: Vec<String>,
     target: &BootOption<B>,
 ) -> Result<DriverOutcome, PlatformError> {
-    let sd = system_uri(cx, Some("SD")).await?;
-    support::put_first(cx, &sd, order, reference(target)).await
-}
-
-/// Boots the device persistently by moving the boot option whose `Alias`
-/// names it first in the `SD` boot order; otherwise sets the override.
-pub(crate) async fn set_override<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    setting: &BootUpdate,
-) -> Result<DriverOutcome, PlatformError> {
-    let Some(device) = persistent_device(setting) else {
-        let system = system_uri(cx, None).await?;
-        return write_override(cx, &system, setting, true, None).await;
-    };
-    let options = boot_options(cx).await?;
-    let target = options
-        .iter()
-        .find(|option| alias(option) == Some(device))
-        .ok_or_else(|| PlatformError::MissingBootOption {
-            description: format!("boot option with alias {device:?}"),
-        })?;
-    put_first(cx, boot_order(cx.system().await?), target).await
+    let sd = cx.system_uri(Some("SD")).await?;
+    cx.put_boot_option_first(&sd, order, reference(target))
+        .await
 }
 
 #[async_trait]
@@ -85,9 +67,9 @@ impl<B: Bmc> BootOrder<B> for MegaRacBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<BootOrderStatus, PlatformError> {
-        let mac = boot_interface_mac(cx, selector).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
         let order = boot_order(cx.system().await?);
-        let options = boot_options(cx).await?;
+        let options = cx.boot_options().await?;
         Ok(BootOrderStatus {
             boot_interface_first: http_option(&options, &mac)
                 .is_some_and(|target| is_first(&order, reference(target))),
@@ -96,12 +78,27 @@ impl<B: Bmc> BootOrder<B> for MegaRacBootOrder {
         })
     }
 
+    /// Boots a device persistently by moving its matching `Alias` first in the
+    /// `SD` boot order; other requests use the live system's override.
     async fn set_override(
         &self,
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        set_override(cx, override_setting).await
+        let Some(device) = persistent_device(override_setting) else {
+            let system = cx.system_uri(None).await?;
+            return cx
+                .write_boot_override(&system, override_setting, true, None)
+                .await;
+        };
+        let options = cx.boot_options().await?;
+        let target = options
+            .iter()
+            .find(|option| alias(option) == Some(device))
+            .ok_or_else(|| PlatformError::MissingBootOption {
+                description: format!("boot option with alias {device:?}"),
+            })?;
+        put_first(cx, boot_order(cx.system().await?), target).await
     }
 
     async fn configure(
@@ -109,8 +106,8 @@ impl<B: Bmc> BootOrder<B> for MegaRacBootOrder {
         cx: &OpCx<'_, B>,
         selector: &BootInterfaceSelector,
     ) -> Result<DriverOutcome, PlatformError> {
-        let mac = boot_interface_mac(cx, selector).await?;
-        let options = boot_options(cx).await?;
+        let mac = cx.boot_interface_mac(selector).await?;
+        let options = cx.boot_options().await?;
         let target = http_option(&options, &mac).ok_or_else(|| missing_http_option(&mac))?;
         put_first(cx, boot_order(cx.system().await?), target).await
     }

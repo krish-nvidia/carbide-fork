@@ -14,8 +14,8 @@ use nv_redfish::oem::ami::update_service::{
 };
 use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService, UpdateServiceUpdate};
 
-use crate::firmware::standard::{StandardFirmware, multipart_upload, update_service};
-use crate::firmware::support::{inventory_targets, upload_uri};
+use crate::firmware::standard::StandardFirmware;
+use crate::firmware::support::RedfishFirmwareExt as _;
 
 /// AMI MegaRAC firmware behavior for Lenovo HS350x-class BMCs.
 ///
@@ -112,13 +112,14 @@ impl<B: Bmc> Firmware<B> for MegaRacFirmware {
     ) -> Result<DriverOutcome, PlatformError> {
         let (image, inventory) = image(upload.component)?;
         let parameters = MultipartUpdateParameters::builder()
-            .with_targets(inventory_targets(cx, inventory).await?)
+            .with_targets(cx.firmware_inventory_targets(inventory).await?)
             .build();
         if image == Image::Bmc {
-            let service = update_service(cx).await?;
+            let service = cx.update_service().await?;
             preserve_bmc_configuration(cx, &service).await?;
         }
-        let uri = upload_uri(cx, MULTIPART_UPLOAD).await?;
-        multipart_upload(cx, upload, &parameters, vec![oem_parameters(image)?], &uri).await
+        let uri = cx.firmware_upload_uri(MULTIPART_UPLOAD).await?;
+        cx.multipart_upload(upload, &parameters, vec![oem_parameters(image)?], &uri)
+            .await
     }
 }

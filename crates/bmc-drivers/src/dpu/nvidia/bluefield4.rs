@@ -15,6 +15,7 @@ use nv_redfish::oem::nvidia::network_adapter::{
 };
 
 use crate::dpu::nvidia::support::{enable_bmc_rshim, host_rshim_state};
+use crate::resources::RedfishResourcesExt as _;
 
 /// BlueField-4: mode and host privileges live on the network adapter's
 /// `Oem.Nvidia` and change through its settings objects. There is no host
@@ -37,16 +38,7 @@ fn restricted_host_privilege() -> PlatformError {
 async fn nvidia_adapter<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<(NetworkAdapter<B>, NvidiaNetworkAdapter<B>), PlatformError> {
-    let chassis = cx
-        .service_root()
-        .chassis()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?;
-    for chassis in &chassis {
+    for chassis in &cx.all_chassis().await? {
         let adapters = chassis
             .network_adapters()
             .await

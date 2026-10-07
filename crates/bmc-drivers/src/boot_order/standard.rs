@@ -12,7 +12,8 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use crate::boot_order::support::{system_uri, write_override};
+use crate::boot_order::support::RedfishBootOrderExt as _;
+use crate::resources::RedfishResourcesExt as _;
 
 /// DMTF boot override on the live system resource.
 ///
@@ -39,8 +40,9 @@ impl<B: Bmc> BootOrder<B> for StandardBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let uri = system_uri(cx, None).await?;
-        write_override(cx, &uri, override_setting, false, None).await
+        let uri = cx.system_uri(None).await?;
+        cx.write_boot_override(&uri, override_setting, false, None)
+            .await
     }
 
     async fn configure(

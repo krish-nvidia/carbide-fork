@@ -10,8 +10,8 @@ use nv_redfish::resource::{PowerState, ResetType};
 use serde_json::json;
 
 use crate::dell;
-use crate::power::standard::{self, StandardPower};
-use crate::resources::{attribute_map, selected_bios};
+use crate::power::standard::StandardPower;
+use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// Dell iDRAC host-power behavior.
 ///
@@ -25,7 +25,8 @@ async fn full_power_cycle<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, Pla
 where
     B::Error: ActionError,
 {
-    let uefi_variable_access = selected_bios(cx)
+    let uefi_variable_access = cx
+        .bios()
         .await?
         .attribute("UefiVariableAccess")
         .and_then(|value| value.str_value().map(str::to_owned));
@@ -37,7 +38,12 @@ where
         &attribute_map([("PowerCycleRequest", json!("FullPowerCycle"))]),
     )
     .await?;
-    let reset = match standard::state(cx).await? {
+    let reset = match cx
+        .system()
+        .await?
+        .power_state()
+        .ok_or(PlatformError::NoContent)?
+    {
         PowerState::Off => ResetType::On,
         _ => ResetType::GracefulRestart,
     };
