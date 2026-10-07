@@ -40,7 +40,7 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
         let host = state_from_signals(&[(kcs_locked, kcs_unlocked)]);
         let bmc = state_from_signals(&[signal(redfish.as_deref(), "Disabled", "Enabled")]);
         let aggregate = match (kcs.as_deref(), redfish.as_deref()) {
-            (None, None) => LockdownState::Disabled,
+            (None, None) => LockdownState::Unknown,
             (None, Some(_)) | (Some(_), None) => LockdownState::Partial,
             (Some(_), Some(_)) if kcs_locked => LockdownState::Enabled,
             (Some(_), Some(redfish)) if kcs_unlocked && redfish == "Enabled" => {
@@ -101,8 +101,36 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::test_support::Fixture;
+
+    #[tokio::test]
+    async fn status_is_unknown_when_the_bios_reports_neither_signal() {
+        const SYSTEM: &str = "/redfish/v1/Systems/DGX";
+        const BIOS: &str = "/redfish/v1/Systems/DGX/Bios";
+        let bmc = Fixture::new("AMI", "AMI Redfish Server", "DGX", "BMC")
+            .document(
+                SYSTEM,
+                json!({"@odata.id": SYSTEM, "Id": "DGX", "Name": "System", "Bios": {"@odata.id": BIOS}}),
+            )
+            .document(
+                BIOS,
+                json!({"@odata.id": BIOS, "Id": "Bios", "Name": "BIOS", "Attributes": {}}),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+
+        assert_eq!(
+            VikingLockdown
+                .status(&cx)
+                .await
+                .map(|status| status.aggregate),
+            Ok(LockdownState::Unknown)
+        );
+    }
 
     #[tokio::test]
     async fn lockdown_is_not_enabled_on_firmware_too_old_for_it() {
