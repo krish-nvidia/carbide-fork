@@ -14,7 +14,9 @@ use nv_redfish::oem::ami::config_bmc::{
     LockoutBiosVariableWriteMode, LockoutHostControlState,
 };
 
-use crate::lockdown::support::{RedfishLockdownExt as _, signal, state_from_signals, status};
+use crate::lockdown::support::{
+    RedfishLockdownExt as _, reported, signal, state_from_signals, status,
+};
 
 /// Lenovo AMI lockdown driver.
 ///
@@ -64,11 +66,11 @@ impl<B: Bmc> Lockdown<B> for LenovoAmiLockdown {
             state,
             state,
             format!(
-                "host_control={:?}, bios_variable_write={:?}, bios_settings_change={:?}, bios_upgrade_downgrade={:?}",
-                raw.lockout_host_control,
-                raw.lockout_bios_variable_write_mode,
-                raw.lockdown_bios_settings_change,
-                raw.lockdown_bios_upgrade_downgrade
+                "host_control={}, bios_variable_write={}, bios_settings_change={}, bios_upgrade_downgrade={}",
+                reported(&raw.lockout_host_control),
+                reported(&raw.lockout_bios_variable_write_mode),
+                reported(&raw.lockdown_bios_settings_change),
+                reported(&raw.lockdown_bios_upgrade_downgrade)
             ),
         ))
     }

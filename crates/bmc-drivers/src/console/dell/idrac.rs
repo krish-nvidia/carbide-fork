@@ -102,10 +102,12 @@ fn combined(bmc: ConsoleStatus, bios: ConsoleStatus) -> ConsoleStatus {
         (ConsoleState::Disabled, ConsoleState::Disabled) => ConsoleState::Disabled,
         _ => ConsoleState::Partial,
     };
-    ConsoleStatus {
-        state,
-        message: format!("BMC: {}. BIOS: {}.", bmc.message, bios.message),
-    }
+    let message = [bmc.message, bios.message]
+        .into_iter()
+        .filter(|half| !half.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    ConsoleStatus { state, message }
 }
 
 #[async_trait]

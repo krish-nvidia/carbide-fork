@@ -24,28 +24,29 @@
 
 mod checks;
 mod connect;
+mod ownership;
 mod report;
 mod selection;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use bmc_platform::{BiosSettings, BootInterfaceSelector, Capability};
-use bmc_runtime::ConnectionManager;
+use bmc_platform::{BiosSettings, Capability};
 use clap::Parser;
 use colored::Colorize;
 use mac_address::MacAddress;
-use nv_redfish::bmc_http::BmcCredentials;
 
-use crate::checks::{Ctx, Inputs};
+use crate::checks::{Ctx, EndState, Inputs, Scope, UefiPassword};
+use crate::connect::Target;
 use crate::report::Redactor;
+use crate::selection::Selection;
 
-/// How long discovery may take before the run gives up.
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(180);
+/// The Redfish port a BMC address without one uses.
+const HTTPS_PORT: u16 = 443;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -57,15 +58,16 @@ struct Args {
     bmc_ip: IpAddr,
 
     /// HTTPS port of the BMC's Redfish service.
-    #[arg(long, default_value_t = 443)]
+    #[arg(long, default_value_t = HTTPS_PORT)]
     port: u16,
 
     /// BMC account to log in with.
     #[arg(long, short)]
     username: String,
 
-    /// Password of that account. Prefer the environment variable: command
-    /// arguments are visible to other users of the machine.
+    /// Password of that account; with `--validate`, its factory password.
+    /// Prefer the environment variable: command arguments are visible to
+    /// other users of the machine.
     #[arg(long, env = "BMC_PASSWORD", hide_env_values = true)]
     password: String,
 
@@ -81,6 +83,11 @@ struct Args {
     /// toggle lockdown, and create and delete a temporary account.
     #[arg(long)]
     apply: bool,
+
+    /// Take a BMC from factory state through everything NICo does to it,
+    /// in production order.
+    #[arg(long, conflicts_with_all = ["apply", "only", "checks"], requires = "new_password")]
+    validate: bool,
 
     /// Run only the checks of these capabilities.
     #[arg(long, value_delimiter = ',')]
@@ -112,13 +119,99 @@ struct Args {
     /// Most read checks in flight at once.
     #[arg(long, default_value_t = 4)]
     jobs: usize,
+
+    /// Print each step of the apply checks to stderr as it happens: driver
+    /// calls and how they completed, job status, restarts, and status reads.
+    #[arg(long, short)]
+    verbose: bool,
+
+    /// The password `--validate` sets on `--username` in place of the
+    /// factory one.
+    #[arg(
+        long,
+        env = "BMC_NEW_PASSWORD",
+        hide_env_values = true,
+        requires = "validate"
+    )]
+    new_password: Option<String>,
+
+    /// What `--validate` leaves the BMC in.
+    #[arg(long, value_enum, default_value_t, requires = "validate")]
+    end_state: EndState,
+
+    /// NTP server the BMC should sync from. Repeatable.
+    #[arg(long = "ntp-server", value_name = "SERVER", requires = "validate")]
+    ntp_servers: Vec<String>,
+
+    /// UEFI setup password `--validate` sets.
+    #[arg(
+        long,
+        env = "BMC_UEFI_PASSWORD",
+        hide_env_values = true,
+        requires = "validate"
+    )]
+    uefi_password: Option<String>,
+
+    /// The UEFI setup password the firmware has now; a BlueField's is its
+    /// factory default.
+    #[arg(
+        long,
+        env = "BMC_CURRENT_UEFI_PASSWORD",
+        hide_env_values = true,
+        default_value = "",
+        requires = "uefi_password"
+    )]
+    current_uefi_password: String,
+
+    /// Let `--validate` cut and restore AC power to the host.
+    #[arg(long, requires = "validate")]
+    allow_ac_cycle: bool,
+
+    /// PEM file of the platform key secure boot enrolls on a DPU.
+    #[arg(long, requires = "validate")]
+    pk_pem: Option<PathBuf>,
+
+    /// The host BMC of a DPU under `--validate`, as `IP` or `IP:PORT`; it
+    /// power-cycles the host when the DPU changes NIC mode.
+    #[arg(long, value_parser = bmc_address, requires_all = ["validate", "host_username", "host_password"])]
+    host_bmc: Option<SocketAddr>,
+
+    /// Account on the host BMC.
+    #[arg(long, requires = "host_bmc")]
+    host_username: Option<String>,
+
+    /// Password of that account.
+    #[arg(
+        long,
+        env = "BMC_HOST_PASSWORD",
+        hide_env_values = true,
+        requires = "host_bmc"
+    )]
+    host_password: Option<String>,
+}
+
+fn bmc_address(value: &str) -> Result<SocketAddr, String> {
+    value
+        .parse()
+        .or_else(|_| value.parse().map(|ip| SocketAddr::new(ip, HTTPS_PORT)))
+        .map_err(|_| format!("{value} is neither an IP address nor IP:PORT"))
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
     report::init();
-    let redactor = Arc::new(Redactor::new(&args.password));
+    let redactor = Arc::new(Redactor::new(
+        [
+            Some(args.password.as_str()),
+            args.new_password.as_deref(),
+            args.uefi_password.as_deref(),
+            Some(args.current_uefi_password.as_str()),
+            args.host_password.as_deref(),
+        ]
+        .into_iter()
+        .flatten(),
+    ));
     match run(args, redactor.clone()).await {
         Ok(code) => code,
         Err(error) => {
@@ -129,68 +222,114 @@ async fn main() -> ExitCode {
 }
 
 async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
-    let bios_profile = match &args.bios_profile {
-        Some(path) => {
-            let text = std::fs::read_to_string(path)
-                .map_err(|error| format!("reading {}: {error}", path.display()))?;
-            BiosSettings {
-                attributes: serde_json::from_str::<BTreeMap<_, _>>(&text)
-                    .map_err(|error| format!("{} is not a JSON object: {error}", path.display()))?,
-            }
+    let address = SocketAddr::new(args.bmc_ip, args.port);
+    let given = Target::new(address, &args.username, &args.password);
+    let (target, factory, factory_accounts) = match &args.new_password {
+        Some(new_password) => {
+            let (owned, accounts) = own(&args, &given, new_password).await?;
+            (owned, Some(given), accounts)
         }
-        None => BiosSettings::default(),
+        None => (given, None, None),
     };
 
-    let address = SocketAddr::new(args.bmc_ip, args.port);
-    let credentials = BmcCredentials::new(args.username.clone(), args.password.clone());
-    let pool = connect::pool();
-
     report::discovering(address);
-    let identity = tokio::time::timeout(
-        DISCOVERY_TIMEOUT,
-        connect::discover(&pool, address, credentials.clone()),
-    )
-    .await
-    .map_err(|_| format!("discovery did not finish within {DISCOVERY_TIMEOUT:?}"))??;
-    let selection = selection::Selection::resolve(&identity, &args.drivers)?;
+    let identity = target.discover().await?;
+    let selection = Selection::resolve(&identity, &args.drivers)?;
     report::print_identity(address, &identity);
     report::print_selection(&selection);
+    if let Some(driver) = factory_accounts
+        && driver != selection.driver(Capability::Accounts)
+    {
+        report::warn(&format!(
+            "the factory password was changed through {driver}, but the full identity selects {}",
+            selection.driver(Capability::Accounts)
+        ));
+    }
 
-    let plan = checks::plan(
-        &selection,
-        args.apply,
-        &args.only,
-        &args.checks,
-        args.boot_mac.is_some(),
-    )?;
+    let inputs = Inputs {
+        ipmi: args.ipmi,
+        boot_mac: args.boot_mac,
+        bios_profile: bios_profile(args.bios_profile.as_deref())?,
+        ntp_servers: args.ntp_servers,
+        uefi_password: args.uefi_password.map(|new| UefiPassword {
+            current: args.current_uefi_password,
+            new,
+        }),
+        allow_ac_cycle: args.allow_ac_cycle,
+        platform_key: args
+            .pk_pem
+            .as_deref()
+            .map(|path| read(path, "the platform key"))
+            .transpose()?,
+        host_bmc: args.host_bmc.map(|address| {
+            Target::new(
+                address,
+                args.host_username.as_deref().unwrap_or_default(),
+                args.host_password.as_deref().unwrap_or_default(),
+            )
+        }),
+        factory,
+        verbose: args.verbose,
+    };
+    let scope = if args.validate {
+        Scope::Validate(args.end_state)
+    } else {
+        Scope::Checks {
+            apply: args.apply,
+            only: &args.only,
+            ids: &args.checks,
+        }
+    };
+    let plan = checks::plan(&selection, &inputs, scope)?;
     if args.plan {
         report::print_plan(&plan, &selection);
         return Ok(ExitCode::SUCCESS);
     }
 
-    let ipmi = args
-        .ipmi
-        .then(|| connect::ipmi(args.bmc_ip, &args.username, &args.password));
-    let manager = ConnectionManager::new(
-        pool.clone(),
-        connect::static_credentials(credentials),
-        "bmc-validate".to_string(),
-    )
-    .map_err(|error| error.to_string())?;
-    let bmc = manager
-        .connect(selection.endpoint(address, identity)?, ipmi)
-        .await
-        .map_err(|error| format!("connecting through bmc-runtime: {error}"))?;
-
-    let inputs = Inputs {
-        username: args.username,
-        ipmi: args.ipmi,
-        boot_interface: args.boot_mac.map(BootInterfaceSelector::Mac),
-        bios_profile,
-    };
-    let ctx = Ctx::new(bmc, pool, address, inputs, redactor);
+    let bmc = target
+        .connect(selection.endpoint(address, identity)?, args.ipmi)
+        .await?;
+    let ctx = Ctx::new(bmc, selection, target, inputs, redactor);
     report::checks_heading();
     let started = Instant::now();
-    let results = checks::run(&ctx, plan, &selection, args.jobs.max(1)).await;
+    let results = checks::run(&ctx, plan, args.jobs.max(1)).await;
     Ok(report::summary(&ctx, &results, started.elapsed()))
+}
+
+/// The BMC reached with `new_password`, replacing the factory password
+/// first unless only planning: a plan changes nothing, so it reaches the
+/// BMC with whichever password it accepts. Also returns the accounts driver
+/// that replaced the password, if one did.
+async fn own(
+    args: &Args,
+    factory: &Target,
+    new_password: &str,
+) -> Result<(Target, Option<String>), String> {
+    let owned = factory.as_account(factory.username(), new_password);
+    if args.plan {
+        let reachable = match owned.log_in().await {
+            Ok(()) => owned,
+            Err(_) => factory.clone(),
+        };
+        return Ok((reachable, None));
+    }
+    report::taking_ownership(factory.address());
+    let (owned, ownership) = ownership::take(factory, new_password, &args.drivers).await?;
+    report::print_ownership(&ownership);
+    Ok((owned, ownership.accounts_driver))
+}
+
+fn bios_profile(path: Option<&Path>) -> Result<BiosSettings, String> {
+    let Some(path) = path else {
+        return Ok(BiosSettings::default());
+    };
+    Ok(BiosSettings {
+        attributes: serde_json::from_str::<BTreeMap<_, _>>(&read(path, "the BIOS profile")?)
+            .map_err(|error| format!("{} is not a JSON object: {error}", path.display()))?,
+    })
+}
+
+fn read(path: &Path, what: &str) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("reading {what} {}: {error}", path.display()))
 }

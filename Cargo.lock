@@ -804,6 +804,7 @@ dependencies = [
  "clap",
  "colored",
  "futures",
+ "libc",
  "mac_address",
  "nv-redfish",
  "rand 0.10.1",
@@ -7740,7 +7741,7 @@ dependencies = [
 [[package]]
 name = "nv-redfish"
 version = "0.1.0"
-source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=13d15eb06d1545ef91970f7115cb0411d91c04cd#13d15eb06d1545ef91970f7115cb0411d91c04cd"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=95da62b194efbf4dc0b646e49e7a5dedd57b1a87#95da62b194efbf4dc0b646e49e7a5dedd57b1a87"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -7756,7 +7757,7 @@ dependencies = [
 [[package]]
 name = "nv-redfish-bmc-http"
 version = "0.1.0"
-source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=13d15eb06d1545ef91970f7115cb0411d91c04cd#13d15eb06d1545ef91970f7115cb0411d91c04cd"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=95da62b194efbf4dc0b646e49e7a5dedd57b1a87#95da62b194efbf4dc0b646e49e7a5dedd57b1a87"
 dependencies = [
  "bytes",
  "futures-core",
@@ -7780,7 +7781,7 @@ dependencies = [
 [[package]]
 name = "nv-redfish-core"
 version = "0.1.0"
-source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=13d15eb06d1545ef91970f7115cb0411d91c04cd#13d15eb06d1545ef91970f7115cb0411d91c04cd"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=95da62b194efbf4dc0b646e49e7a5dedd57b1a87#95da62b194efbf4dc0b646e49e7a5dedd57b1a87"
 dependencies = [
  "futures-core",
  "futures-io",
@@ -7794,7 +7795,7 @@ dependencies = [
 [[package]]
 name = "nv-redfish-csdl-compiler"
 version = "0.1.0"
-source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=13d15eb06d1545ef91970f7115cb0411d91c04cd#13d15eb06d1545ef91970f7115cb0411d91c04cd"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=95da62b194efbf4dc0b646e49e7a5dedd57b1a87#95da62b194efbf4dc0b646e49e7a5dedd57b1a87"
 dependencies = [
  "clap",
  "clap_derive",
@@ -7811,7 +7812,7 @@ dependencies = [
 [[package]]
 name = "nv-redfish-dispatcher"
 version = "0.1.0"
-source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=13d15eb06d1545ef91970f7115cb0411d91c04cd#13d15eb06d1545ef91970f7115cb0411d91c04cd"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=95da62b194efbf4dc0b646e49e7a5dedd57b1a87#95da62b194efbf4dc0b646e49e7a5dedd57b1a87"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -7820,7 +7821,7 @@ dependencies = [
 [[package]]
 name = "nv-redfish-schema"
 version = "0.1.0"
-source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=13d15eb06d1545ef91970f7115cb0411d91c04cd#13d15eb06d1545ef91970f7115cb0411d91c04cd"
+source = "git+https://github.com/dsx-ai-factory/nv-redfish.git?rev=95da62b194efbf4dc0b646e49e7a5dedd57b1a87#95da62b194efbf4dc0b646e49e7a5dedd57b1a87"
 dependencies = [
  "glob",
 ]

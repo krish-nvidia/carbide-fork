@@ -77,8 +77,10 @@ impl<B: Bmc> Console<B> for SupermicroBmcConsole {
                 ConsoleState::Disabled
             },
             message: format!(
-                "ssh_service_enabled={ssh_enabled}, max_concurrent_sessions={:?}, serial_interface_defaults={interface_defaults}",
-                serial.max_concurrent_sessions
+                "ssh_service_enabled={ssh_enabled}, max_concurrent_sessions={}, serial_interface_defaults={interface_defaults}",
+                serial
+                    .max_concurrent_sessions
+                    .map_or_else(|| "unreported".to_string(), |sessions| sessions.to_string())
             ),
         })
     }

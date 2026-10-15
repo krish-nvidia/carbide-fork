@@ -12,16 +12,19 @@ use nv_redfish::oem::lenovo::boot_manager::{BootOrderKind, LenovoBootManagerColl
 use nv_redfish::schema::computer_system::BootUpdate;
 
 use super::NETWORK;
-use crate::boot_order::lenovo::{boot_settings, first_group, oem_boot_order, set_next};
+use crate::boot_order::lenovo::{
+    boot_settings, first_group, network_group_first, oem_boot_order, set_next,
+};
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::RedfishBootOrderExt as _;
 
 /// Lenovo XCC 2 boot behavior.
 ///
-/// BIOS setup puts the `Network` group first; boot order setup puts the
-/// adapter first within the OEM `NetworkBootOrder`. XCC can drop `Hard Disk`
-/// from its OEM general order, leaving the installed OS unbootable, so
-/// configuring restores it and status requires it.
+/// BIOS setup puts the `Network` group first; boot order setup puts it first
+/// again, since status requires it, and puts the adapter first within the OEM
+/// `NetworkBootOrder`. XCC can drop `Hard Disk` from its OEM general order,
+/// leaving the installed OS unbootable, so configuring restores it and status
+/// requires it.
 pub(crate) struct XccBootOrder;
 
 const GENERAL_HARD_DISK: &str = "Hard Disk";
@@ -45,18 +48,28 @@ async fn settings<B: Bmc>(
     boot_settings(cx).await?.ok_or(PlatformError::Unsupported)
 }
 
+/// `next` with `Hard Disk` inserted second, or `None` when nothing should be
+/// written: it is already listed, or the order is empty, as XCC reports it
+/// while the host POSTs, and writing then would drop every other group.
+fn with_hard_disk(next: &[String]) -> Option<Vec<String>> {
+    if next.is_empty() || next.iter().any(|entry| entry == GENERAL_HARD_DISK) {
+        return None;
+    }
+    let mut next = next.to_vec();
+    next.insert(1, GENERAL_HARD_DISK.to_string());
+    Some(next)
+}
+
 /// Inserts `Hard Disk` second in the OEM general order when it is missing.
 async fn restore_hard_disk<B: Bmc>(
     cx: &OpCx<'_, B>,
     settings: &LenovoBootManagerCollection<B>,
 ) -> Result<DriverOutcome, PlatformError> {
     let general = oem_boot_order(cx, settings, BootOrderKind::General).await?;
-    let mut next = general.next().unwrap_or_default().to_vec();
-    if next.iter().any(|entry| entry == GENERAL_HARD_DISK) {
-        return Ok(DriverOutcome::complete());
+    match with_hard_disk(general.next().unwrap_or_default()) {
+        Some(next) => set_next(cx, &general, next).await,
+        None => Ok(DriverOutcome::complete()),
     }
-    next.insert(next.len().min(1), GENERAL_HARD_DISK.to_string());
-    set_next(cx, &general, next).await
 }
 
 #[async_trait]
@@ -110,7 +123,8 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
     ) -> Result<DriverOutcome, PlatformError> {
         let mac = cx.boot_interface_mac(selector).await?;
         let settings = settings(cx).await?;
-        let hard_disk = restore_hard_disk(cx, &settings).await?;
+        // Nothing is written until the adapter is listed: while the host POSTs
+        // XCC reports empty orders, and writing one would drop its groups.
         let network = oem_boot_order(cx, &settings, BootOrderKind::Network).await?;
         let adapter = network
             .supported()
@@ -121,18 +135,23 @@ impl<B: Bmc> BootOrder<B> for XccBootOrder {
             .ok_or_else(|| PlatformError::MissingBootOption {
                 description: format!("XCC NetworkBootOrder HTTP IPv4 option for {mac}"),
             })?;
+        let groups = restore_hard_disk(cx, &settings)
+            .await?
+            .merge(network_group_first(cx).await?);
         let mut next = network.next().unwrap_or_default().to_vec();
         match next.iter().position(|entry| *entry == adapter) {
-            Some(0) => return Ok(hard_disk),
+            Some(0) => return Ok(groups),
             Some(position) => next.swap(0, position),
             None => next.insert(0, adapter),
         }
-        Ok(hard_disk.merge(set_next(cx, &network, next).await?))
+        Ok(groups.merge(set_next(cx, &network, next).await?))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use carbide_test_support::value_scenarios;
+
     use super::*;
 
     #[test]
@@ -152,5 +171,20 @@ mod tests {
         ] {
             assert!(!names_adapter(entry, mac), "{entry}");
         }
+    }
+
+    /// An empty order is what XCC reports while the host POSTs; writing
+    /// `Hard Disk` alone over it dropped every other group.
+    #[test]
+    fn hard_disk_is_restored_only_into_a_reported_order_lacking_it() {
+        let order = |entries: &[&str]| entries.iter().map(ToString::to_string).collect::<Vec<_>>();
+        value_scenarios!(run = |next: Vec<String>| with_hard_disk(&next);
+            "missing" {
+                order(&["Network", "CD/DVD Rom"]) => Some(order(&["Network", "Hard Disk", "CD/DVD Rom"])),
+                order(&["Network"]) => Some(order(&["Network", "Hard Disk"])),
+            }
+            "already listed" { order(&["Network", "Hard Disk"]) => None }
+            "not reported yet" { order(&[]) => None }
+        );
     }
 }

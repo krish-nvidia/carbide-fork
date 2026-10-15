@@ -11,7 +11,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::json;
 
-use crate::lockdown::support::{signal, state_from_signals, status};
+use crate::lockdown::support::{reported, signal, state_from_signals, status};
 use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// HPE iLO lockdown driver: KCS and USB boot for the host, the virtual NIC
@@ -99,7 +99,11 @@ impl<B: Bmc> Lockdown<B> for IloLockdown {
         Ok(status(
             host,
             bmc,
-            format!("usb_boot={usb_boot:?}, virtual_nic_enabled={virtual_nic:?}"),
+            format!(
+                "usb_boot={}, virtual_nic_enabled={}",
+                reported(&usb_boot),
+                reported(&virtual_nic)
+            ),
         ))
     }
 

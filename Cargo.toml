@@ -62,8 +62,8 @@ opentelemetry-semantic-conventions = "0.32.1"
 tracing-opentelemetry = "0.33.0"
 
 # NV-Redfish
-nv-redfish = { git = "https://github.com/dsx-ai-factory/nv-redfish.git", rev = "13d15eb06d1545ef91970f7115cb0411d91c04cd" }
-nv-redfish-dispatcher = { git = "https://github.com/dsx-ai-factory/nv-redfish.git", rev = "13d15eb06d1545ef91970f7115cb0411d91c04cd" }
+nv-redfish = { git = "https://github.com/dsx-ai-factory/nv-redfish.git", rev = "95da62b194efbf4dc0b646e49e7a5dedd57b1a87" }
+nv-redfish-dispatcher = { git = "https://github.com/dsx-ai-factory/nv-redfish.git", rev = "95da62b194efbf4dc0b646e49e7a5dedd57b1a87" }
 
 ########
 # MARK: - Pinned packages that we can't upgrade due to conflicts or just bugs

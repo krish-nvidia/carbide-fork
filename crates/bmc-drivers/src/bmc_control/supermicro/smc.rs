@@ -10,6 +10,9 @@ use nv_redfish::oem::supermicro::ResetOption;
 
 use crate::bmc_control::standard::StandardBmcControl;
 
+/// How many NTP servers the BMC keeps; it rejects a longer `NTPServers`.
+const NTP_SLOTS: usize = 2;
+
 /// Supermicro restores manager defaults through the OEM `SmcManagerConfig.Reset` action.
 pub(crate) struct SmcBmcControl;
 
@@ -35,5 +38,54 @@ where
             .await
             .map(DriverOutcome::from)
             .map_err(|error| cx.map_redfish_error(error))
+    }
+
+    /// Writes the first [`NTP_SLOTS`] servers.
+    async fn set_ntp_servers(
+        &self,
+        cx: &OpCx<'_, B>,
+        servers: &[String],
+    ) -> Result<DriverOutcome, PlatformError> {
+        StandardBmcControl
+            .set_ntp_servers(cx, &servers[..servers.len().min(NTP_SLOTS)])
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::{Fixture, body};
+
+    /// X13 firmware 01.03.34 rejects three `NTPServers` as malformed.
+    #[tokio::test]
+    async fn only_the_first_two_ntp_servers_are_written() {
+        const PROTOCOL: &str = "/redfish/v1/Managers/1/NetworkProtocol";
+        let bmc = Fixture::new("Supermicro", "", "1", "1")
+            .document(
+                "/redfish/v1/Managers/1",
+                json!({"@odata.id": "/redfish/v1/Managers/1", "Id": "1", "Name": "Manager",
+                       "NetworkProtocol": {"@odata.id": PROTOCOL}}),
+            )
+            .document(
+                PROTOCOL,
+                json!({"@odata.id": PROTOCOL, "Id": "NetworkProtocol", "Name": "Network Protocol"}),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+        let servers = ["10.0.0.1", "10.0.0.2", "10.0.0.3"].map(String::from);
+        SmcBmcControl
+            .set_ntp_servers(&cx, &servers)
+            .await
+            .expect("NTP servers are written");
+        let writes = bmc.writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            body(&writes[0])["NTP"]["NTPServers"],
+            json!(["10.0.0.1", "10.0.0.2"])
+        );
     }
 }

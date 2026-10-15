@@ -16,7 +16,7 @@ use crate::lockdown::supermicro::support::{
     host_interface_enabled, kcs_privilege, set_host_interfaces, set_kcs_privilege,
     set_sys_lockdown, sys_lockdown,
 };
-use crate::lockdown::support::{signal, state_from_signals, status};
+use crate::lockdown::support::{reported, signal, state_from_signals, status};
 
 /// Supermicro lockdown driver.
 ///
@@ -46,7 +46,10 @@ impl<B: Bmc> Lockdown<B> for SmcLockdown {
             host,
             bmc,
             format!(
-                "sys_lockdown={lockdown:?}, kcs={privilege:?}, host_interface={host_interface:?}"
+                "sys_lockdown={}, kcs={}, host_interface={}",
+                reported(&lockdown),
+                reported(&privilege),
+                reported(&host_interface)
             ),
         ))
     }

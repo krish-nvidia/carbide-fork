@@ -6,12 +6,22 @@
 //! Lockdown signal aggregation and host-interface controls shared by several
 //! vendor drivers.
 
+use std::fmt::Debug;
+
 use bmc_platform::{DriverOutcome, LockdownState, LockdownStatus, OpCx, PlatformError};
 use nv_redfish::core::Bmc;
 use nv_redfish::host_interface::{HostInterface, HostInterfaceUpdate};
 
 /// One control's observation: `(locked, unlocked)`, both false when unknown.
 pub(super) type Signal = (bool, bool);
+
+/// A control's value for a status message: as reported, or `unreported`.
+pub(super) fn reported<T: Debug>(value: &Option<T>) -> String {
+    match value {
+        Some(value) => format!("{value:?}").trim_matches('"').to_string(),
+        None => "unreported".to_string(),
+    }
+}
 
 /// Reads a control whose two known values mean locked and unlocked.
 pub(super) fn signal<T: PartialEq>(actual: Option<T>, locked: T, unlocked: T) -> Signal {

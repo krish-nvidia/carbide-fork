@@ -57,7 +57,7 @@ where
             ManagerNetworkProtocolUpdate::builder()
                 .with_ntp(
                     NtpProtocolUpdate::builder()
-                        .with_ntp_servers(servers.to_vec())
+                        .with_ntp_servers(servers.iter().cloned().map(Some).collect())
                         .with_protocol_enabled(true)
                         .build(),
                 )

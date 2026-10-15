@@ -61,6 +61,11 @@ async fn set_general_network_first<B: Bmc>(
     const GENERAL_NETWORK: &str = "Network";
     let general = oem_boot_order(cx, settings, BootOrderKind::General).await?;
     let mut next = general.next().unwrap_or_default().to_vec();
+    // XCC reports an empty order while the host POSTs; writing `Network`
+    // alone then would drop every other group.
+    if next.is_empty() {
+        return Ok(DriverOutcome::complete());
+    }
     match next.iter().position(|entry| entry == GENERAL_NETWORK) {
         Some(0) => return Ok(DriverOutcome::complete()),
         Some(position) => next.swap(0, position),

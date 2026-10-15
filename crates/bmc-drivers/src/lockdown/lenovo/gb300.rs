@@ -13,7 +13,9 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use serde_json::Value;
 
-use crate::lockdown::support::{RedfishLockdownExt as _, signal, state_from_signals, status};
+use crate::lockdown::support::{
+    RedfishLockdownExt as _, reported, signal, state_from_signals, status,
+};
 use crate::resources::RedfishResourcesExt as _;
 
 /// A BIOS attribute whose two values mean locked and unlocked.
@@ -56,9 +58,9 @@ impl<B: Bmc> Lockdown<B> for Gb300Lockdown {
         let (bmc, interface) = cx.host_interface_state().await?;
         let mut message: Vec<String> = values
             .iter()
-            .map(|(key, value)| format!("{key}={value:?}"))
+            .map(|(key, value)| format!("{key}={}", reported(value)))
             .collect();
-        message.push(format!("host_interface={interface:?}"));
+        message.push(format!("host_interface={}", reported(&interface)));
         Ok(status(
             state_from_signals(&signals),
             bmc,

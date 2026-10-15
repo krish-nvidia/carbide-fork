@@ -40,13 +40,20 @@ carbide-uuid = { path = "../uuid" }
 clap = { workspace = true }
 colored = { workspace = true }
 futures = { workspace = true, features = ["std"] }
+libc = { workspace = true }
 mac_address = { workspace = true }
 nv-redfish = { features = [
     "accounts",
+    "bios",
     "bmc-http",
+    "boot-options",
     "chassis",
     "computer-systems",
+    "manager-network-protocol",
     "managers",
+    "network-adapters",
+    "oem-hpe",
+    "oem-nvidia",
     "update-service",
 ], workspace = true }
 rand = { workspace = true }

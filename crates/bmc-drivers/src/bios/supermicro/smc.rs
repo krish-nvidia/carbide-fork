@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::bios::attributes::AttributeValue::{self, Bool, String as Text};
 use crate::bios::standard::StandardBios;
-use crate::bios::support::{compare, with_profile};
+use crate::bios::support::{RedfishBiosExt as _, compare, with_profile};
 use crate::resources::{RedfishResourcesExt as _, bios_attributes, bios_update};
 
 /// Supermicro hosts: the BIOS appends a registry suffix to every attribute
@@ -43,6 +43,23 @@ const ATTRIBUTES: &[(&str, AttributeValue)] = &[
 /// Boards spell this attribute's values either `Enabled`/`Disabled` or
 /// `Enable`/`Disable`; it is enabled in the spelling the board uses.
 const SECURITY_DEVICE_SUPPORT: &str = "SecurityDeviceSupport";
+
+/// The UEFI administrator password's `PasswordName`, before any registry
+/// suffix.
+const UEFI_PASSWORD_NAME: &str = "AdministratorPassword";
+
+/// The `PasswordName` the board takes among the BIOS `attributes` names: the
+/// attribute carrying the password, with the registry suffix some firmware
+/// appends and requires (as in `AdministratorPassword_00B7`), or the plain
+/// name when none is reported. Password attributes always read null, so the
+/// names come from the BIOS resource rather than its non-null settings.
+fn uefi_password_name<'a>(attributes: impl IntoIterator<Item = &'a String>) -> String {
+    attributes
+        .into_iter()
+        .find(|name| name.starts_with(UEFI_PASSWORD_NAME))
+        .cloned()
+        .unwrap_or_else(|| UEFI_PASSWORD_NAME.to_string())
+}
 
 /// The expected value of every reported attribute the table names.
 fn expected_settings(current: &BiosSettings) -> Result<BiosSettings, PlatformError> {
@@ -106,6 +123,22 @@ where
         ))
     }
 
+    async fn change_uefi_password(
+        &self,
+        cx: &OpCx<'_, B>,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let bios = cx.bios().await?.raw();
+        let name = uefi_password_name(
+            bios.attributes
+                .iter()
+                .flat_map(|attributes| attributes.dynamic_properties.keys()),
+        );
+        cx.change_bios_password(&name, current_password, new_password)
+            .await
+    }
+
     /// The board names its TPM pending operation `PendingOperation*`, and
     /// takes it on the current BIOS resource rather than the settings resource.
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
@@ -132,6 +165,45 @@ mod tests {
 
     const SYSTEM: &str = "/redfish/v1/Systems/1";
     const BIOS: &str = "/redfish/v1/Systems/1/Bios";
+
+    /// Some firmware refuses the plain `AdministratorPassword` and takes only
+    /// the suffixed attribute name, which reads null like every password.
+    #[tokio::test]
+    async fn the_uefi_password_name_carries_the_boards_suffix() {
+        for (attributes, expected) in [
+            (
+                json!({"AdministratorPassword_00B7": null, "PasswordCheck_00B9": "Setup"}),
+                "AdministratorPassword_00B7",
+            ),
+            (json!({"QuietBoot": false}), "AdministratorPassword"),
+        ] {
+            let bmc = Fixture::new("Supermicro", "", "1", "1")
+                .document(
+                    SYSTEM,
+                    json!({"@odata.id": SYSTEM, "Id": "1", "Name": "System", "Bios": {"@odata.id": BIOS}}),
+                )
+                .document(
+                    BIOS,
+                    json!({"@odata.id": BIOS, "Id": "BIOS", "Name": "BIOS", "Attributes": attributes,
+                           "Actions": {"#Bios.ChangePassword": {
+                               "target": format!("{BIOS}/Actions/Bios.ChangePassword")}}}),
+                )
+                .build()
+                .await;
+            let cx = bmc.cx().await;
+            SmcBios
+                .change_uefi_password(&cx, "", "new")
+                .await
+                .expect("password change is accepted");
+            let writes = bmc.writes();
+            assert_eq!(writes.len(), 1, "{attributes}");
+            assert_eq!(
+                body(&writes[0])["PasswordName"],
+                json!(expected),
+                "{attributes}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn tpm_clear_writes_the_boards_pending_operation_to_the_current_bios() {

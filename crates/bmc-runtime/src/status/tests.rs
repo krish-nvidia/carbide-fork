@@ -16,6 +16,7 @@
  */
 
 use carbide_test_support::value_scenarios;
+use nv_redfish::core::AsyncTask;
 use serde_json::{Value, json};
 
 use super::*;
@@ -134,6 +135,77 @@ fn dell_job_states_report_jobs_that_wait_for_a_host_reset() {
             json!({"JobState": "Unknown"}) => Err(()),
         }
     );
+}
+
+/// One poll's result and the status it should read as.
+type Case = (
+    &'static str,
+    Result<ModificationResponse<Value>, PlatformError>,
+    Result<OperationStatus, ()>,
+);
+
+/// A task URI can name a Task Monitor, which answers with the operation's
+/// own response once the work finishes, rather than with a Task.
+#[test]
+fn task_polls_read_monitors_and_tasks_alike() {
+    let pending = || {
+        Ok(ModificationResponse::Task(AsyncTask {
+            location: ODataId::from("/redfish/v1/TaskMonitor/1".to_string()).into(),
+            retry_after: None,
+        }))
+    };
+    let status = |polled| match task_poll(polled) {
+        Ok(TaskPoll::Status(status)) => Ok(status),
+        Ok(TaskPoll::Task(task)) => task_status(&task).map_err(|_| "unmapped task".to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let bmc_error = |status| {
+        Err(PlatformError::Bmc {
+            status,
+            message_id: None,
+            message: "refused".to_string(),
+        })
+    };
+    let cases: [Case; 6] = [
+        (
+            "monitor still running",
+            pending(),
+            Ok(OperationStatus::Running),
+        ),
+        (
+            "monitor finished without a body",
+            Ok(ModificationResponse::Empty),
+            Ok(OperationStatus::Completed),
+        ),
+        (
+            "monitor finished with Supermicro's response",
+            Ok(ModificationResponse::Entity(json!({
+                "Success": {"code": "Base.1.10.Success", "message": "Successfully Completed Request."}
+            }))),
+            Ok(OperationStatus::Completed),
+        ),
+        (
+            "a Task resource still running",
+            Ok(ModificationResponse::Entity(with_envelope(
+                "/redfish/v1/TaskService/Tasks/7",
+                "7",
+                json!({"TaskState": "Running"}),
+            ))),
+            Ok(OperationStatus::Running),
+        ),
+        (
+            "monitor reports the operation rejected",
+            bmc_error(400),
+            Ok(OperationStatus::Failed {
+                state: "HTTP 400".to_string(),
+                message: Some("refused".to_string()),
+            }),
+        ),
+        ("monitor gone", bmc_error(404), Err(())),
+    ];
+    for (scenario, polled, expected) in cases {
+        assert_eq!(status(polled).map_err(drop), expected, "{scenario}");
+    }
 }
 
 #[test]

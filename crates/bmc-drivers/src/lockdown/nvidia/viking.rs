@@ -12,7 +12,7 @@ use bmc_platform::{
 };
 use nv_redfish::core::Bmc;
 
-use crate::lockdown::support::{signal, state_from_signals};
+use crate::lockdown::support::{reported, signal, state_from_signals};
 use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA Viking lockdown driver; both host and BMC lockdown are BIOS attributes.
@@ -50,7 +50,11 @@ impl<B: Bmc> Lockdown<B> for VikingLockdown {
         };
         Ok(LockdownStatus {
             aggregate,
-            message: format!("kcs_interface_disable={kcs:?}, redfish_enable={redfish:?}"),
+            message: format!(
+                "kcs_interface_disable={}, redfish_enable={}",
+                reported(&kcs),
+                reported(&redfish)
+            ),
             host,
             bmc,
         })

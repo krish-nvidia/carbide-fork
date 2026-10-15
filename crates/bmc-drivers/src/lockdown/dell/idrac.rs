@@ -12,7 +12,7 @@ use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
 
 use crate::dell::{self, ManagerApplyTime};
-use crate::lockdown::support::{signal, state_from_signals};
+use crate::lockdown::support::{reported, signal, state_from_signals};
 use crate::resources::{RedfishResourcesExt as _, attribute_map, bios_update};
 
 /// Dell iDRAC lockdown driver.
@@ -145,7 +145,11 @@ where
         Ok(LockdownStatus {
             aggregate: bmc,
             message: format!(
-                "in_band={in_band:?}, uefi_variable_access={uefi:?}, system_lockdown={system_lockdown:?}, racadm={racadm:?}"
+                "in_band={}, uefi_variable_access={}, system_lockdown={}, racadm={}",
+                reported(&in_band),
+                reported(&uefi),
+                reported(&system_lockdown),
+                reported(&racadm)
             ),
             host,
             bmc,

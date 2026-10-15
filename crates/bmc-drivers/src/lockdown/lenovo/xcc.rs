@@ -17,7 +17,7 @@ use nv_redfish::oem::lenovo::computer_system::{
 use nv_redfish::oem::lenovo::manager::KcsState;
 use nv_redfish::oem::lenovo::security_service::FwRollbackState;
 
-use crate::lockdown::support::{signal, state_from_signals, status};
+use crate::lockdown::support::{reported, signal, state_from_signals, status};
 
 /// The manager Ethernet interface XCC exposes to the host OS.
 const HOST_INTERFACE_ID: &str = "ToHost";
@@ -180,7 +180,12 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
             host,
             bmc,
             format!(
-                "kcs={kcs:?}, firmware_rollback={rollback:?}, to_host={to_host:?}, front_panel={fp_mode:?}/{switching:?}"
+                "kcs={}, firmware_rollback={}, to_host={}, front_panel={}/{}",
+                reported(&kcs),
+                reported(&rollback),
+                reported(&to_host),
+                reported(&fp_mode),
+                reported(&switching)
             ),
         ))
     }

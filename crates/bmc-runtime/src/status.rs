@@ -19,14 +19,15 @@
 
 use std::sync::Arc;
 
-use bmc_platform::{ClassifyBmcError, Fetched, OperationReference, OperationStatus, PlatformError};
+use bmc_platform::{ClassifyBmcError, OperationReference, OperationStatus, PlatformError};
 use nv_redfish::Bmc;
-use nv_redfish::core::{EntityTypeRef, ODataId};
+use nv_redfish::core::{EntityTypeRef, ModificationResponse, ODataId};
 use nv_redfish::oem::dell::schema::dell_job::{DellJob, JobState as DellJobState};
 use nv_redfish::schema::job::{Job, JobState};
 use nv_redfish::schema::message::Message;
 use nv_redfish::schema::task::{Task, TaskState};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::ConnectedBmc;
 
@@ -49,10 +50,17 @@ where
     ) -> Result<OperationStatus, PlatformError> {
         match reference {
             OperationReference::RedfishTask { uri, .. } => {
-                let task = self.get::<Fetched<Task>>(uri).await?;
-                match transitioned_job(&task) {
-                    Some(job) => job_status(&*self.get::<Job>(&job).await?),
-                    None => task_status(&task),
+                let polled = self
+                    .bmc()
+                    .poll::<Value>(uri)
+                    .await
+                    .map_err(ClassifyBmcError::classify);
+                match task_poll(polled)? {
+                    TaskPoll::Status(status) => Ok(status),
+                    TaskPoll::Task(task) => match transitioned_job(&task) {
+                        Some(job) => job_status(&*self.get::<Job>(&job).await?),
+                        None => task_status(&task),
+                    },
                 }
             }
             OperationReference::VendorJob { uri, .. } => {
@@ -69,6 +77,41 @@ where
             .get::<T>(uri)
             .await
             .map_err(ClassifyBmcError::classify)
+    }
+}
+
+/// What one poll of a task URI says.
+#[derive(Debug)]
+enum TaskPoll {
+    Status(OperationStatus),
+    /// A Task resource, whose state and messages say where the work stands.
+    Task(Box<Task>),
+}
+
+/// Reads one poll of a task URI, which names either a Task or a Task
+/// Monitor. A Task answers with itself throughout. A monitor answers 202
+/// while the work runs and, once it finishes, with the operation's own
+/// response, such as Supermicro's `{"Success": …}`; a 4xx then means the
+/// operation was rejected.
+fn task_poll(
+    polled: Result<ModificationResponse<Value>, PlatformError>,
+) -> Result<TaskPoll, PlatformError> {
+    match polled {
+        Ok(ModificationResponse::Task(_)) => Ok(TaskPoll::Status(OperationStatus::Running)),
+        Ok(ModificationResponse::Empty) => Ok(TaskPoll::Status(OperationStatus::Completed)),
+        Ok(ModificationResponse::Entity(body)) => Ok(match serde_json::from_value::<Task>(body) {
+            Ok(task) => TaskPoll::Task(Box::new(task)),
+            Err(_) => TaskPoll::Status(OperationStatus::Completed),
+        }),
+        Err(PlatformError::Bmc {
+            status: status @ 400..=499,
+            message,
+            ..
+        }) if status != 404 => Ok(TaskPoll::Status(OperationStatus::Failed {
+            state: format!("HTTP {status}"),
+            message: Some(message),
+        })),
+        Err(error) => Err(error),
     }
 }
 

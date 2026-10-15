@@ -106,23 +106,41 @@ fn expected_settings(
     with_profile(expected, profile)
 }
 
-/// The expected settings plus the boot order iDRAC builds at the next reset,
-/// led by `nic_slot`; boot order status checks the order that results.
-///
-/// `BootMode` is written only when reported as something other than `Uefi`:
-/// iDRAC 10 reports it read-only as `Uefi`, and status does not check it.
-fn staged_settings(current: &BiosSettings, profile: &BiosSettings, nic_slot: &str) -> BiosSettings {
+/// Whether `BootMode` must be written: only when reported as something other
+/// than `Uefi`, since iDRAC 10 reports it read-only as `Uefi`. Status does not
+/// check it.
+fn needs_uefi_boot_mode(current: &BiosSettings) -> bool {
+    current
+        .attributes
+        .get(BOOT_MODE)
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode != "Uefi")
+}
+
+/// Whether `current` already holds everything `apply` would stage. Every write
+/// queues a job iDRAC runs on the next reset, so nothing is written then; boot
+/// order setup puts the boot interface first on its own.
+fn nothing_to_stage(current: &BiosSettings, expected: &BiosSettings) -> bool {
+    compare(current, expected).is_applied && !needs_uefi_boot_mode(current)
+}
+
+/// `expected` plus the boot order iDRAC builds at the next reset, led by
+/// `nic_slot`; boot order status checks the order that results.
+fn staged_settings(
+    current: &BiosSettings,
+    expected: &BiosSettings,
+    nic_slot: &str,
+) -> BiosSettings {
     let mut writes = settings([
         ("SetBootOrderEn", json!(nic_slot)),
         ("SetBootOrderDis", json!("")),
     ]);
-    let boot_mode = current.attributes.get(BOOT_MODE).and_then(Value::as_str);
-    if boot_mode.is_some_and(|mode| mode != "Uefi") {
+    if needs_uefi_boot_mode(current) {
         writes
             .attributes
             .insert(BOOT_MODE.to_string(), json!("Uefi"));
     }
-    with_profile(writes, &expected_settings(current, profile, nic_slot))
+    with_profile(writes, expected)
 }
 
 /// Changes the UEFI password inside a configuration job, which iDRAC requires
@@ -150,7 +168,8 @@ where
         &StandardBios
     }
 
-    /// Stages every setting as one configuration job.
+    /// Stages every setting as one configuration job, unless all are
+    /// already in effect.
     async fn apply(
         &self,
         cx: &OpCx<'_, B>,
@@ -159,7 +178,11 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         let nic_slot = dell::nic_slot(cx, boot_interface).await?;
         let current = cx.current_bios_settings().await?;
-        let writes = staged_settings(&current, profile, &nic_slot);
+        let expected = expected_settings(&current, profile, &nic_slot);
+        if nothing_to_stage(&current, &expected) {
+            return Ok(DriverOutcome::complete());
+        }
+        let writes = staged_settings(&current, &expected, &nic_slot);
         dell::stage_bios_attributes(cx, &writes.attributes).await
     }
 
@@ -223,7 +246,7 @@ mod tests {
         let current = BiosSettings::default();
         let profile = BiosSettings::default();
         let expected = expected_settings(&current, &profile, "NIC.Slot.7-1-1");
-        let staged = staged_settings(&current, &profile, "NIC.Slot.7-1-1");
+        let staged = staged_settings(&current, &expected, "NIC.Slot.7-1-1");
 
         assert_eq!(
             expected.attributes["HttpDev1Interface"],
@@ -253,6 +276,29 @@ mod tests {
             "iDRAC 9 in legacy mode" { Some("Bios") => Some(json!("Uefi")) }
             "already Uefi, read-only on iDRAC 10" { Some("Uefi") => None }
             "not reported" { None => None }
+        );
+    }
+
+    /// Every write queues a job, so a BIOS already set up must not be written.
+    #[test]
+    fn only_a_bios_needing_changes_is_staged() {
+        let in_effect = expected_settings(
+            &BiosSettings::default(),
+            &BiosSettings::default(),
+            "NIC.Slot.7-1-1",
+        );
+        let with = |name: &str, value: &str| {
+            let mut current = in_effect.clone();
+            current.attributes.insert(name.to_string(), json!(value));
+            current
+        };
+        value_scenarios!(run = |current: BiosSettings| {
+            let expected = expected_settings(&current, &BiosSettings::default(), "NIC.Slot.7-1-1");
+            nothing_to_stage(&current, &expected)
+        };
+            "every setting in effect" { in_effect.clone() => true }
+            "a setting differs" { with("BootSeqRetry", "Disabled") => false }
+            "in effect but legacy boot mode" { with(BOOT_MODE, "Bios") => false }
         );
     }
 

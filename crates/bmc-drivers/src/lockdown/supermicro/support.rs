@@ -8,7 +8,9 @@
 
 use bmc_platform::{DriverOutcome, LockdownScope, OpCx, PlatformError, Quirk};
 use nv_redfish::core::Bmc;
+use nv_redfish::host_interface::{HostInterface, HostInterfaceUpdate};
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
+use nv_redfish::schema::host_interface::CredentialBootstrappingUpdate;
 
 use crate::lockdown::support::{RedfishLockdownExt as _, Signal, signal};
 
@@ -77,16 +79,52 @@ pub(super) async fn host_interface_enabled<B: Bmc>(
         .and_then(|interface| interface.interface_enabled()))
 }
 
-/// Enables or disables every host interface.
+/// Enables or disables every host interface. The BMC refuses to disable an
+/// interface while its credential bootstrapping is on, so that is turned off
+/// first; enabling the interface leaves it off.
 pub(super) async fn set_host_interfaces<B: Bmc>(
     cx: &OpCx<'_, B>,
     enabled: bool,
 ) -> Result<DriverOutcome, PlatformError> {
     let mut outcome = DriverOutcome::complete();
+    if !enabled {
+        for interface in cx.host_interfaces().await? {
+            if credential_bootstrapping(&interface) == Some(true) {
+                outcome = outcome.merge(disable_credential_bootstrapping(cx, &interface).await?);
+            }
+        }
+    }
+    // Read again: each update is conditioned on the ETag a write changes.
     for interface in cx.host_interfaces().await? {
         outcome = outcome.merge(cx.set_host_interface(&interface, enabled).await?);
     }
     Ok(outcome)
+}
+
+fn credential_bootstrapping<B: Bmc>(interface: &HostInterface<B>) -> Option<bool> {
+    interface
+        .raw()
+        .credential_bootstrapping
+        .as_ref()
+        .and_then(|bootstrapping| bootstrapping.enabled.flatten())
+}
+
+async fn disable_credential_bootstrapping<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    interface: &HostInterface<B>,
+) -> Result<DriverOutcome, PlatformError> {
+    let update = HostInterfaceUpdate::builder()
+        .with_credential_bootstrapping(
+            CredentialBootstrappingUpdate::builder()
+                .with_enabled(false)
+                .build(),
+        )
+        .build();
+    interface
+        .update(&update)
+        .await
+        .map(DriverOutcome::from)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 /// Host KCS access: the OEM `KCSInterface` privilege, or on MGX C2 the system
@@ -173,6 +211,85 @@ mod tests {
 
     const MANAGER: &str = "/redfish/v1/Managers/1";
     const HOST_INTERFACES: &str = "/redfish/v1/Managers/1/HostInterfaces";
+    const HOST_INTERFACE: &str = "/redfish/v1/Managers/1/HostInterfaces/1";
+
+    /// The BMC refuses to disable a host interface while its credential
+    /// bootstrapping is on; unlocking leaves bootstrapping off.
+    #[tokio::test]
+    async fn credential_bootstrapping_is_turned_off_before_the_host_interface() {
+        let disable_bootstrapping = json!({"CredentialBootstrapping": {"Enabled": false}});
+        let cases = [
+            (
+                "locking with bootstrapping on",
+                true,
+                LockdownDesiredState::Enabled,
+                vec![disable_bootstrapping, json!({"InterfaceEnabled": false})],
+            ),
+            (
+                "locking with bootstrapping off",
+                false,
+                LockdownDesiredState::Enabled,
+                vec![json!({"InterfaceEnabled": false})],
+            ),
+            (
+                "unlocking",
+                false,
+                LockdownDesiredState::Disabled,
+                vec![json!({"InterfaceEnabled": true})],
+            ),
+        ];
+        for (scenario, bootstrapping, desired, expected) in cases {
+            let bmc = Fixture::new("Supermicro", "", "1", "1")
+                .document(
+                    MANAGER,
+                    json!({
+                        "@odata.id": MANAGER,
+                        "Id": "1",
+                        "Name": "Manager",
+                        "HostInterfaces": {"@odata.id": HOST_INTERFACES},
+                    }),
+                )
+                .document(
+                    HOST_INTERFACES,
+                    json!({
+                        "@odata.id": HOST_INTERFACES,
+                        "@odata.type": "#HostInterfaceCollection.HostInterfaceCollection",
+                        "Name": "Host Interface Collection",
+                        "Members": [{"@odata.id": HOST_INTERFACE}],
+                    }),
+                )
+                .document(
+                    HOST_INTERFACE,
+                    json!({
+                        "@odata.id": HOST_INTERFACE,
+                        "Id": "1",
+                        "Name": "Host Interface",
+                        "InterfaceEnabled": desired == LockdownDesiredState::Enabled,
+                        "CredentialBootstrapping": {"Enabled": bootstrapping, "EnableAfterReset": true},
+                    }),
+                )
+                .build()
+                .await;
+            let quirks = BTreeSet::from([Quirk::SupermicroMgxC2]);
+            let cx = bmc.cx().await.with_quirks(&quirks);
+
+            SmcLockdown
+                .set(&cx, LockdownScope::Host, desired)
+                .await
+                .expect("host lockdown is set");
+
+            let writes = bmc.writes();
+            assert!(
+                writes.iter().all(|request| path(request) == HOST_INTERFACE),
+                "{scenario}"
+            );
+            assert_eq!(
+                writes.iter().map(body).collect::<Vec<_>>(),
+                expected,
+                "{scenario}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn mgx_c2_host_kcs_is_the_system_ipmi_host_interface_on_supporting_firmware() {

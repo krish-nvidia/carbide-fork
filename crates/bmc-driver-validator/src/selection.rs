@@ -50,12 +50,6 @@ impl Selection {
         identity: &PlatformIdentity,
         overrides: &[String],
     ) -> Result<Self, String> {
-        let defaults = Drivers::default_map();
-        let built_in_rules = built_in_rules();
-        let built_in = built_in_rules
-            .resolve(identity, &defaults)
-            .map_err(|error| format!("selection failed: {error}"))?;
-
         let mut pins = BTreeMap::new();
         for value in overrides {
             let (capability, selection) = parse_override(value)?;
@@ -63,6 +57,24 @@ impl Selection {
                 return Err(format!("--driver pins {capability} more than once"));
             }
         }
+        Self::with_pins(identity, pins)
+    }
+
+    /// Whether `identity` resolves, with the same overrides, to the same
+    /// drivers, quirks, and rules hash.
+    pub(crate) fn resolves_same(&self, identity: &PlatformIdentity) -> Result<bool, String> {
+        Ok(Self::with_pins(identity, self.overrides.clone())?.resolved == self.resolved)
+    }
+
+    fn with_pins(
+        identity: &PlatformIdentity,
+        pins: BTreeMap<Capability, CapabilitySelection>,
+    ) -> Result<Self, String> {
+        let defaults = Drivers::default_map();
+        let built_in_rules = built_in_rules();
+        let built_in = built_in_rules
+            .resolve(identity, &defaults)
+            .map_err(|error| format!("selection failed: {error}"))?;
         let rules = if pins.is_empty() {
             built_in_rules.clone()
         } else {
