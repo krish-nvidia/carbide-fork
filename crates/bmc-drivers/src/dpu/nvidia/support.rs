@@ -123,6 +123,32 @@ pub(super) async fn enable_bmc_rshim<B: Bmc>(
         .map_err(|error| cx.map_redfish_error(error))
 }
 
+/// The BMC side of rshim, kept on the resource the manager's `Oem.Nvidia`
+/// object links; `None` when the manager has no such resource.
+pub(super) async fn bmc_rshim_state<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<Option<RshimState>, PlatformError> {
+    let Some(oem) = cx
+        .manager()
+        .await?
+        .oem_nvidia()
+        .map_err(|error| cx.map_redfish_error(error))?
+    else {
+        return Ok(None);
+    };
+    let enabled = oem
+        .bmc_rshim_enabled()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?;
+    Ok(enabled.map(|enabled| {
+        if enabled {
+            RshimState::Enabled
+        } else {
+            RshimState::Disabled
+        }
+    }))
+}
+
 /// Writes `attributes` to the BIOS pending settings. Firmware with
 /// [`Quirk::BlueFieldNicModeBiosError`] cannot read the BIOS in NIC mode, so
 /// there the write goes to the system's `Bios/Settings` without reading the
@@ -154,16 +180,52 @@ pub(super) async fn write_bios<B: Bmc>(
         .map_err(|error| cx.map_bmc_error(error))
 }
 
+fn host_privilege_value(level: HostPrivilegeLevel) -> &'static str {
+    match level {
+        HostPrivilegeLevel::Privileged => "Privileged",
+        HostPrivilegeLevel::Restricted => "Restricted",
+    }
+}
+
+/// Reads the host privilege level from BIOS under either spelling; `None`
+/// in NIC mode on firmware with [`Quirk::BlueFieldNicModeBiosError`], which
+/// cannot serve the BIOS then.
+pub(super) async fn bios_host_privilege_level<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<Option<HostPrivilegeLevel>, PlatformError> {
+    let bios = match cx.bios().await {
+        Ok(bios) => bios,
+        Err(error)
+            if cx.has_quirk(Quirk::BlueFieldNicModeBiosError)
+                && bios_error_reports_nic_mode(&error) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let value = [HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES]
+        .into_iter()
+        .find_map(|name| {
+            bios.attribute(name)
+                .and_then(|value| value.str_value().map(str::to_owned))
+        });
+    Ok(value.and_then(|value| {
+        [
+            HostPrivilegeLevel::Privileged,
+            HostPrivilegeLevel::Restricted,
+        ]
+        .into_iter()
+        .find(|level| host_privilege_value(*level) == value)
+    }))
+}
+
 /// Stages the host privilege level in BIOS under the spelling the firmware
 /// uses, retrying with the other spelling when the BMC rejects it.
 pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
     cx: &OpCx<'_, B>,
     level: HostPrivilegeLevel,
 ) -> Result<DriverOutcome, PlatformError> {
-    let value = match level {
-        HostPrivilegeLevel::Privileged => "Privileged",
-        HostPrivilegeLevel::Restricted => "Restricted",
-    };
+    let value = host_privilege_value(level);
     let (key, other_key) = if cx.has_quirk(Quirk::BlueFieldSpacedBiosAttributeNames) {
         (HOST_PRIVILEGE_LEVEL_WITH_SPACES, HOST_PRIVILEGE_LEVEL)
     } else {

@@ -33,7 +33,6 @@ macro_rules! run {
 }
 
 mod apply;
-mod observe;
 mod ops;
 mod reads;
 mod validate;
@@ -62,8 +61,6 @@ use crate::selection::Selection;
 
 /// What the operator supplied for checks to use.
 pub(crate) struct Inputs {
-    /// Whether IPMI is attached to the connected BMC.
-    pub(crate) ipmi: bool,
     /// MAC address of the interface boot order puts first.
     pub(crate) boot_mac: Option<MacAddress>,
     pub(crate) bios_profile: BiosSettings,
@@ -456,8 +453,8 @@ async fn run_one(ctx: &Ctx, planned: Planned) -> CheckResult {
 
 /// Runs `check`, running it again every [`RETRY_INTERVAL`] while it ends
 /// unreachable, until [`UNREACHABLE_TIMEOUT`] passes, unless it is not safe
-/// to repeat. The check's own call is the probe: iDRAC accepts logins well
-/// before its other services answer.
+/// to repeat. The check's own call is the probe: a BMC can accept logins
+/// well before its other services answer.
 async fn run_until_answered(ctx: &Ctx, check: &Check, started: Instant) -> Outcome {
     const UNREACHABLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
     const RETRY_INTERVAL: Duration = Duration::from_secs(30);

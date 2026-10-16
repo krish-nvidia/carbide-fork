@@ -73,7 +73,7 @@ pub(crate) async fn take(
         ));
     }
     let bmc = factory
-        .connect(selection.endpoint(factory.address(), identity)?, false)
+        .connect(selection.endpoint(factory.address(), identity)?)
         .await?;
     let accounts = bmc.accounts().map_err(|error| error.to_string())?;
     let started = Instant::now();

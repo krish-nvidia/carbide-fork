@@ -19,8 +19,9 @@
 //!
 //! BIOS-backed settings take effect on a host reset, so each settings check
 //! applies, restarts the host once, waits for the BMC's job, and then polls
-//! the driver's status until the settings are in effect. iDRAC drops every
-//! queued job on each BIOS write, so settings checks do not share a restart.
+//! the driver's status until the settings are in effect. A BMC can drop
+//! queued BIOS work on each BIOS write, so settings checks do not share a
+//! restart.
 //! Power, lockdown, and account checks restore what they change.
 
 use std::collections::BTreeSet;

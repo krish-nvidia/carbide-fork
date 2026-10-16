@@ -72,6 +72,10 @@ fn bluefield3(bmc_firmware: &str) -> Fixture {
             }),
         )
         .document(
+            BF3_MANAGER_OEM,
+            json!({"BmcRShim": {"BmcRShimEnabled": false}}),
+        )
+        .document(
             "/redfish/v1/UpdateService",
             json!({
                 "@odata.id": "/redfish/v1/UpdateService",
@@ -203,6 +207,69 @@ fn bluefield4() -> Fixture {
         )
 }
 
+/// BlueField-3 status reads BMC rshim from the resource the manager's
+/// `Oem.Nvidia` links and host privilege from BIOS under either spelling,
+/// which is unreported where the BIOS cannot be read in NIC mode.
+#[tokio::test]
+async fn bluefield3_status_reads_bmc_rshim_and_host_privilege() {
+    let bf3 = |bios: Value, bmc_rshim: bool| {
+        bluefield3("BF-26.04-8")
+            .document(
+                BF3_BIOS,
+                json!({"@odata.id": BF3_BIOS, "Id": "BIOS", "Name": "BIOS", "Attributes": bios}),
+            )
+            .document(
+                BF3_MANAGER_OEM,
+                json!({"BmcRShim": {"BmcRShimEnabled": bmc_rshim}}),
+            )
+    };
+    let cases = [
+        (
+            "unspaced BIOS name",
+            bf3(json!({"HostPrivilegeLevel": "Restricted"}), true),
+            BTreeSet::new(),
+            Some(RshimState::Enabled),
+            Some(HostPrivilegeLevel::Restricted),
+        ),
+        (
+            "spaced BIOS name",
+            bf3(json!({"Host Privilege Level": "Privileged"}), false),
+            BTreeSet::new(),
+            Some(RshimState::Disabled),
+            Some(HostPrivilegeLevel::Privileged),
+        ),
+        (
+            "unreported",
+            bf3(json!({}), true),
+            BTreeSet::new(),
+            Some(RshimState::Enabled),
+            None,
+        ),
+        (
+            "BIOS unreadable in NIC mode",
+            bluefield3("BF-24.04-5").respond(
+                Method::GET,
+                BF3_BIOS,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some(json!({"Attributes": {"NicMode": "NicMode"}})),
+            ),
+            BTreeSet::from([Quirk::BlueFieldNicModeBiosError]),
+            Some(RshimState::Disabled),
+            None,
+        ),
+    ];
+    for (name, fixture, quirks, bmc_rshim, host_privilege) in cases {
+        let bmc = fixture.build().await;
+        let cx = bmc.cx().await.with_quirks(&quirks);
+        let status = BlueField3Dpu.status(&cx).await.expect(name);
+        assert_eq!(
+            (status.bmc_rshim, status.host_privilege),
+            (bmc_rshim, host_privilege),
+            "{name}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn bluefield3_status_reads_the_mode_only_once_firmware_supports_it() {
     let cases = [
@@ -221,6 +288,8 @@ async fn bluefield3_status_reads_the_mode_only_once_firmware_supports_it() {
             Ok(DpuStatus {
                 nic_mode,
                 host_rshim: Some(RshimState::Disabled),
+                bmc_rshim: Some(RshimState::Disabled),
+                host_privilege: Some(HostPrivilegeLevel::Privileged),
             }),
             "{name}"
         );
@@ -256,6 +325,8 @@ async fn bluefield3_avoids_the_oem_resource_on_firmware_where_it_times_out() {
         Ok(DpuStatus {
             nic_mode: Some(NicMode::Nic),
             host_rshim: None,
+            bmc_rshim: Some(RshimState::Disabled),
+            host_privilege: None,
         })
     );
     assert_eq!(
@@ -472,6 +543,8 @@ async fn bluefield4_status_reads_the_network_adapter() {
         Ok(DpuStatus {
             nic_mode: Some(NicMode::Dpu),
             host_rshim: None,
+            bmc_rshim: None,
+            host_privilege: Some(HostPrivilegeLevel::Restricted),
         })
     );
 }

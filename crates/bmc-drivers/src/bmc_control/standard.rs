@@ -5,9 +5,12 @@
 
 //! Standard Redfish manager control.
 
+use std::time::SystemTime;
+
 use async_trait::async_trait;
 use bmc_platform::{
     BmcControl, DriverOutcome, ManagerSettings, ManagerSettingsStatus, OpCx, PlatformError,
+    TimeStatus,
 };
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::manager::{ManagerNetworkProtocolUpdate, ManagerResetToDefaultsType};
@@ -71,6 +74,32 @@ where
         Ok(DriverOutcome::complete())
     }
 
+    async fn time_status(&self, cx: &OpCx<'_, B>) -> Result<TimeStatus, PlatformError> {
+        let manager = cx.manager().await?;
+        let protocol = manager
+            .network_protocol()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?
+            .map(|protocol| protocol.raw());
+        let ntp = protocol.as_ref().and_then(|protocol| protocol.ntp.as_ref());
+        let raw = manager.raw();
+        Ok(TimeStatus {
+            ntp_enabled: ntp.and_then(|ntp| ntp.protocol_enabled.flatten()),
+            ntp_servers: ntp
+                .and_then(|ntp| ntp.ntp_servers.clone().flatten())
+                .unwrap_or_default()
+                .into_iter()
+                .flatten()
+                .filter(|server| !server.is_empty())
+                .collect(),
+            now: raw
+                .date_time
+                .flatten()
+                .and_then(|now| SystemTime::try_from(now).ok()),
+            utc_offset: raw.date_time_local_offset.clone().flatten(),
+        })
+    }
+
     async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
         cx.manager()
             .await?
@@ -124,5 +153,46 @@ where
             is_applied: true,
             differences: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::Fixture;
+
+    /// NTP comes from NetworkProtocol without its null and empty slots, and
+    /// the clock from the manager.
+    #[tokio::test]
+    async fn time_status_reads_network_protocol_and_the_manager_clock() {
+        const PROTOCOL: &str = "/redfish/v1/Managers/1/NetworkProtocol";
+        let bmc = Fixture::new("Contoso", "", "1", "1")
+            .document(
+                "/redfish/v1/Managers/1",
+                json!({"@odata.id": "/redfish/v1/Managers/1", "Id": "1", "Name": "Manager",
+                       "DateTime": "2026-01-01T00:00:00+00:00", "DateTimeLocalOffset": "+00:00",
+                       "NetworkProtocol": {"@odata.id": PROTOCOL}}),
+            )
+            .document(
+                PROTOCOL,
+                json!({"@odata.id": PROTOCOL, "Id": "NetworkProtocol", "Name": "Network Protocol",
+                       "NTP": {"ProtocolEnabled": true, "NTPServers": ["10.0.0.1", null, ""]}}),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+        assert_eq!(
+            StandardBmcControl.time_status(&cx).await,
+            Ok(TimeStatus {
+                ntp_enabled: Some(true),
+                ntp_servers: vec!["10.0.0.1".to_string()],
+                now: Some(UNIX_EPOCH + Duration::from_secs(1_767_225_600)),
+                utc_offset: Some("+00:00".to_string()),
+            })
+        );
     }
 }

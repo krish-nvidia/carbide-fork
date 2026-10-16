@@ -29,7 +29,7 @@ use bmc_platform::{
     DpuStatus, DriverOutcome, EvidenceProgress, Firmware, FirmwareUpload, HostPrivilegeLevel,
     Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, ManagerSettings,
     ManagerSettingsStatus, NicMode, OperationReference, PlatformError, Power, RshimState,
-    SecureBoot, SecureBootStatus, Storage,
+    SecureBoot, SecureBootStatus, Storage, TimeStatus,
 };
 use nv_redfish::Bmc;
 use nv_redfish::account::ManagerAccountCreate;
@@ -368,6 +368,11 @@ where
         self.driver
             .set_utc_timezone(&self.bmc.operation_context())
             .await
+    }
+
+    /// See [`BmcControl::time_status`].
+    pub async fn time_status(&self) -> Result<TimeStatus, PlatformError> {
+        self.driver.time_status(&self.bmc.operation_context()).await
     }
 
     /// See [`BmcControl::ipmi_over_lan_enabled`].

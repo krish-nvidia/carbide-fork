@@ -41,7 +41,7 @@ pub use capabilities::{
     Firmware, FirmwareComponent, FirmwareUpload, HostPrivilegeLevel, Lockdown,
     LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus, ManagerSettings,
     ManagerSettingsDiff, ManagerSettingsStatus, NicMode, NonEmptyBytes, NonEmptyBytesError, Power,
-    RshimState, SecureBoot, SecureBootStatus, SshShellSpec, Storage,
+    RshimState, SecureBoot, SecureBootStatus, SshShellSpec, Storage, TimeStatus,
 };
 pub use error::{AuthError, PlatformError};
 pub use identity::{

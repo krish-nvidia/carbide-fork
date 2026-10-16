@@ -12,7 +12,8 @@ use nv_redfish::core::Bmc;
 use serde_json::json;
 
 use crate::dpu::nvidia::support::{
-    bios_nic_mode, enable_bmc_rshim, nic_mode_value, set_bios_host_privilege_level, write_bios,
+    bios_host_privilege_level, bios_nic_mode, bmc_rshim_state, enable_bmc_rshim, nic_mode_value,
+    set_bios_host_privilege_level, write_bios,
 };
 use crate::resources::attribute_map;
 
@@ -30,6 +31,8 @@ impl<B: Bmc> Dpu<B> for BlueField2Dpu {
         Ok(DpuStatus {
             nic_mode,
             host_rshim: None,
+            bmc_rshim: bmc_rshim_state(cx).await?,
+            host_privilege: bios_host_privilege_level(cx).await?,
         })
     }
 

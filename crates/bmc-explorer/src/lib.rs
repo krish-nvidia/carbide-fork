@@ -19,6 +19,7 @@ mod chassis;
 mod computer_system;
 mod error;
 pub mod hw;
+mod identity;
 mod inventories;
 mod manager;
 mod network_adapter;
@@ -29,9 +30,11 @@ use std::convert::identity;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bmc_platform::PlatformIdentity;
 use chassis::ExploredChassisCollection;
 use computer_system::ExploredComputerSystem;
 pub use error::Error;
+pub use identity::service_root_identity;
 use inventories::ExploredInventories;
 use itertools::Itertools;
 use mac_address::MacAddress;
@@ -41,8 +44,9 @@ use model::site_explorer::{
     MachineSetupDiff, MachineSetupStatus,
 };
 use nv_redfish::assembly::Model as AssemblyModel;
-use nv_redfish::computer_system::BootOption;
+use nv_redfish::computer_system::{BootOption, ComputerSystem};
 use nv_redfish::core::ODataId;
+use nv_redfish::manager::Manager;
 use nv_redfish::oem::ami::config_bmc::{
     LockdownBiosSettingsChangeState, LockdownBiosUpgradeDowngradeState,
     LockoutBiosVariableWriteMode, LockoutHostControlState,
@@ -62,6 +66,29 @@ pub enum ErrorClass {
 }
 
 pub type ErrorClassifier<'a, B> = &'a (dyn Fn(&<B as Bmc>::Error) -> Option<ErrorClass> + Sync);
+
+/// Classifies errors of nv-redfish's HTTP client, for [`Config::error_classifier`].
+pub fn nv_redfish_error_class(
+    error: &nv_redfish::bmc_http::reqwest::BmcError,
+) -> Option<ErrorClass> {
+    match error {
+        nv_redfish::bmc_http::reqwest::BmcError::InvalidResponse { status, .. } => {
+            match status.as_u16() {
+                404 => Some(ErrorClass::NotFound),
+                500 => Some(ErrorClass::InternalServerError),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// What exploring an endpoint found: the report site-explorer stores, and
+/// the identity driver selection matches on, projected from the same reads.
+pub struct Exploration {
+    pub report: EndpointExplorationReport,
+    pub identity: PlatformIdentity,
+}
 
 fn is_bluefield_system_id(id: &str) -> bool {
     matches!(id, "Bluefield" | "BlueField_0")
@@ -124,9 +151,18 @@ fn build_chassis_explore_config<B: Bmc>(root: &ServiceRoot<B>) -> chassis::Confi
 }
 
 pub async fn nv_generate_exploration_report<B: Bmc>(
-    mut root: Arc<ServiceRoot<B>>,
+    root: Arc<ServiceRoot<B>>,
     config: &Config<'_, B>,
 ) -> Result<EndpointExplorationReport, Error<B>> {
+    nv_explore(root, config)
+        .await
+        .map(|exploration| exploration.report)
+}
+
+pub async fn nv_explore<B: Bmc>(
+    mut root: Arc<ServiceRoot<B>>,
+    config: &Config<'_, B>,
+) -> Result<Exploration, Error<B>> {
     let chassis_explore_config = build_chassis_explore_config(&root);
     let mut explored_chassis =
         ExploredChassisCollection::explore(&root, &chassis_explore_config).await?;
@@ -144,33 +180,8 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
         root = root.as_ref().clone().restrict_expand().into();
     }
 
-    let mut systems_iter = root
-        .systems()
-        .await
-        .map_err(Error::nv_redfish("systems"))?
-        .ok_or_else(Error::bmc_not_provided("systems"))?
-        .members()
-        .await
-        .map_err(Error::nv_redfish("systems members"))?
-        .into_iter();
-
-    let first_system = systems_iter
-        .next()
-        .ok_or_else(Error::bmc_not_provided("at least one computer system"))?;
-    let other_system_with_bios = systems_iter.find(|system| system.raw().bios.is_some());
-    let system = other_system_with_bios.unwrap_or(first_system);
-
-    let manager = root
-        .managers()
-        .await
-        .map_err(Error::nv_redfish("managers"))?
-        .ok_or_else(Error::bmc_not_provided("managers"))?
-        .members()
-        .await
-        .map_err(Error::nv_redfish("managers members"))?
-        .into_iter()
-        .next()
-        .ok_or_else(Error::bmc_not_provided("at least one manager"))?;
+    let system = selected_system(&root).await?;
+    let manager = selected_manager(&root).await?;
 
     let is_bluefield_system = is_bluefield_system_id(&system.raw().id);
     let system_explore_config = computer_system::Config {
@@ -181,7 +192,11 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
     };
     let explored_system = ExploredComputerSystem::explore(system, &system_explore_config).await?;
 
-    let hw_type = hw_type(&root, &explored_system, &explored_chassis);
+    let hw_type = hw_type(
+        &root,
+        Some(&explored_system.system.raw().id),
+        &explored_chassis,
+    );
     let linked_chassis_ids = explored_system.linked_chassis_ids();
     let has_system_mac_address = explored_system.has_usable_ethernet_mac_address();
     if should_use_network_adapter_port_fallback(
@@ -305,11 +320,19 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
             evaluated_boot_interface: None,
         });
 
+    let identity = identity::project(
+        &root,
+        Some(&explored_system.system),
+        &explored_manager.manager,
+        &explored_chassis,
+        &explored_inventories,
+        hw_type,
+    );
     let system = explored_system.to_model(hw_type, &explored_chassis, &pcie_devices)?;
     let manager = explored_manager.to_model()?;
     let service = explored_inventories.to_model(hw_type);
 
-    Ok(EndpointExplorationReport {
+    let report = EndpointExplorationReport {
         endpoint_type: EndpointType::Bmc,
         last_exploration_error: None,
         last_exploration_latency: None,
@@ -331,7 +354,8 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
         topology_id: None,
         revision_id: None,
         remediation_error: None,
-    })
+    };
+    Ok(Exploration { report, identity })
 }
 
 /// `should_use_network_adapter_port_fallback` limits supplemental host MAC
@@ -367,7 +391,7 @@ async fn build_delta_powershelf_report<B: Bmc>(
     root: &ServiceRoot<B>,
     explored_chassis: ExploredChassisCollection<B>,
     explored_inventories: ExploredInventories<B>,
-) -> Result<EndpointExplorationReport, Error<B>> {
+) -> Result<Exploration, Error<B>> {
     let hw_type = hw::HwType::DeltaPowerShelf;
 
     let manager = root
@@ -383,9 +407,17 @@ async fn build_delta_powershelf_report<B: Bmc>(
         .ok_or_else(Error::bmc_not_provided("at least one manager"))?;
     let explored_manager = ExploredManager::explore(manager, &manager::Config::default()).await?;
 
+    let identity = identity::project(
+        root,
+        None,
+        &explored_manager.manager,
+        &explored_chassis,
+        &explored_inventories,
+        Some(hw_type),
+    );
     let system = explored_chassis.synthesized_powershelf_system();
 
-    Ok(EndpointExplorationReport {
+    let report = EndpointExplorationReport {
         endpoint_type: EndpointType::Bmc,
         last_exploration_error: None,
         last_exploration_latency: None,
@@ -411,15 +443,53 @@ async fn build_delta_powershelf_report<B: Bmc>(
         topology_id: None,
         revision_id: None,
         remediation_error: None,
-    })
+    };
+    Ok(Exploration { report, identity })
+}
+
+/// The ComputerSystem exploration reports on: the first, unless a later one
+/// has a BIOS.
+pub(crate) async fn selected_system<B: Bmc>(
+    root: &ServiceRoot<B>,
+) -> Result<ComputerSystem<B>, Error<B>> {
+    let mut systems = root
+        .systems()
+        .await
+        .map_err(Error::nv_redfish("systems"))?
+        .ok_or_else(Error::bmc_not_provided("systems"))?
+        .members()
+        .await
+        .map_err(Error::nv_redfish("systems members"))?
+        .into_iter();
+    let first = systems
+        .next()
+        .ok_or_else(Error::bmc_not_provided("at least one computer system"))?;
+    Ok(systems
+        .find(|system| system.raw().bios.is_some())
+        .unwrap_or(first))
+}
+
+/// The Manager exploration reports on: the first.
+pub(crate) async fn selected_manager<B: Bmc>(
+    root: &ServiceRoot<B>,
+) -> Result<Manager<B>, Error<B>> {
+    root.managers()
+        .await
+        .map_err(Error::nv_redfish("managers"))?
+        .ok_or_else(Error::bmc_not_provided("managers"))?
+        .members()
+        .await
+        .map_err(Error::nv_redfish("managers members"))?
+        .into_iter()
+        .next()
+        .ok_or_else(Error::bmc_not_provided("at least one manager"))
 }
 
 pub(crate) fn hw_type<B: Bmc>(
     root: &nv_redfish::ServiceRoot<B>,
-    explored_system: &ExploredComputerSystem<B>,
+    system_id: Option<&str>,
     explored_chassis: &ExploredChassisCollection<B>,
 ) -> Option<hw::HwType> {
-    let system = &explored_system.system;
     let oem_id = root
         .root
         .oem
@@ -455,14 +525,16 @@ pub(crate) fn hw_type<B: Bmc>(
         .map(|v| v.into_inner())
         .or_else(|| (oem_id == Some("Supermicro")).then_some("Supermicro"))
         .and_then(|vendor_id| match vendor_id {
-            "AMI" if system.raw().id == "DGX" => Some(hw::HwType::Viking),
+            "AMI" if system_id == Some("DGX") => Some(hw::HwType::Viking),
             "AMI" => Some(hw::HwType::Ami),
             "Dell" => Some(hw::HwType::Dell),
             "Lenovo" if oem_id == Some("Ami") => Some(hw::HwType::LenovoAmi),
             "Lenovo" if oem_id != Some("Ami") => Some(hw::HwType::Lenovo),
             "Supermicro" => Some(hw::HwType::Supermicro),
             "HPE" => Some(hw::HwType::Hpe),
-            "Nvidia" if is_bluefield_system_id(&system.raw().id) => Some(hw::HwType::Bluefield),
+            "Nvidia" if system_id.is_some_and(is_bluefield_system_id) => {
+                Some(hw::HwType::Bluefield)
+            }
             "NVIDIA" if root.product() == Some(Product::new("VR NVL72")) => {
                 Some(hw::HwType::VeraRubin)
             }

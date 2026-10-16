@@ -31,6 +31,7 @@ path = "src/main.rs"
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bmc-drivers = { path = "../bmc-drivers" }
+bmc-explorer = { path = "../bmc-explorer" }
 bmc-platform = { path = "../bmc-platform" }
 bmc-runtime = { path = "../bmc-runtime" }
 carbide-ipmi = { path = "../ipmi" }
@@ -44,17 +45,9 @@ libc = { workspace = true }
 mac_address = { workspace = true }
 nv-redfish = { features = [
     "accounts",
-    "bios",
     "bmc-http",
-    "boot-options",
-    "chassis",
     "computer-systems",
-    "manager-network-protocol",
-    "managers",
-    "network-adapters",
-    "oem-hpe",
-    "oem-nvidia",
-    "update-service",
+    "secure-boot",
 ], workspace = true }
 rand = { workspace = true }
 serde = { features = ["derive"], workspace = true }

@@ -23,10 +23,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use bmc_platform::{
     AuthError, Capability, HostPrivilegeLevel, LockdownDesiredState, ManagerSettings, NicMode,
-    PlatformError, RshimState, SecureBootStatus,
+    OpCx, PlatformError, RshimState, SecureBootStatus, TimeStatus,
 };
 use bmc_runtime::ConnectedBmc;
 use carbide_redfish::nv_redfish::RedfishBmc;
+use nv_redfish::account::AccountServiceConfig;
 use nv_redfish::resource::ResetType;
 use nv_redfish::schema::computer_system::{BootSource, BootSourceOverrideEnabled, BootUpdate};
 use nv_redfish::schema::secure_boot::SecureBootUpdate;
@@ -37,7 +38,7 @@ use super::ops::{
 };
 use super::{
     Check, Checked, Ctx, Detail, Needs, Outcome, Step, apply, describe, difference_detail, failed,
-    needed, observe, reads, reported, unreadable,
+    needed, reads, reported, unreadable,
 };
 use crate::connect::Target;
 use crate::selection::Selection;
@@ -199,9 +200,35 @@ async fn account_policy(ctx: &Ctx) -> Checked {
         .map_err(failed("apply_default_policy"))?;
     ctx.trace(format!("apply_default_policy: {}", how(&outcome)));
     ops::wait_for_operations(ctx, &outcome).await?;
-    let fields = observe::lockout_policy(ctx)
-        .await
-        .map_err(unreadable("AccountService"))?;
+    let service = async {
+        ctx.target
+            .fresh_connection()
+            .await?
+            .service_root
+            .account_service(AccountServiceConfig::standard())
+            .await
+            .map_err(PlatformError::from_redfish)?
+            .ok_or_else(|| PlatformError::InvalidResponse {
+                message: "the BMC lists no AccountService".to_string(),
+            })
+    }
+    .await
+    .map_err(unreadable("AccountService"))?;
+    let raw = service.raw();
+    let fields = vec![
+        (
+            "lockout threshold".to_string(),
+            reported(&raw.account_lockout_threshold.flatten()),
+        ),
+        (
+            "lockout duration".to_string(),
+            reported(&raw.account_lockout_duration.flatten()),
+        ),
+        (
+            "counter reset after".to_string(),
+            reported(&raw.account_lockout_counter_reset_after),
+        ),
+    ];
     Ok(Detail {
         summary: format!("applied ({}); AccountService now reads", how(&outcome)),
         fields,
@@ -220,18 +247,19 @@ async fn ntp(ctx: &Ctx) -> Step {
         .map_err(failed("set_ntp_servers"))?;
     ctx.trace(format!("set_ntp_servers: {}", how(&outcome)));
     ops::wait_for_operations(ctx, &outcome).await?;
+    let control = ctx.bmc.bmc_control()?;
     let listed = poll(
         ctx,
         IMMEDIATE_TIMEOUT,
         QUICK_POLL_INTERVAL,
-        async || match observe::ntp(ctx).await {
-            Ok(ntp) if ntp.lists(servers) => Attempt::Done(ntp.servers),
-            Ok(ntp) => Attempt::NotYet(format!(
+        async || match control.time_status().await {
+            Ok(status) if lists_ntp_servers(&status, servers) => Attempt::Done(status.ntp_servers),
+            Ok(status) => Attempt::NotYet(format!(
                 "NTP is enabled: {}; it lists {}",
-                reported(&ntp.enabled),
-                ntp.servers.join(", ")
+                reported(&status.ntp_enabled),
+                status.ntp_servers.join(", ")
             )),
-            Err(error) => Attempt::NotYet(describe("reading NTP", &error)),
+            Err(error) => Attempt::NotYet(describe("time_status", &error)),
         },
     )
     .await?;
@@ -239,7 +267,7 @@ async fn ntp(ctx: &Ctx) -> Step {
         ctx,
         CLOCK_TIMEOUT,
         SETTLE_POLL_INTERVAL,
-        async || match observe::clock(ctx).await.map(|clock| clock.now) {
+        async || match control.time_status().await.map(|status| status.now) {
             Ok(None) => Attempt::Done(None),
             Ok(Some(now)) => {
                 let skew = now
@@ -251,7 +279,7 @@ async fn ntp(ctx: &Ctx) -> Step {
                     Attempt::NotYet(format!("the BMC clock is {}s off", skew.as_secs()))
                 }
             }
-            Err(error) => Attempt::NotYet(describe("reading Manager.DateTime", &error)),
+            Err(error) => Attempt::NotYet(describe("time_status", &error)),
         },
     )
     .await?;
@@ -266,11 +294,21 @@ async fn ntp(ctx: &Ctx) -> Step {
     ))
 }
 
+/// Whether the BMC lists the servers in `wanted` it has room for: as many as
+/// it lists entries, from the front, with NTP not switched off.
+fn lists_ntp_servers(status: &TimeStatus, wanted: &[String]) -> bool {
+    let kept = status.ntp_servers.len().min(wanted.len());
+    status.ntp_enabled != Some(false)
+        && kept > 0
+        && wanted[..kept]
+            .iter()
+            .all(|server| status.ntp_servers.contains(server))
+}
+
 async fn utc(ctx: &Ctx) -> Step {
     const UTC: &[&str] = &["+00:00", "-00:00", "Z"];
-    let outcome = ctx
-        .bmc
-        .bmc_control()?
+    let control = ctx.bmc.bmc_control()?;
+    let outcome = control
         .set_utc_timezone()
         .await
         .map_err(failed("set_utc_timezone"))?;
@@ -280,19 +318,19 @@ async fn utc(ctx: &Ctx) -> Step {
         ctx,
         IMMEDIATE_TIMEOUT,
         QUICK_POLL_INTERVAL,
-        async || match observe::clock(ctx).await.map(|clock| clock.offset) {
+        async || match control.time_status().await.map(|status| status.utc_offset) {
             Ok(None) => Attempt::Done(None),
             Ok(Some(offset)) if UTC.contains(&offset.as_str()) => Attempt::Done(Some(offset)),
-            Ok(Some(offset)) => Attempt::NotYet(format!("DateTimeLocalOffset is {offset}")),
-            Err(error) => Attempt::NotYet(describe("reading Manager.DateTimeLocalOffset", &error)),
+            Ok(Some(offset)) => Attempt::NotYet(format!("the UTC offset is {offset}")),
+            Err(error) => Attempt::NotYet(describe("time_status", &error)),
         },
     )
     .await?;
     Ok(format!(
         "{} ({})",
         match offset {
-            Some(offset) => format!("DateTimeLocalOffset is {offset}"),
-            None => "the BMC reports no DateTimeLocalOffset".to_string(),
+            Some(offset) => format!("the UTC offset is {offset}"),
+            None => "the BMC reports no UTC offset".to_string(),
         },
         how(&outcome)
     ))
@@ -315,24 +353,18 @@ async fn ipmi_over_lan(ctx: &Ctx) -> Step {
         ops::wait_for_operations(ctx, &outcome).await?;
         format!("enabled ({})", how(&outcome))
     };
-    let protocol = poll(ctx, IMMEDIATE_TIMEOUT, QUICK_POLL_INTERVAL, async || {
-        let driver = control.ipmi_over_lan_enabled().await;
-        let protocol = observe::ipmi_enabled(ctx).await;
-        match (driver, protocol) {
-            (Ok(true), Ok(protocol)) if protocol != Some(false) => Attempt::Done(protocol),
-            (Ok(driver), Ok(protocol)) => Attempt::NotYet(format!(
-                "the driver reads {driver}; NetworkProtocol.IPMI reads {}",
-                reported(&protocol)
-            )),
-            (Err(error), _) => Attempt::NotYet(describe("ipmi_over_lan_enabled", &error)),
-            (_, Err(error)) => Attempt::NotYet(describe("reading NetworkProtocol", &error)),
-        }
-    })
+    poll(
+        ctx,
+        IMMEDIATE_TIMEOUT,
+        QUICK_POLL_INTERVAL,
+        async || match control.ipmi_over_lan_enabled().await {
+            Ok(true) => Attempt::Done(()),
+            Ok(false) => Attempt::NotYet("IPMI over LAN reads disabled".to_string()),
+            Err(error) => Attempt::NotYet(describe("ipmi_over_lan_enabled", &error)),
+        },
+    )
     .await?;
-    Ok(format!(
-        "{change}; NetworkProtocol.IPMI is enabled: {}",
-        reported(&protocol)
-    ))
+    Ok(format!("{change}; IPMI over LAN reads enabled"))
 }
 
 async fn lift_lockdown(ctx: &Ctx) -> Step {
@@ -478,9 +510,8 @@ async fn reset_to_factory(ctx: &Ctx) -> Step {
 }
 
 async fn bmc_rshim(ctx: &Ctx) -> Step {
-    let outcome = ctx
-        .bmc
-        .dpu()?
+    let dpu = ctx.bmc.dpu()?;
+    let outcome = dpu
         .enable_bmc_rshim()
         .await
         .map_err(failed("enable_bmc_rshim"))?;
@@ -489,20 +520,16 @@ async fn bmc_rshim(ctx: &Ctx) -> Step {
         ctx,
         IMMEDIATE_TIMEOUT,
         QUICK_POLL_INTERVAL,
-        async || match observe::bmc_rshim_enabled(ctx).await {
-            Ok(Some(true)) => Attempt::Done(()),
-            Ok(enabled) => Attempt::NotYet(format!(
-                "Oem.Nvidia.BmcRShimEnabled reads {}",
-                reported(&enabled)
-            )),
-            Err(error) => Attempt::NotYet(describe("reading Oem.Nvidia", &error)),
+        async || match dpu.status().await {
+            Ok(status) if status.bmc_rshim == Some(RshimState::Enabled) => Attempt::Done(()),
+            Ok(status) => {
+                Attempt::NotYet(format!("BMC rshim reads {}", reported(&status.bmc_rshim)))
+            }
+            Err(error) => Attempt::NotYet(describe("status", &error)),
         },
     )
     .await?;
-    Ok(format!(
-        "Oem.Nvidia.BmcRShimEnabled reads true ({})",
-        how(&outcome)
-    ))
+    Ok(format!("BMC rshim reads Enabled ({})", how(&outcome)))
 }
 
 /// Switches the DPU to DPU mode, which takes a host power cycle.
@@ -552,7 +579,7 @@ async fn connect_host(host: &Target) -> Result<ConnectedBmc<RedfishBmc>, Outcome
     let reach = async {
         let identity = host.discover().await?;
         let selection = Selection::resolve(&identity, &[])?;
-        host.connect(selection.endpoint(host.address(), identity)?, false)
+        host.connect(selection.endpoint(host.address(), identity)?)
             .await
     };
     reach
@@ -561,28 +588,31 @@ async fn connect_host(host: &Target) -> Result<ConnectedBmc<RedfishBmc>, Outcome
 }
 
 async fn host_privilege(ctx: &Ctx) -> Step {
-    let outcome = ctx
-        .bmc
-        .dpu()?
+    let dpu = ctx.bmc.dpu()?;
+    let outcome = dpu
         .set_host_privilege_level(HostPrivilegeLevel::Restricted)
         .await
         .map_err(failed("set_host_privilege_level"))?;
     ctx.trace(format!("set_host_privilege_level: {}", how(&outcome)));
     ops::take_effect(ctx, &outcome).await?;
-    let level =
-        poll(
-            ctx,
-            SETTLE_TIMEOUT,
-            SETTLE_POLL_INTERVAL,
-            async || match observe::host_privilege(ctx).await {
-                Ok(Some(level)) if level.eq_ignore_ascii_case("Restricted") => Attempt::Done(level),
-                Ok(level) => Attempt::NotYet(format!("host privilege reads {}", reported(&level))),
-                Err(error) => Attempt::NotYet(describe("reading host privilege", &error)),
-            },
-        )
-        .await?;
+    poll(
+        ctx,
+        SETTLE_TIMEOUT,
+        SETTLE_POLL_INTERVAL,
+        async || match dpu.status().await {
+            Ok(status) if status.host_privilege == Some(HostPrivilegeLevel::Restricted) => {
+                Attempt::Done(())
+            }
+            Ok(status) => Attempt::NotYet(format!(
+                "host privilege reads {}",
+                reported(&status.host_privilege)
+            )),
+            Err(error) => Attempt::NotYet(describe("status", &error)),
+        },
+    )
+    .await?;
     Ok(format!(
-        "host privilege reads {level} after a DPU restart ({})",
+        "host privilege reads Restricted after a DPU restart ({})",
         how(&outcome)
     ))
 }
@@ -633,9 +663,32 @@ async fn secure_boot(ctx: &Ctx) -> Step {
     ))
 }
 
+/// The system's boot override as `(target, enabled)`, read over a fresh
+/// connection from the system the drivers act on.
+async fn boot_override(
+    ctx: &Ctx,
+) -> Result<(Option<BootSource>, Option<BootSourceOverrideEnabled>), PlatformError> {
+    let connection = ctx.target.fresh_connection().await?;
+    let cx = OpCx::new(
+        connection.bmc.as_ref(),
+        connection.service_root.as_ref(),
+        ctx.bmc.endpoint().identity(),
+    );
+    let raw = cx.system().await?.raw();
+    let boot = raw.boot.as_ref();
+    Ok((
+        boot.and_then(|boot| boot.boot_source_override_target.flatten()),
+        boot.and_then(|boot| boot.boot_source_override_enabled.flatten()),
+    ))
+}
+
 /// Sets a one-time UEFI HTTP boot, restarts the DPU, and checks the
 /// override was consumed.
 async fn http_boot_once(ctx: &Ctx) -> Step {
+    let http_once = (
+        Some(BootSource::UefiHttp),
+        Some(BootSourceOverrideEnabled::Once),
+    );
     let outcome = ctx
         .bmc
         .boot_order()?
@@ -653,12 +706,12 @@ async fn http_boot_once(ctx: &Ctx) -> Step {
         ctx,
         IMMEDIATE_TIMEOUT,
         QUICK_POLL_INTERVAL,
-        async || match observe::boot_override(ctx).await {
-            Ok(set) if set.is_once(BootSource::UefiHttp) => Attempt::Done(()),
-            Ok(set) => Attempt::NotYet(format!(
+        async || match boot_override(ctx).await {
+            Ok(set) if set == http_once => Attempt::Done(()),
+            Ok((target, enabled)) => Attempt::NotYet(format!(
                 "the override reads {} {}",
-                reported(&set.target),
-                reported(&set.enabled)
+                reported(&target),
+                reported(&enabled)
             )),
             Err(error) => Attempt::NotYet(describe("reading ComputerSystem.Boot", &error)),
         },
@@ -669,8 +722,8 @@ async fn http_boot_once(ctx: &Ctx) -> Step {
         ctx,
         SETTLE_TIMEOUT,
         SETTLE_POLL_INTERVAL,
-        async || match observe::boot_override(ctx).await {
-            Ok(set) if set.is_once(BootSource::UefiHttp) => {
+        async || match boot_override(ctx).await {
+            Ok(set) if set == http_once => {
                 Attempt::NotYet("the one-time override is still set".to_string())
             }
             Ok(_) => Attempt::Done(()),
@@ -710,6 +763,49 @@ async fn host_rshim(ctx: &Ctx) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A BMC with fewer slots than servers given keeps the first ones; one
+    /// still listing its placeholders has taken none.
+    #[test]
+    fn ntp_servers_are_listed_up_to_the_slots_the_bmc_has() {
+        let list = |entries: &[&str]| entries.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let wanted = list(&["10.0.0.1", "10.0.0.2", "10.0.0.3"]);
+        let cases = [
+            (
+                "every server listed",
+                list(&["10.0.0.1", "10.0.0.2", "10.0.0.3"]),
+                Some(true),
+                true,
+            ),
+            (
+                "two slots, first two kept",
+                list(&["10.0.0.1", "10.0.0.2"]),
+                None,
+                true,
+            ),
+            (
+                "factory placeholders",
+                list(&["localhost", "127.0.0.1"]),
+                Some(false),
+                false,
+            ),
+            (
+                "listed but disabled",
+                list(&["10.0.0.1", "10.0.0.2"]),
+                Some(false),
+                false,
+            ),
+            ("nothing listed", list(&[]), Some(true), false),
+        ];
+        for (scenario, ntp_servers, ntp_enabled, listed) in cases {
+            let status = TimeStatus {
+                ntp_enabled,
+                ntp_servers,
+                ..TimeStatus::default()
+            };
+            assert_eq!(lists_ntp_servers(&status, &wanted), listed, "{scenario}");
+        }
+    }
 
     /// Gating looks dependencies up by id: one on a later, absent, or
     /// repeated step would gate nothing or the wrong step.

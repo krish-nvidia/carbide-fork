@@ -32,7 +32,7 @@ use crate::chassis::ExploredChassisCollection;
 use crate::computer_system::{self, ExploredComputerSystem};
 use crate::{
     Config, Error, ErrorClass, build_chassis_explore_config, hw, hw_type, is_bluefield_system_id,
-    nv_generate_exploration_report,
+    nv_generate_exploration_report, selected_system,
 };
 
 /// Resolve the [`hw::HwType`] for an endpoint, running only the chassis +
@@ -60,21 +60,7 @@ pub async fn detect_hw_type<B: Bmc>(
         root = root.as_ref().clone().restrict_expand().into();
     }
 
-    // Mirrors nv_generate_exploration_report's system selection.
-    let mut systems_iter = root
-        .systems()
-        .await
-        .map_err(Error::nv_redfish("systems"))?
-        .ok_or_else(Error::bmc_not_provided("systems"))?
-        .members()
-        .await
-        .map_err(Error::nv_redfish("systems members"))?
-        .into_iter();
-    let first_system = systems_iter
-        .next()
-        .ok_or_else(Error::bmc_not_provided("at least one computer system"))?;
-    let other_system_with_bios = systems_iter.find(|system| system.raw().bios.is_some());
-    let system = other_system_with_bios.unwrap_or(first_system);
+    let system = selected_system(&root).await?;
 
     let is_bluefield_system = is_bluefield_system_id(&system.raw().id);
     let system_explore_config = computer_system::Config {
@@ -85,7 +71,11 @@ pub async fn detect_hw_type<B: Bmc>(
     };
     let explored_system = ExploredComputerSystem::explore(system, &system_explore_config).await?;
 
-    Ok(hw_type(&root, &explored_system, &explored_chassis))
+    Ok(hw_type(
+        &root,
+        Some(&explored_system.system.raw().id),
+        &explored_chassis,
+    ))
 }
 
 /// Fetches supplemental adapter Port data for selected chassis without running

@@ -79,8 +79,8 @@ struct Args {
 
     /// Also run checks that change the BMC and host: stage BIOS, console,
     /// and boot-order settings and restart the host to apply them (leaving
-    /// them applied, and clearing pending iDRAC jobs), cycle host power,
-    /// toggle lockdown, and create and delete a temporary account.
+    /// them applied), cycle host power, toggle lockdown, and create and
+    /// delete a temporary account.
     #[arg(long)]
     apply: bool,
 
@@ -110,11 +110,6 @@ struct Args {
     /// platform's own settings.
     #[arg(long)]
     bios_profile: Option<PathBuf>,
-
-    /// Attach IPMI through `ipmitool` on port 623, for drivers that restart
-    /// or reset over IPMI.
-    #[arg(long)]
-    ipmi: bool,
 
     /// Most read checks in flight at once.
     #[arg(long, default_value_t = 4)]
@@ -152,8 +147,8 @@ struct Args {
     )]
     uefi_password: Option<String>,
 
-    /// The UEFI setup password the firmware has now; a BlueField's is its
-    /// factory default.
+    /// The UEFI setup password the firmware has now, such as its factory
+    /// default.
     #[arg(
         long,
         env = "BMC_CURRENT_UEFI_PASSWORD",
@@ -247,7 +242,6 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
     }
 
     let inputs = Inputs {
-        ipmi: args.ipmi,
         boot_mac: args.boot_mac,
         bios_profile: bios_profile(args.bios_profile.as_deref())?,
         ntp_servers: args.ntp_servers,
@@ -287,7 +281,7 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
     }
 
     let bmc = target
-        .connect(selection.endpoint(address, identity)?, args.ipmi)
+        .connect(selection.endpoint(address, identity)?)
         .await?;
     let ctx = Ctx::new(bmc, selection, target, inputs, redactor);
     report::checks_heading();

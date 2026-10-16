@@ -14,7 +14,7 @@ use nv_redfish::oem::nvidia::network_adapter::{
     NvidiaNetworkAdapterUpdateExt, PrivilegeModeType,
 };
 
-use crate::dpu::nvidia::support::{enable_bmc_rshim, host_rshim_state};
+use crate::dpu::nvidia::support::{bmc_rshim_state, enable_bmc_rshim, host_rshim_state};
 use crate::resources::RedfishResourcesExt as _;
 
 /// BlueField-4: mode and host privileges live on the network adapter's
@@ -56,6 +56,23 @@ async fn nvidia_adapter<B: Bmc>(
     Err(PlatformError::Unsupported)
 }
 
+/// The host privilege level on the adapter's privilege configuration.
+async fn host_privilege<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    nvidia: &NvidiaNetworkAdapter<B>,
+) -> Result<Option<HostPrivilegeLevel>, PlatformError> {
+    let level = nvidia
+        .host_privilege_config()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+        .and_then(|config| config.host_privilege_level());
+    Ok(match level {
+        Some(HostPrivilegeLevelInput::Privileged) => Some(HostPrivilegeLevel::Privileged),
+        Some(HostPrivilegeLevelInput::Restricted) => Some(HostPrivilegeLevel::Restricted),
+        Some(HostPrivilegeLevelInput::UnsupportedValue) | None => None,
+    })
+}
+
 #[async_trait]
 impl<B: Bmc> Dpu<B> for BlueField4Dpu {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
@@ -75,6 +92,8 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
         Ok(DpuStatus {
             nic_mode,
             host_rshim,
+            bmc_rshim: bmc_rshim_state(cx).await?,
+            host_privilege: host_privilege(cx, &nvidia).await?,
         })
     }
 
@@ -84,15 +103,10 @@ impl<B: Bmc> Dpu<B> for BlueField4Dpu {
         mode: NicMode,
     ) -> Result<DriverOutcome, PlatformError> {
         let (adapter, nvidia) = nvidia_adapter(cx).await?;
-        if mode == NicMode::Nic {
-            let level = nvidia
-                .host_privilege_config()
-                .await
-                .map_err(|error| cx.map_redfish_error(error))?
-                .and_then(|config| config.host_privilege_level());
-            if level == Some(HostPrivilegeLevelInput::Restricted) {
-                return Err(restricted_host_privilege());
-            }
+        if mode == NicMode::Nic
+            && host_privilege(cx, &nvidia).await? == Some(HostPrivilegeLevel::Restricted)
+        {
+            return Err(restricted_host_privilege());
         }
         let mode = match mode {
             NicMode::Nic => DpuOperationMode::Nic,

@@ -14,8 +14,9 @@ use nv_redfish::oem::nvidia::computer_system::Mode;
 use serde_json::{Value, json};
 
 use crate::dpu::nvidia::support::{
-    bios_error_reports_nic_mode, bios_nic_mode, enable_bmc_rshim, host_rshim_state, nic_mode_value,
-    oem_nic_mode, set_bios_host_privilege_level, system_oem,
+    bios_error_reports_nic_mode, bios_host_privilege_level, bios_nic_mode, bmc_rshim_state,
+    enable_bmc_rshim, host_rshim_state, nic_mode_value, oem_nic_mode,
+    set_bios_host_privilege_level, system_oem,
 };
 use crate::resources::RedfishResourcesExt as _;
 
@@ -50,10 +51,13 @@ where
     B::Error: ActionError,
 {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<DpuStatus, PlatformError> {
+        let bmc_rshim = bmc_rshim_state(cx).await?;
         if cx.has_quirk(Quirk::BlueFieldNicModeUnreadable) {
             return Ok(DpuStatus {
                 nic_mode: None,
                 host_rshim: host_rshim_state(&system_oem(cx).await?),
+                bmc_rshim,
+                host_privilege: bios_host_privilege_level(cx).await?,
             });
         }
         if cx.has_quirk(Quirk::BlueFieldOemTimeoutInNicMode) {
@@ -66,6 +70,8 @@ where
                 return Ok(DpuStatus {
                     nic_mode: Some(NicMode::Nic),
                     host_rshim: None,
+                    bmc_rshim,
+                    host_privilege: None,
                 });
             }
         }
@@ -77,6 +83,8 @@ where
         Ok(DpuStatus {
             nic_mode: Some(nic_mode),
             host_rshim: host_rshim_state(&oem),
+            bmc_rshim,
+            host_privilege: bios_host_privilege_level(cx).await?,
         })
     }
 

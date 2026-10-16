@@ -21,6 +21,7 @@ mod common;
 mod dell_poweredge_r750_explore;
 mod dgx_gb300_explore;
 mod generic_supermicro_explore;
+mod identity;
 mod lenovo_gb300_explore;
 mod network_adapter_port_explore;
 mod powershelf_explore;

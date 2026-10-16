@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use bmc_platform::{
     DriverOutcome, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
-    OperationReference, OperationStatus, PlatformError, Quirk,
+    OperationReference, OperationStatus, PlatformError,
 };
 use bmc_runtime::ConnectedBmc;
 use carbide_redfish::nv_redfish::RedfishBmc;
@@ -50,12 +50,12 @@ pub(super) const IMMEDIATE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const QUICK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long a BMC that accepted an AC power cycle and started no work may
-/// take to lose power; Supermicro waits a while.
+/// take to lose power; a BMC can accept the request well before it cuts it.
 const AC_CYCLE_DOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// How long a BMC may refuse a lockdown change before taking it; Supermicro
-/// refuses to disable its host interface for minutes after earlier setup
-/// steps, and the machine controller retries until it takes.
+/// How long a BMC may refuse a lockdown change before taking it, as some do
+/// for minutes after earlier setup steps; the machine controller retries
+/// until it takes.
 const LOCKDOWN_REFUSAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const LOCKDOWN_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -190,17 +190,6 @@ pub(super) async fn wait_for_operations(ctx: &Ctx, outcome: &DriverOutcome) -> R
 /// Restarts the host through the selected power driver, or powers it on
 /// when it is off, and waits until it reports on.
 pub(super) async fn restart_host(ctx: &Ctx) -> Result<(), Outcome> {
-    let restarts_over_ipmi = ctx
-        .bmc
-        .endpoint()
-        .selection()
-        .quirks
-        .contains(&Quirk::RedfishRestartCutsDpuPower);
-    if restarts_over_ipmi && !ctx.inputs.ipmi {
-        return Err(Outcome::Skipped(
-            "this platform restarts its host over IPMI; pass --ipmi".to_string(),
-        ));
-    }
     let reset = match power_state(&ctx.bmc).await.map_err(failed("state"))? {
         Some(PowerState::Off) => ResetType::On,
         _ => ResetType::ForceRestart,
@@ -261,7 +250,7 @@ pub(super) async fn reset_bmc(ctx: &Ctx) -> Step {
     wait_for_bmc_down(ctx, BMC_DOWN_TIMEOUT).await?;
     wait_for_login(ctx, &ctx.target, BMC_UP_TIMEOUT).await?;
     let down_and_up = took(started);
-    // iDRAC accepts logins before it serves every resource discovery reads.
+    // A BMC can accept logins before it serves every resource discovery reads.
     let identity = poll(ctx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
         match ctx.target.discover().await {
             Ok(identity) => Attempt::Done(identity),
@@ -339,9 +328,8 @@ pub(super) async fn wait_for_bmc_down(ctx: &Ctx, timeout: Duration) -> Result<()
 }
 
 /// How long the BMC may take to lose power after accepting an AC power cycle
-/// that produced `outcome`. iDRAC cycles power inside a BIOS job that runs
-/// during the restart its driver issues, so the BMC drops only once that job
-/// runs.
+/// that produced `outcome`. A request that started work cuts power only once
+/// that work runs, which can wait for a host restart.
 pub(super) fn ac_cycle_down_timeout(outcome: &DriverOutcome) -> Duration {
     if outcome.references().next().is_some() {
         JOB_TIMEOUT

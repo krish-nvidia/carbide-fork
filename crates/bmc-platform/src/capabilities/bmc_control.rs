@@ -16,6 +16,7 @@
  */
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use nv_redfish::core::Bmc;
@@ -49,6 +50,19 @@ pub struct ManagerSettingsStatus {
     pub is_applied: bool,
     /// Expected attributes whose current value differs.
     pub differences: Vec<ManagerSettingsDiff>,
+}
+
+/// The manager's time configuration as the platform reports it.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimeStatus {
+    /// Whether NTP is enabled; `None` when the platform has no such switch.
+    pub ntp_enabled: Option<bool>,
+    /// The NTP servers the BMC lists, in order, without empty slots.
+    pub ntp_servers: Vec<String>,
+    /// The manager's clock; `None` when the BMC reports none.
+    pub now: Option<SystemTime>,
+    /// The manager's offset from UTC, such as `+00:00`; `None` when unreported.
+    pub utc_offset: Option<String>,
 }
 
 /// BMC reset, factory defaults, time configuration, IPMI over LAN, and
@@ -86,6 +100,12 @@ pub trait BmcControl<B: Bmc>: Send + Sync {
 
     async fn set_utc_timezone(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         self.standard().set_utc_timezone(cx).await
+    }
+
+    /// The time configuration [`Self::set_ntp_servers`] and
+    /// [`Self::set_utc_timezone`] write, read where the platform keeps it.
+    async fn time_status(&self, cx: &OpCx<'_, B>) -> Result<TimeStatus, PlatformError> {
+        self.standard().time_status(cx).await
     }
 
     async fn ipmi_over_lan_enabled(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
