@@ -357,13 +357,15 @@ fn built_ins() -> Vec<Rule> {
     );
 
     // Supermicro GB300 firmware exposes SecureBoot without SecureBootEnable.
+    // The selected system reports `GB NVL`; GB300 is named on the GPU chassis
+    // of the separate HGX baseboard system.
     rules.push(
         Rule::new(
             "supermicro-gb300",
             [
                 Match::vendor("Supermicro"),
                 Match::contains_any_case(IdentityField::SystemManufacturer, "Supermicro"),
-                Match::contains(IdentityField::SystemModel, "GB300"),
+                Match::contains(IdentityField::ChassisModel, "GB300"),
             ],
         )
         .drivers([SupermicroGb300Bios])

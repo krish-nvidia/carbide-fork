@@ -28,18 +28,27 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use bmc_platform::{
-    BootInterfaceSelector, Capability, ConsoleState, DriverOutcome, LockdownDesiredState,
-    LockdownState, PlatformError,
+    Capability, ConsoleState, DriverOutcome, LockdownDesiredState, LockdownState, PlatformError,
 };
 use carbide_secrets::credentials::Credentials;
 use nv_redfish::account::ManagerAccountCreate;
 use nv_redfish::resource::{PowerState, ResetType};
 
+use super::context::CheckCx;
+use super::errors::failed;
+use super::model::{Check, CheckId, Needs, Outcome, Step};
 use super::ops::{
     self, Attempt, QUICK_POLL_INTERVAL, SETTLE_POLL_INTERVAL, SETTLE_TIMEOUT, how, poll, took,
 };
-use super::{Check, Ctx, Needs, Outcome, Step, boot_order_summary, differences, failed, needed};
+use super::text::{boot_order_summary, differences};
 use crate::connect::Target;
+
+pub(super) const BIOS: CheckId = CheckId::new("bios.apply");
+pub(super) const BOOT_ORDER: CheckId = CheckId::new("boot_order.configure");
+pub(super) const CONSOLE: CheckId = CheckId::new("console.setup");
+pub(super) const POWER_CYCLE: CheckId = CheckId::new("power.cycle");
+const ACCOUNTS_LIFECYCLE: CheckId = CheckId::new("accounts.lifecycle");
+const LOCKDOWN_TOGGLE: CheckId = CheckId::new("lockdown.toggle");
 
 /// How long a new or deleted account may take to affect logins.
 const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -64,12 +73,12 @@ pub(super) fn checks() -> Vec<Check> {
 }
 
 pub(super) fn bios() -> Check {
-    Check::apply("bios.apply", Capability::Bios, run!(bios_apply))
+    Check::apply(BIOS, Capability::Bios, run!(bios_apply))
 }
 
 pub(super) fn boot_order() -> Check {
     Check::apply(
-        "boot_order.configure",
+        BOOT_ORDER,
         Capability::BootOrder,
         run!(boot_order_configure),
     )
@@ -77,16 +86,16 @@ pub(super) fn boot_order() -> Check {
 }
 
 pub(super) fn console() -> Check {
-    Check::apply("console.setup", Capability::Console, run!(console_setup))
+    Check::apply(CONSOLE, Capability::Console, run!(console_setup))
 }
 
 pub(super) fn power_cycle() -> Check {
-    Check::apply("power.cycle", Capability::Power, run!(cycle_power)).once()
+    Check::apply(POWER_CYCLE, Capability::Power, run!(cycle_power)).once()
 }
 
 pub(super) fn accounts_lifecycle() -> Check {
     Check::apply(
-        "accounts.lifecycle",
+        ACCOUNTS_LIFECYCLE,
         Capability::Accounts,
         run!(account_lifecycle),
     )
@@ -94,21 +103,17 @@ pub(super) fn accounts_lifecycle() -> Check {
 }
 
 fn lockdown_toggle() -> Check {
-    Check::apply(
-        "lockdown.toggle",
-        Capability::Lockdown,
-        run!(toggle_lockdown),
-    )
-    .once()
+    Check::apply(LOCKDOWN_TOGGLE, Capability::Lockdown, run!(toggle_lockdown)).once()
 }
 
-async fn bios_apply(ctx: &Ctx) -> Step {
-    let bios = ctx.bmc.bios()?;
-    let profile = &ctx.inputs.bios_profile;
-    let boot_interface = ctx.inputs.boot_interface();
+async fn bios_apply(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let bios = bmc.bios()?;
+    let profile = &cx.inputs().bios_profile;
+    let boot_interface = cx.inputs().boot_interface();
     let boot_interface = boot_interface.as_ref();
     apply_until_in_effect(
-        ctx,
+        cx,
         async || {
             let status = bios
                 .status(profile, boot_interface)
@@ -137,12 +142,12 @@ async fn bios_apply(ctx: &Ctx) -> Step {
     .await
 }
 
-async fn boot_order_configure(ctx: &Ctx) -> Step {
-    let boot_order = ctx.bmc.boot_order()?;
-    let mac = needed(ctx.inputs.boot_mac, Needs::BootInterface)?;
-    let selector = BootInterfaceSelector::Mac(mac);
+async fn boot_order_configure(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let boot_order = bmc.boot_order()?;
+    let selector = cx.inputs().required_boot_interface()?;
     apply_until_in_effect(
-        ctx,
+        cx,
         async || {
             let status = boot_order
                 .status(&selector)
@@ -155,7 +160,7 @@ async fn boot_order_configure(ctx: &Ctx) -> Step {
         // BIOS settings that create it, a while after they read back.
         async || {
             poll(
-                ctx,
+                cx,
                 BOOT_OPTION_TIMEOUT,
                 SETTLE_POLL_INTERVAL,
                 async || match boot_order.configure(&selector).await {
@@ -172,10 +177,11 @@ async fn boot_order_configure(ctx: &Ctx) -> Step {
     .await
 }
 
-async fn console_setup(ctx: &Ctx) -> Step {
-    let console = ctx.bmc.console()?;
+async fn console_setup(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let console = bmc.console()?;
     apply_until_in_effect(
-        ctx,
+        cx,
         async || {
             let status = console.status().await.map_err(failed("status"))?;
             Ok((status.state != ConsoleState::Enabled).then(|| {
@@ -210,44 +216,44 @@ impl NotInEffect {
 /// the host restarted once more. Settings already in effect are applied once
 /// more, which must start no work.
 async fn apply_until_in_effect(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     pending: impl AsyncFn() -> Result<Option<NotInEffect>, Outcome>,
     apply: impl AsyncFn() -> Result<DriverOutcome, Outcome>,
 ) -> Step {
     let Some(before) = pending().await? else {
-        ctx.trace("already in effect; applying again, which must start no work");
-        return reapply_changes_nothing(ctx, &apply, "already in effect").await;
+        cx.trace("already in effect; applying again, which must start no work");
+        return reapply_changes_nothing(cx, &apply, "already in effect").await;
     };
-    ctx.trace(format!("not in effect: {}", before.summary));
+    cx.trace(format!("not in effect: {}", before.summary));
     let started = Instant::now();
     let outcome = apply().await?;
-    ctx.trace(format!("apply: {}", how(&outcome)));
-    ops::take_effect(ctx, &outcome).await?;
+    cx.trace(format!("apply: {}", how(&outcome)));
+    ops::take_effect(cx, &outcome).await?;
     let mut applied = format!("applying ({}) and a host restart", how(&outcome));
-    if let Some(rest) = wait_in_effect(ctx, &pending, Some(&before.settings)).await? {
+    if let Some(rest) = wait_in_effect(cx, &pending, Some(&before.settings)).await? {
         let took_effect = before
             .settings
             .iter()
             .filter(|setting| !rest.settings.contains(*setting))
             .count();
-        ctx.trace(format!(
+        cx.trace(format!(
             "{took_effect} of {} settings took effect, but {} still differ; applying again, \
              as a setting can depend on another applying first",
             before.settings.len(),
             rest.summary
         ));
         let again = apply().await?;
-        ctx.trace(format!("apply again: {}", how(&again)));
-        ops::take_effect(ctx, &again).await?;
-        wait_in_effect(ctx, &pending, None).await?;
+        cx.trace(format!("apply again: {}", how(&again)));
+        ops::take_effect(cx, &again).await?;
+        wait_in_effect(cx, &pending, None).await?;
         applied.push_str(&format!(
             ", then applying again ({}) and a second restart",
             how(&again)
         ));
     }
-    ctx.trace("in effect; applying again, which must start no work");
+    cx.trace("in effect; applying again, which must start no work");
     let state = format!("in effect {} after {applied}", took(started));
-    reapply_changes_nothing(ctx, &apply, &state).await
+    reapply_changes_nothing(cx, &apply, &state).await
 }
 
 /// Whether some settings that differed `before` took effect while others
@@ -263,13 +269,13 @@ fn partly_in_effect(before: &BTreeSet<String>, differing: &BTreeSet<String>) -> 
 /// setting that depends on another, such as a TPM device behind TPM
 /// support, only on the boot after that one applies.
 async fn wait_in_effect(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     pending: &impl AsyncFn() -> Result<Option<NotInEffect>, Outcome>,
     before: Option<&BTreeSet<String>>,
 ) -> Result<Option<NotInEffect>, Outcome> {
     let mut stalled: Option<(BTreeSet<String>, Instant)> = None;
     poll(
-        ctx,
+        cx,
         SETTLE_TIMEOUT,
         SETTLE_POLL_INTERVAL,
         async || match pending().await {
@@ -298,7 +304,7 @@ async fn wait_in_effect(
 }
 
 async fn reapply_changes_nothing(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     apply: &impl AsyncFn() -> Result<DriverOutcome, Outcome>,
     state: &str,
 ) -> Step {
@@ -306,7 +312,7 @@ async fn reapply_changes_nothing(
         DriverOutcome::Complete => Ok(format!("{state}; applying again changed nothing")),
         accepted => {
             let uris = ops::uris(&accepted);
-            ctx.not_restored(format!(
+            cx.not_restored(format!(
                 "work staged by a repeated apply is still pending: {uris}"
             ));
             Err(Outcome::Fail(format!(
@@ -317,8 +323,9 @@ async fn reapply_changes_nothing(
 }
 
 /// Cycles host power away from its current state and back.
-async fn cycle_power(ctx: &Ctx) -> Step {
-    let Some(original) = ops::power_state(&ctx.bmc).await.map_err(failed("state"))? else {
+async fn cycle_power(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let Some(original) = ops::power_state(&bmc).await.map_err(failed("state"))? else {
         return Err(Outcome::Skipped(
             "the platform reports no single power state".to_string(),
         ));
@@ -327,11 +334,11 @@ async fn cycle_power(ctx: &Ctx) -> Step {
         PowerState::Off => (ResetType::On, ResetType::ForceOff),
         _ => (ResetType::ForceOff, ResetType::On),
     };
-    let away_result = ops::set_power(ctx, &ctx.bmc, away).await;
-    let back_result = ops::set_power(ctx, &ctx.bmc, back).await;
-    match ops::power_state(&ctx.bmc).await {
+    let away_result = ops::set_power(cx, &bmc, away).await;
+    let back_result = ops::set_power(cx, &bmc, back).await;
+    match ops::power_state(&bmc).await {
         Ok(Some(state)) if state == original => {}
-        current => ctx.not_restored(format!(
+        current => cx.not_restored(format!(
             "host power was {original:?}; it now reads {current:?}"
         )),
     }
@@ -340,14 +347,15 @@ async fn cycle_power(ctx: &Ctx) -> Step {
 
 /// Creates a temporary account, logs in with it, deletes it, and confirms
 /// the login stops working; the run's own account is never changed.
-async fn account_lifecycle(ctx: &Ctx) -> Step {
-    let accounts = ctx.bmc.accounts()?;
+async fn account_lifecycle(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let accounts = bmc.accounts()?;
     let username = format!("nicoval{:04}", rand::random::<u16>() % 10_000);
     let password = Credentials::generate_password();
-    ctx.redactor.add(&password);
-    let temporary = ctx.target.as_account(&username, &password);
+    cx.secret(&password);
+    let temporary = cx.target().as_account(&username, &password);
 
-    if listed(ctx, &username).await? {
+    if listed(cx, &username).await? {
         return Err(Outcome::Skipped(format!(
             "an account named {username} already exists"
         )));
@@ -360,45 +368,45 @@ async fn account_lifecycle(ctx: &Ctx) -> Step {
         ))
         .await;
     match &created {
-        Ok(outcome) => ctx.trace(format!("create {username}: {}", how(outcome))),
-        Err(error) => ctx.trace(format!("create {username}: {error}")),
+        Ok(outcome) => cx.trace(format!("create {username}: {}", how(outcome))),
+        Err(error) => cx.trace(format!("create {username}: {error}")),
     }
     let verified = match created {
-        Ok(outcome) => verify_new_account(ctx, &outcome, &username, &temporary).await,
+        Ok(outcome) => verify_new_account(cx, &outcome, &username, &temporary).await,
         Err(error) => Err(failed("create")(error)),
     };
-    if !listed(ctx, &username).await.unwrap_or(true) {
+    if !listed(cx, &username).await.unwrap_or(true) {
         return verified;
     }
 
     let deleted = accounts.delete(&username).await.map_err(failed("delete"));
     if let Ok(outcome) = &deleted {
-        ctx.trace(format!("delete {username}: {}", how(outcome)));
+        cx.trace(format!("delete {username}: {}", how(outcome)));
     }
     let gone = match deleted {
-        Ok(outcome) => verify_account_gone(ctx, &outcome, &username, &temporary).await,
+        Ok(outcome) => verify_account_gone(cx, &outcome, &username, &temporary).await,
         Err(outcome) => Err(outcome),
     };
     if gone.is_err() {
-        ctx.not_restored(format!("temporary account {username} may still exist"));
+        cx.not_restored(format!("temporary account {username} may still exist"));
     }
     Ok(format!("{}; {}", verified?, gone?))
 }
 
 async fn verify_new_account(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     outcome: &DriverOutcome,
     username: &str,
     temporary: &Target,
 ) -> Step {
-    ops::wait_for_operations(ctx, outcome).await?;
-    if !listed(ctx, username).await? {
+    ops::wait_for_operations(cx, outcome).await?;
+    if !listed(cx, username).await? {
         return Err(Outcome::Fail(format!(
             "created {username}, but it is not listed"
         )));
     }
     poll(
-        ctx,
+        cx,
         ACCOUNT_TIMEOUT,
         QUICK_POLL_INTERVAL,
         async || match temporary.log_in().await {
@@ -407,24 +415,24 @@ async fn verify_new_account(
         },
     )
     .await?;
-    ctx.trace(format!("logged in as {username}"));
+    cx.trace(format!("logged in as {username}"));
     Ok(format!("created {username} and logged in with it"))
 }
 
 async fn verify_account_gone(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     outcome: &DriverOutcome,
     username: &str,
     temporary: &Target,
 ) -> Step {
-    ops::wait_for_operations(ctx, outcome).await?;
-    if listed(ctx, username).await? {
+    ops::wait_for_operations(cx, outcome).await?;
+    if listed(cx, username).await? {
         return Err(Outcome::Fail(format!(
             "deleted {username}, but it is still listed"
         )));
     }
     poll(
-        ctx,
+        cx,
         ACCOUNT_TIMEOUT,
         QUICK_POLL_INTERVAL,
         async || match temporary.log_in().await {
@@ -439,8 +447,8 @@ async fn verify_account_gone(
     Ok("deleted it, and its login is refused".to_string())
 }
 
-async fn listed(ctx: &Ctx, username: &str) -> Result<bool, Outcome> {
-    let accounts = ctx.bmc.accounts()?.list().await.map_err(failed("list"))?;
+async fn listed(cx: &CheckCx<'_>, username: &str) -> Result<bool, Outcome> {
+    let accounts = cx.bmc().accounts()?.list().await.map_err(failed("list"))?;
     Ok(accounts
         .iter()
         .any(|account| account.user_name.as_deref() == Some(username)))
@@ -448,8 +456,9 @@ async fn listed(ctx: &Ctx, username: &str) -> Result<bool, Outcome> {
 
 /// Locks down a host that is not locked down, or unlocks one that is, then
 /// restores it.
-async fn toggle_lockdown(ctx: &Ctx) -> Step {
-    let lockdown = ctx.bmc.lockdown()?;
+async fn toggle_lockdown(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let lockdown = bmc.lockdown()?;
     let original = lockdown.status().await.map_err(failed("status"))?.aggregate;
     let (away, back) = match original {
         LockdownState::Enabled => (
@@ -461,11 +470,11 @@ async fn toggle_lockdown(ctx: &Ctx) -> Step {
             LockdownDesiredState::Disabled,
         ),
     };
-    let away_result = ops::set_lockdown(ctx, away).await;
-    let back_result = ops::set_lockdown(ctx, back).await;
+    let away_result = ops::set_lockdown(cx, away).await;
+    let back_result = ops::set_lockdown(cx, back).await;
     match lockdown.status().await {
         Ok(status) if status.aggregate == original => {}
-        current => ctx.not_restored(format!(
+        current => cx.not_restored(format!(
             "lockdown was {original:?}; it now reads {:?}",
             current.map(|status| status.aggregate)
         )),

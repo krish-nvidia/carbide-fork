@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
 };
-use nv_redfish::computer_system::BootOption;
+use nv_redfish::computer_system::{BootOption, ComputerSystemUpdate};
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::schema::computer_system::{BootSource, BootSourceOverrideEnabled, BootUpdate};
 use serde_json::{Value, json};
@@ -41,6 +41,19 @@ async fn http_device_name<B: Bmc>(
             message: format!("DellNIC for {selector:?} reports no DeviceDescription"),
         })?;
     Ok(format!("HTTP Device 1: {description}"))
+}
+
+/// `boot_option_id` as the whole boot order, staged for the next reset:
+/// iDRAC leaves a boot order change without an apply time unapplied.
+fn boot_order_update(boot_option_id: String) -> ComputerSystemUpdate {
+    ComputerSystemUpdate::builder()
+        .with_boot(
+            BootUpdate::builder()
+                .with_boot_order(vec![boot_option_id])
+                .build(),
+        )
+        .build()
+        .with_settings_apply_time(dell::on_reset())
 }
 
 /// iDRAC may append ` - <detail>` to the boot option's name.
@@ -160,10 +173,8 @@ where
         }
         dell::clear_job_queue(cx).await?;
         let settings = cx.system_uri(Some("Settings")).await?;
-        let boot = BootUpdate::builder()
-            .with_boot_order(vec![ordered[position].raw().id.clone()])
-            .build();
-        let response = cx.patch_boot(&settings, boot, None).await?;
+        let update = boot_order_update(ordered[position].raw().id.clone());
+        let response = cx.patch_system(&settings, &update, None).await?;
         dell::job_outcome(cx, response).await
     }
 }
@@ -171,6 +182,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_order_change_applies_on_reset() {
+        assert_eq!(
+            serde_json::to_value(boot_order_update("Boot0000".to_string())).expect("serializes"),
+            json!({
+                "@Redfish.SettingsApplyTime": {"ApplyTime": "OnReset"},
+                "Boot": {"BootOrder": ["Boot0000"]},
+            })
+        );
+    }
 
     #[test]
     fn read_only_http_uri_rejection_is_unsupported() {

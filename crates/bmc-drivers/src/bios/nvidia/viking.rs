@@ -47,6 +47,8 @@ fn tpm_clear() -> BiosSettings {
 const HOST_BIOS_INVENTORY: &str = "HostBIOS_0";
 
 /// Clears the host BIOS NVRAM through the NVIDIA UpdateService OEM action.
+/// The target is named from the inventory collection's link: reading the
+/// whole inventory can outlast the request timeout on Viking.
 async fn clear_nvram<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError>
 where
     B::Error: ActionError,
@@ -57,17 +59,15 @@ where
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    let host_bios = service
-        .firmware_inventories()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .into_iter()
-        .map(|inventory| inventory.raw())
-        .find(|inventory| inventory.id == HOST_BIOS_INVENTORY)
-        .ok_or(PlatformError::Unsupported)?
-        .odata_id()
-        .to_string();
+    let host_bios = format!(
+        "{}/{HOST_BIOS_INVENTORY}",
+        service
+            .raw()
+            .firmware_inventory
+            .as_ref()
+            .ok_or(PlatformError::Unsupported)?
+            .odata_id()
+    );
     service
         .oem_nvidia_actions()
         .map_err(|error| cx.map_redfish_error(error))?
@@ -133,5 +133,45 @@ where
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
         cx.bios_attribute_holds(INFINITE_BOOT).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::{Fixture, body, path};
+
+    const UPDATE_SERVICE: &str = "/redfish/v1/UpdateService";
+    const CLEAR_NVRAM: &str =
+        "/redfish/v1/UpdateService/Actions/Oem/NvidiaUpdateService.ClearNVRAM";
+
+    /// The fixture serves no firmware inventory, so a reset that read it
+    /// would fail instead of naming the host BIOS entry from the link.
+    #[tokio::test]
+    async fn reset_clears_host_bios_nvram_without_reading_the_inventory() {
+        let bmc = Fixture::new("AMI", "AMI Redfish Server", "DGX", "BMC")
+            .document(
+                UPDATE_SERVICE,
+                json!({
+                    "@odata.id": UPDATE_SERVICE,
+                    "Id": "UpdateService",
+                    "Name": "Update Service",
+                    "FirmwareInventory": {"@odata.id": "/redfish/v1/UpdateService/FirmwareInventory"},
+                    "Actions": {"Oem": {"#NvidiaUpdateService.ClearNVRAM": {"target": CLEAR_NVRAM}}},
+                }),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+
+        assert_eq!(VikingBios.reset(&cx).await, Ok(DriverOutcome::complete()));
+        let writes = bmc.writes();
+        assert_eq!(writes.iter().map(path).collect::<Vec<_>>(), [CLEAR_NVRAM]);
+        assert_eq!(
+            body(&writes[0]),
+            json!({"Targets": ["/redfish/v1/UpdateService/FirmwareInventory/HostBIOS_0"]})
+        );
     }
 }

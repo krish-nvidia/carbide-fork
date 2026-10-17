@@ -179,12 +179,12 @@ pub(super) trait RedfishBootOrderExt<B: Bmc> {
         selector: &BootInterfaceSelector,
     ) -> Result<String, PlatformError>;
 
-    /// Writes `boot` to the system resource at `uri`, with `If-Match` set to
-    /// `etag` or `*`.
-    async fn patch_boot(
+    /// Writes `update` to the system resource at `uri`, with `If-Match` set
+    /// to `etag` or `*`.
+    async fn patch_system(
         &self,
         uri: &ODataId,
-        boot: BootUpdate,
+        update: &ComputerSystemUpdate,
         etag: Option<&ODataETag>,
     ) -> Result<ModificationResponse<Value>, PlatformError>;
 
@@ -265,18 +265,14 @@ impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
             })
     }
 
-    async fn patch_boot(
+    async fn patch_system(
         &self,
         uri: &ODataId,
-        boot: BootUpdate,
+        update: &ComputerSystemUpdate,
         etag: Option<&ODataETag>,
     ) -> Result<ModificationResponse<Value>, PlatformError> {
         self.bmc()
-            .update(
-                uri,
-                etag,
-                &ComputerSystemUpdate::builder().with_boot(boot).build(),
-            )
+            .update(uri, etag, update)
             .await
             .map_err(|error| self.map_bmc_error(error))
     }
@@ -287,9 +283,13 @@ impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
         order: Vec<String>,
     ) -> Result<DriverOutcome, PlatformError> {
         let boot = BootUpdate::builder().with_boot_order(order).build();
-        self.patch_boot(uri, boot, None)
-            .await
-            .map(DriverOutcome::from)
+        self.patch_system(
+            uri,
+            &ComputerSystemUpdate::builder().with_boot(boot).build(),
+            None,
+        )
+        .await
+        .map(DriverOutcome::from)
     }
 
     async fn write_boot_override(
@@ -318,9 +318,13 @@ impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
             http_boot_uri: setting.http_boot_uri.clone(),
             ..BootUpdate::default()
         };
-        self.patch_boot(uri, boot, etag)
-            .await
-            .map(DriverOutcome::from)
+        self.patch_system(
+            uri,
+            &ComputerSystemUpdate::builder().with_boot(boot).build(),
+            etag,
+        )
+        .await
+        .map(DriverOutcome::from)
     }
 }
 

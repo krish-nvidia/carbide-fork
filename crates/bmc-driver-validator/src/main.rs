@@ -25,6 +25,7 @@
 mod checks;
 mod connect;
 mod ownership;
+mod redact;
 mod report;
 mod selection;
 
@@ -35,14 +36,14 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
-use bmc_platform::{BiosSettings, Capability};
+use bmc_platform::{BiosSettings, Capability, PlatformIdentity};
 use clap::Parser;
-use colored::Colorize;
 use mac_address::MacAddress;
 
-use crate::checks::{Ctx, EndState, Inputs, Scope, UefiPassword};
+use crate::checks::{CheckResult, Ctx, EndState, Inputs, Outcome, Planned, Scope, UefiPassword};
 use crate::connect::Target;
-use crate::report::Redactor;
+use crate::redact::Redactor;
+use crate::report::Terminal;
 use crate::selection::Selection;
 
 /// The Redfish port a BMC address without one uses.
@@ -134,6 +135,12 @@ struct Args {
     #[arg(long, value_enum, default_value_t, requires = "validate")]
     end_state: EndState,
 
+    /// Before `--validate`, lift lockdown and reset the BIOS and the BMC to
+    /// factory defaults, then take the BMC over again from its factory
+    /// password. For a BMC an earlier run left configured.
+    #[arg(long, requires = "validate")]
+    factory_reset_first: bool,
+
     /// NTP server the BMC should sync from. Repeatable.
     #[arg(long = "ntp-server", value_name = "SERVER", requires = "validate")]
     ntp_servers: Vec<String>,
@@ -195,8 +202,7 @@ fn bmc_address(value: &str) -> Result<SocketAddr, String> {
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
-    report::init();
-    let redactor = Arc::new(Redactor::new(
+    let redactor = Redactor::new(
         [
             Some(args.password.as_str()),
             args.new_password.as_deref(),
@@ -206,47 +212,170 @@ async fn main() -> ExitCode {
         ]
         .into_iter()
         .flatten(),
-    ));
-    match run(args, redactor.clone()).await {
+    );
+    let terminal = Arc::new(Terminal::new(redactor, args.verbose));
+    match run(args, terminal.clone()).await {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{} {}", "error:".red().bold(), redactor.apply(&error));
+            terminal.error(&error);
             ExitCode::from(2)
         }
     }
 }
 
-async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
-    let address = SocketAddr::new(args.bmc_ip, args.port);
-    let given = Target::new(address, &args.username, &args.password);
-    let (target, factory, factory_accounts) = match &args.new_password {
-        Some(new_password) => {
-            let (owned, accounts) = own(&args, &given, new_password).await?;
-            (owned, Some(given), accounts)
+async fn run(args: Args, terminal: Arc<Terminal>) -> Result<ExitCode, String> {
+    let jobs = args.jobs.max(1);
+    let scope = if args.validate {
+        Scope::Validate(args.end_state)
+    } else {
+        Scope::Checks {
+            apply: args.apply,
+            only: &args.only,
+            ids: &args.checks,
         }
-        None => (given, None, None),
     };
-
-    report::discovering(address);
-    let identity = target.discover().await?;
-    let selection = Selection::resolve(&identity, &args.drivers)?;
-    report::print_identity(address, &identity);
-    report::print_selection(&selection);
-    if let Some(driver) = factory_accounts
-        && driver != selection.driver(Capability::Accounts)
-    {
-        report::warn(&format!(
-            "the factory password was changed through {driver}, but the full identity selects {}",
-            selection.driver(Capability::Accounts)
-        ));
+    let mut session = Session::open(&args, &terminal).await?;
+    if args.plan {
+        if args.factory_reset_first {
+            terminal.print_plan(
+                "Factory reset",
+                &session.plan(Scope::FactoryReset)?,
+                &session.selection,
+            );
+        }
+        terminal.print_plan("Plan", &session.plan(scope)?, &session.selection);
+        return Ok(ExitCode::SUCCESS);
     }
 
-    let inputs = Inputs {
+    let started = Instant::now();
+    let mut results = Vec::new();
+    let mut unrestored = Vec::new();
+    if args.factory_reset_first {
+        let plan = session.plan(Scope::FactoryReset)?;
+        let (reset, left) = session.run(&terminal, plan, jobs).await?;
+        let finished = !reset
+            .iter()
+            .any(|result| matches!(result.outcome, Outcome::Fail(_) | Outcome::Blocked(_)));
+        results.extend(reset);
+        unrestored.extend(left);
+        if !finished {
+            terminal.warn("the factory reset did not finish, so validation did not start");
+            terminal.summary(&results, &unrestored, started.elapsed());
+            return Ok(exit_code(&results, &unrestored));
+        }
+        session = Session::open(&args, &terminal).await?;
+    }
+    let plan = session.plan(scope)?;
+    let (validated, left) = session.run(&terminal, plan, jobs).await?;
+    results.extend(validated);
+    unrestored.extend(left);
+    terminal.summary(&results, &unrestored, started.elapsed());
+    Ok(exit_code(&results, &unrestored))
+}
+
+/// A BMC taken over, discovered, and matched to drivers, with what its
+/// checks use.
+struct Session {
+    address: SocketAddr,
+    target: Target,
+    identity: PlatformIdentity,
+    selection: Selection,
+    inputs: Inputs,
+}
+
+impl Session {
+    /// Replaces the factory password when `--validate` gives a new one, then
+    /// discovers the BMC and selects its drivers.
+    async fn open(args: &Args, terminal: &Terminal) -> Result<Self, String> {
+        let address = SocketAddr::new(args.bmc_ip, args.port);
+        let given = Target::new(address, &args.username, &args.password);
+        let (target, factory, factory_accounts) = match &args.new_password {
+            Some(new_password) => {
+                let (owned, accounts) = own(args, terminal, &given, new_password).await?;
+                (owned, Some(given), accounts)
+            }
+            None => (given, None, None),
+        };
+
+        terminal.discovering(address);
+        let identity = discover(&target, terminal).await?;
+        let selection = Selection::resolve(&identity, &args.drivers)?;
+        terminal.print_identity(address, &identity);
+        terminal.print_selection(&selection);
+        if let Some(driver) = factory_accounts
+            && driver != selection.driver(Capability::Accounts)
+        {
+            terminal.warn(&format!(
+                "the factory password was changed through {driver}, but the full identity selects {}",
+                selection.driver(Capability::Accounts)
+            ));
+        }
+        let inputs = inputs(args, factory)?;
+        Ok(Self {
+            address,
+            target,
+            identity,
+            selection,
+            inputs,
+        })
+    }
+
+    fn plan(&self, scope: Scope<'_>) -> Result<Vec<Planned>, String> {
+        checks::plan(&self.selection, &self.inputs, scope)
+    }
+
+    /// Connects through `bmc-runtime` and runs `plan`, returning the results
+    /// and the changes left unrestored.
+    async fn run(
+        self,
+        terminal: &Arc<Terminal>,
+        plan: Vec<Planned>,
+        jobs: usize,
+    ) -> Result<(Vec<CheckResult>, Vec<String>), String> {
+        let bmc = self
+            .target
+            .connect(self.selection.endpoint(self.address, self.identity)?)
+            .await?;
+        let ctx = Ctx::new(
+            bmc,
+            self.selection,
+            self.target,
+            self.inputs,
+            terminal.clone(),
+        );
+        terminal.checks_heading();
+        let results = checks::run(&ctx, plan, jobs).await;
+        Ok((results, ctx.unrestored()))
+    }
+}
+
+/// Discovers `target`, trying again when an attempt fails, as site
+/// exploration does on its next pass: a busy BMC can time out reading a large
+/// inventory.
+async fn discover(target: &Target, terminal: &Terminal) -> Result<PlatformIdentity, String> {
+    const ATTEMPTS: usize = 3;
+    let mut attempt = 1;
+    loop {
+        match target.discover().await {
+            Ok(identity) => return Ok(identity),
+            Err(error) if attempt < ATTEMPTS => {
+                terminal.warn(&format!(
+                    "discovery attempt {attempt} of {ATTEMPTS} failed; trying again: {error}"
+                ));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn inputs(args: &Args, factory: Option<Target>) -> Result<Inputs, String> {
+    Ok(Inputs {
         boot_mac: args.boot_mac,
         bios_profile: bios_profile(args.bios_profile.as_deref())?,
-        ntp_servers: args.ntp_servers,
-        uefi_password: args.uefi_password.map(|new| UefiPassword {
-            current: args.current_uefi_password,
+        ntp_servers: args.ntp_servers.clone(),
+        uefi_password: args.uefi_password.clone().map(|new| UefiPassword {
+            current: args.current_uefi_password.clone(),
             new,
         }),
         allow_ac_cycle: args.allow_ac_cycle,
@@ -263,31 +392,22 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
             )
         }),
         factory,
-        verbose: args.verbose,
-    };
-    let scope = if args.validate {
-        Scope::Validate(args.end_state)
-    } else {
-        Scope::Checks {
-            apply: args.apply,
-            only: &args.only,
-            ids: &args.checks,
-        }
-    };
-    let plan = checks::plan(&selection, &inputs, scope)?;
-    if args.plan {
-        report::print_plan(&plan, &selection);
-        return Ok(ExitCode::SUCCESS);
-    }
+    })
+}
 
-    let bmc = target
-        .connect(selection.endpoint(address, identity)?)
-        .await?;
-    let ctx = Ctx::new(bmc, selection, target, inputs, redactor);
-    report::checks_heading();
-    let started = Instant::now();
-    let results = checks::run(&ctx, plan, args.jobs.max(1)).await;
-    Ok(report::summary(&ctx, &results, started.elapsed()))
+/// 0 when nothing failed, 1 when a check failed, 3 when a change could not
+/// be restored.
+fn exit_code(results: &[CheckResult], unrestored: &[String]) -> ExitCode {
+    if !unrestored.is_empty() {
+        ExitCode::from(3)
+    } else if results
+        .iter()
+        .any(|result| matches!(result.outcome, Outcome::Fail(_)))
+    {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// The BMC reached with `new_password`, replacing the factory password
@@ -296,6 +416,7 @@ async fn run(args: Args, redactor: Arc<Redactor>) -> Result<ExitCode, String> {
 /// that replaced the password, if one did.
 async fn own(
     args: &Args,
+    terminal: &Terminal,
     factory: &Target,
     new_password: &str,
 ) -> Result<(Target, Option<String>), String> {
@@ -307,9 +428,9 @@ async fn own(
         };
         return Ok((reachable, None));
     }
-    report::taking_ownership(factory.address());
+    terminal.taking_ownership(factory.address());
     let (owned, ownership) = ownership::take(factory, new_password, &args.drivers).await?;
-    report::print_ownership(&ownership);
+    terminal.print_ownership(&ownership);
     Ok((owned, ownership.accounts_driver))
 }
 

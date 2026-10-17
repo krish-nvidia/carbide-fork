@@ -131,14 +131,23 @@ fn liteon() -> PlatformIdentity {
     )
 }
 
+/// As a captured Supermicro GB300 tray reports it: the selected system is
+/// `GB NVL`, and GB300 is named on the HGX baseboard's GPU chassis.
 fn supermicro_gb300() -> PlatformIdentity {
-    with_system(
-        identity("Supermicro", Some("GB NVL")),
-        SystemIdentity {
-            id: "1".to_string(),
-            manufacturer: Some("Supermicro".to_string()),
-            model: Some("ARS-121GL-NB2B-GB300".to_string()),
-            ..SystemIdentity::default()
+    with_chassis(
+        with_system(
+            identity("Supermicro", Some("GB NVL")),
+            SystemIdentity {
+                id: "System_0".to_string(),
+                manufacturer: Some("Supermicro".to_string()),
+                model: Some("GB NVL".to_string()),
+                ..SystemIdentity::default()
+            },
+        ),
+        ChassisIdentity {
+            id: "HGX_GPU_0".to_string(),
+            model: Some("NVIDIA GB300".to_string()),
+            ..ChassisIdentity::default()
         },
     )
 }

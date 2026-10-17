@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-//! Operations checks share: polling, waiting on the work a driver started,
-//! host restarts and power transitions, BMC resets, and settings that take
-//! effect on a restart.
+//! Operations checks share: polling, making a change and reading it back,
+//! waiting on the work a driver started, host restarts and power
+//! transitions, BMC resets, and settings that take effect on a restart.
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
@@ -30,8 +30,9 @@ use bmc_runtime::ConnectedBmc;
 use carbide_redfish::nv_redfish::RedfishBmc;
 use nv_redfish::resource::{PowerState, ResetType};
 
-use super::{Ctx, Outcome, Step, describe, failed};
-use crate::connect::Target;
+use super::context::CheckCx;
+use super::errors::{describe, failed};
+use super::model::{Outcome, Step};
 
 /// How long accepted work may stay queued or running before or after a reset.
 const JOB_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -46,7 +47,7 @@ pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub(super) const SETTLE_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
 /// How long a change that needs no restart may take to read back.
-pub(super) const IMMEDIATE_TIMEOUT: Duration = Duration::from_secs(60);
+const IMMEDIATE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const QUICK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long a BMC that accepted an AC power cycle and started no work may
@@ -61,7 +62,7 @@ const LOCKDOWN_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long a reset BMC may keep answering, and then take to answer again.
 const BMC_DOWN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-pub(super) const BMC_UP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const BMC_UP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const BMC_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// One attempt of a poll.
@@ -72,10 +73,21 @@ pub(super) enum Attempt<T> {
     Failed(Outcome),
 }
 
+/// When a change shows in what the BMC reads back.
+#[derive(Clone, Copy)]
+pub(super) enum Effect {
+    /// Once the work the request started completes.
+    Immediate,
+    /// Once that work completes and the host has restarted, which it is
+    /// unless the work already restarted it; reads are retried while the
+    /// host POSTs.
+    OnRestart,
+}
+
 /// Retries `attempt` every `interval` until it is done, fails, or
 /// `timeout` passes, tracing each reading that is not there yet.
 pub(super) async fn poll<T>(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     timeout: Duration,
     interval: Duration,
     mut attempt: impl AsyncFnMut() -> Attempt<T>,
@@ -87,7 +99,7 @@ pub(super) async fn poll<T>(
             Attempt::Failed(outcome) => return Err(outcome),
             Attempt::NotYet(reason) => reason,
         };
-        ctx.trace(format!("waiting: {reason}"));
+        cx.trace(format!("waiting: {reason}"));
         if Instant::now() + interval > deadline {
             return Err(Outcome::Fail(format!(
                 "{reason} after {}s",
@@ -98,30 +110,64 @@ pub(super) async fn poll<T>(
     }
 }
 
+/// Sends the driver request `operation`, traced before and after, and
+/// returns its outcome or its error as how the check ends.
+pub(super) async fn requested(
+    cx: &CheckCx<'_>,
+    operation: &'static str,
+    request: impl Future<Output = Result<DriverOutcome, PlatformError>>,
+) -> Result<DriverOutcome, Outcome> {
+    cx.trace(format!("{operation} …"));
+    let outcome = request.await.map_err(failed(operation))?;
+    cx.trace(format!("{operation}: {}", how(&outcome)));
+    Ok(outcome)
+}
+
+/// Waits for the change that produced `outcome` to take `effect`, then
+/// polls `read` until it shows the change, returning what it saw.
+pub(super) async fn read_back<T>(
+    cx: &CheckCx<'_>,
+    outcome: &DriverOutcome,
+    effect: Effect,
+    read: impl AsyncFnMut() -> Attempt<T>,
+) -> Result<T, Outcome> {
+    let (timeout, interval) = match effect {
+        Effect::Immediate => {
+            wait_for_operations(cx, outcome).await?;
+            (IMMEDIATE_TIMEOUT, QUICK_POLL_INTERVAL)
+        }
+        Effect::OnRestart => {
+            take_effect(cx, outcome).await?;
+            (SETTLE_TIMEOUT, SETTLE_POLL_INTERVAL)
+        }
+    };
+    poll(cx, timeout, interval, read).await
+}
+
 /// Polls `reached` briefly, then, unless a restart already happened,
 /// restarts the host and polls while it POSTs: settings staged for the BIOS
 /// take effect on a reset even when the driver reports them complete.
 /// Returns what `reached` saw and whether a restart happened.
 pub(super) async fn converge<T>(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     restarted: bool,
     reached: impl AsyncFn() -> Attempt<T>,
 ) -> Result<(T, bool), Outcome> {
     if !restarted {
-        match poll(ctx, IMMEDIATE_TIMEOUT, QUICK_POLL_INTERVAL, async || {
+        match poll(cx, IMMEDIATE_TIMEOUT, QUICK_POLL_INTERVAL, async || {
             reached().await
         })
         .await
         {
             Ok(value) => return Ok((value, false)),
-            Err(Outcome::Fail(reason)) => ctx.trace(format!(
+            Err(Outcome::Fail(reason)) => cx.trace(format!(
                 "{reason}; restarting the host in case it applies on reset"
             )),
             Err(other) => return Err(other),
         }
-        restart_host(ctx).await?;
+        restart_host(cx).await?;
     }
-    let value = poll(ctx, SETTLE_TIMEOUT, SETTLE_POLL_INTERVAL, async || {
+    let value = poll(cx, SETTLE_TIMEOUT, SETTLE_POLL_INTERVAL, async || {
         reached().await
     })
     .await?;
@@ -130,21 +176,21 @@ pub(super) async fn converge<T>(
 
 /// Settles `outcome`, then restarts the host unless settling already did,
 /// so a change staged for the next reset takes effect.
-pub(super) async fn take_effect(ctx: &Ctx, outcome: &DriverOutcome) -> Result<(), Outcome> {
-    if !settle(ctx, outcome).await? {
-        ctx.trace("restarting the host so the change takes effect");
-        restart_host(ctx).await?;
+pub(super) async fn take_effect(cx: &CheckCx<'_>, outcome: &DriverOutcome) -> Result<(), Outcome> {
+    if !settle(cx, outcome).await? {
+        cx.trace("restarting the host so the change takes effect");
+        restart_host(cx).await?;
     }
     Ok(())
 }
 
 /// Waits for an outcome's work to finish, restarting the host once when
 /// some of it runs on the next reset; returns whether it restarted.
-pub(super) async fn settle(ctx: &Ctx, outcome: &DriverOutcome) -> Result<bool, Outcome> {
+pub(super) async fn settle(cx: &CheckCx<'_>, outcome: &DriverOutcome) -> Result<bool, Outcome> {
     let mut awaiting_reset = false;
     for reference in outcome.references() {
-        let status = poll(ctx, JOB_TIMEOUT, JOB_POLL_INTERVAL, async || {
-            match ctx.bmc.operation_status(reference).await {
+        let status = poll(cx, JOB_TIMEOUT, JOB_POLL_INTERVAL, async || {
+            match cx.bmc().operation_status(reference).await {
                 Ok(OperationStatus::Running) => {
                     Attempt::NotYet(format!("{} is still running", reference.uri()))
                 }
@@ -153,7 +199,7 @@ pub(super) async fn settle(ctx: &Ctx, outcome: &DriverOutcome) -> Result<bool, O
             }
         })
         .await?;
-        ctx.trace(format!("{}: {status:?}", reference.uri()));
+        cx.trace(format!("{}: {status:?}", reference.uri()));
         match status {
             OperationStatus::AwaitingReset => awaiting_reset = true,
             OperationStatus::Completed | OperationStatus::Running => {}
@@ -161,18 +207,21 @@ pub(super) async fn settle(ctx: &Ctx, outcome: &DriverOutcome) -> Result<bool, O
         }
     }
     if awaiting_reset {
-        ctx.trace("work runs on the next host reset; restarting the host");
-        restart_host(ctx).await?;
-        wait_for_operations(ctx, outcome).await?;
+        cx.trace("work runs on the next host reset; restarting the host");
+        restart_host(cx).await?;
+        wait_for_operations(cx, outcome).await?;
     }
     Ok(awaiting_reset)
 }
 
 /// Waits until every reference in `outcome` completes.
-pub(super) async fn wait_for_operations(ctx: &Ctx, outcome: &DriverOutcome) -> Result<(), Outcome> {
+pub(super) async fn wait_for_operations(
+    cx: &CheckCx<'_>,
+    outcome: &DriverOutcome,
+) -> Result<(), Outcome> {
     for reference in outcome.references() {
-        poll(ctx, JOB_TIMEOUT, JOB_POLL_INTERVAL, async || {
-            match ctx.bmc.operation_status(reference).await {
+        poll(cx, JOB_TIMEOUT, JOB_POLL_INTERVAL, async || {
+            match cx.bmc().operation_status(reference).await {
                 Ok(OperationStatus::Completed) => Attempt::Done(()),
                 Ok(status @ (OperationStatus::Running | OperationStatus::AwaitingReset)) => {
                     Attempt::NotYet(format!("{} is {status:?}", reference.uri()))
@@ -182,19 +231,20 @@ pub(super) async fn wait_for_operations(ctx: &Ctx, outcome: &DriverOutcome) -> R
             }
         })
         .await?;
-        ctx.trace(format!("{}: Completed", reference.uri()));
+        cx.trace(format!("{}: Completed", reference.uri()));
     }
     Ok(())
 }
 
 /// Restarts the host through the selected power driver, or powers it on
 /// when it is off, and waits until it reports on.
-pub(super) async fn restart_host(ctx: &Ctx) -> Result<(), Outcome> {
-    let reset = match power_state(&ctx.bmc).await.map_err(failed("state"))? {
+pub(super) async fn restart_host(cx: &CheckCx<'_>) -> Result<(), Outcome> {
+    let bmc = cx.bmc();
+    let reset = match power_state(&bmc).await.map_err(failed("state"))? {
         Some(PowerState::Off) => ResetType::On,
         _ => ResetType::ForceRestart,
     };
-    set_power(ctx, &ctx.bmc, reset).await.map(drop)
+    set_power(cx, &bmc, reset).await.map(drop)
 }
 
 /// The host power state through `bmc`'s power driver, read afresh.
@@ -209,27 +259,31 @@ pub(super) async fn power_state(
 
 /// Requests `reset` through `bmc`'s power driver and waits for the state it
 /// leads to.
-pub(super) async fn set_power(ctx: &Ctx, bmc: &ConnectedBmc<RedfishBmc>, reset: ResetType) -> Step {
+pub(super) async fn set_power(
+    cx: &CheckCx<'_>,
+    bmc: &ConnectedBmc<RedfishBmc>,
+    reset: ResetType,
+) -> Step {
     let target = match reset {
         ResetType::ForceOff | ResetType::GracefulShutdown => PowerState::Off,
         _ => PowerState::On,
     };
     let started = Instant::now();
     let outcome = bmc.power()?.set(reset).await.map_err(failed("set"))?;
-    ctx.trace(format!("power {reset:?}: {}", how(&outcome)));
-    wait_for_operations(ctx, &outcome).await?;
-    wait_for_power(ctx, bmc, target).await?;
-    ctx.trace(format!("power reads {target:?}"));
+    cx.trace(format!("power {reset:?}: {}", how(&outcome)));
+    wait_for_operations(cx, &outcome).await?;
+    wait_for_power(cx, bmc, target).await?;
+    cx.trace(format!("power reads {target:?}"));
     Ok(format!("{reset:?} reached {target:?} in {}", took(started)))
 }
 
 pub(super) async fn wait_for_power(
-    ctx: &Ctx,
+    cx: &CheckCx<'_>,
     bmc: &ConnectedBmc<RedfishBmc>,
     target: PowerState,
 ) -> Result<(), Outcome> {
     poll(
-        ctx,
+        cx,
         POWER_TIMEOUT,
         QUICK_POLL_INTERVAL,
         async || match power_state(bmc).await {
@@ -243,23 +297,22 @@ pub(super) async fn wait_for_power(
 
 /// Resets the BMC, waits for it to go down and come back, and requires
 /// rediscovery to select the same drivers.
-pub(super) async fn reset_bmc(ctx: &Ctx) -> Step {
+pub(super) async fn reset_bmc(cx: &CheckCx<'_>) -> Step {
     let started = Instant::now();
-    let outcome = sent_or_dropped(ctx, "reset", ctx.bmc.bmc_control()?.reset().await)?;
-    ctx.trace(format!("reset: {}", how(&outcome)));
-    wait_for_bmc_down(ctx, BMC_DOWN_TIMEOUT).await?;
-    wait_for_login(ctx, &ctx.target, BMC_UP_TIMEOUT).await?;
+    let outcome = sent_or_dropped(cx, "reset", cx.bmc().bmc_control()?.reset()).await?;
+    wait_for_bmc_down(cx, BMC_DOWN_TIMEOUT).await?;
+    wait_for_bmc_up(cx).await?;
     let down_and_up = took(started);
     // A BMC can accept logins before it serves every resource discovery reads.
-    let identity = poll(ctx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
-        match ctx.target.discover().await {
+    let identity = poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
+        match cx.target().discover().await {
             Ok(identity) => Attempt::Done(identity),
             Err(reason) => Attempt::NotYet(format!("rediscovery fails: {reason}")),
         }
     })
     .await?;
-    if !ctx
-        .selection
+    if !cx
+        .selection()
         .resolves_same(&identity)
         .map_err(Outcome::Fail)?
     {
@@ -273,49 +326,55 @@ pub(super) async fn reset_bmc(ctx: &Ctx) -> Step {
     ))
 }
 
-/// The outcome of a request that restarts the BMC, which can go down before
-/// it answers: an unreachable BMC then means the request was sent, and the
-/// caller waits for the BMC to come back.
-pub(super) fn sent_or_dropped(
-    ctx: &Ctx,
+/// The outcome of a request that restarts the BMC, traced, which can go
+/// down before it answers: an unreachable BMC then means the request was
+/// sent, and the caller waits for the BMC to come back.
+pub(super) async fn sent_or_dropped(
+    cx: &CheckCx<'_>,
     operation: &'static str,
-    result: Result<DriverOutcome, PlatformError>,
+    request: impl Future<Output = Result<DriverOutcome, PlatformError>>,
 ) -> Result<DriverOutcome, Outcome> {
-    match result {
+    cx.trace(format!("{operation} …"));
+    match request.await {
         Err(PlatformError::Unreachable) => {
-            ctx.trace(format!(
+            cx.trace(format!(
                 "{operation}: the BMC dropped before answering; waiting for it"
             ));
             Ok(DriverOutcome::complete())
         }
-        other => other.map_err(failed(operation)),
+        result => {
+            let outcome = result.map_err(failed(operation))?;
+            cx.trace(format!("{operation}: {}", how(&outcome)));
+            Ok(outcome)
+        }
     }
 }
 
 /// Leaves the host on: powers it on when it reads off, otherwise waits for
 /// on. Reads are retried while the BMC is still coming back.
-pub(super) async fn power_on(ctx: &Ctx) -> Result<(), Outcome> {
+pub(super) async fn power_on(cx: &CheckCx<'_>) -> Result<(), Outcome> {
+    let bmc = cx.bmc();
     let state = poll(
-        ctx,
+        cx,
         POWER_TIMEOUT,
         QUICK_POLL_INTERVAL,
-        async || match power_state(&ctx.bmc).await {
+        async || match power_state(&bmc).await {
             Ok(state) => Attempt::Done(state),
             Err(error) => Attempt::NotYet(describe("power state", &error)),
         },
     )
     .await?;
     match state {
-        Some(PowerState::Off) => set_power(ctx, &ctx.bmc, ResetType::On).await.map(drop),
-        _ => wait_for_power(ctx, &ctx.bmc, PowerState::On).await,
+        Some(PowerState::Off) => set_power(cx, &bmc, ResetType::On).await.map(drop),
+        _ => wait_for_power(cx, &bmc, PowerState::On).await,
     }
 }
 
 /// Waits for the BMC to stop answering, as after it resets or loses power,
 /// failing after `timeout`.
-pub(super) async fn wait_for_bmc_down(ctx: &Ctx, timeout: Duration) -> Result<(), Outcome> {
-    poll(ctx, timeout, QUICK_POLL_INTERVAL, async || {
-        match ctx.target.log_in().await {
+pub(super) async fn wait_for_bmc_down(cx: &CheckCx<'_>, timeout: Duration) -> Result<(), Outcome> {
+    poll(cx, timeout, QUICK_POLL_INTERVAL, async || {
+        match cx.target().log_in().await {
             Ok(()) | Err(PlatformError::Auth(_)) => {
                 Attempt::NotYet("the BMC still answers".to_string())
             }
@@ -323,7 +382,7 @@ pub(super) async fn wait_for_bmc_down(ctx: &Ctx, timeout: Duration) -> Result<()
         }
     })
     .await?;
-    ctx.trace("the BMC stopped answering");
+    cx.trace("the BMC stopped answering");
     Ok(())
 }
 
@@ -338,25 +397,23 @@ pub(super) fn ac_cycle_down_timeout(outcome: &DriverOutcome) -> Duration {
     }
 }
 
-/// Waits until `target` logs in.
-pub(super) async fn wait_for_login(
-    ctx: &Ctx,
-    target: &Target,
-    timeout: Duration,
-) -> Result<(), Outcome> {
-    poll(ctx, timeout, BMC_POLL_INTERVAL, async || {
-        match target.log_in().await {
+/// Waits until the BMC logs in again after going down, then reconnects.
+pub(super) async fn wait_for_bmc_up(cx: &CheckCx<'_>) -> Result<(), Outcome> {
+    poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
+        match cx.target().log_in().await {
             Ok(()) => Attempt::Done(()),
             Err(error) => Attempt::NotYet(format!("logging in fails: {error}")),
         }
     })
-    .await
+    .await?;
+    cx.reconnect().await
 }
 
 /// Sets lockdown, settles, and converges on the driver's aggregate reading
 /// `desired`, as controllers decide; the halves are reported as read.
-pub(super) async fn set_lockdown(ctx: &Ctx, desired: LockdownDesiredState) -> Step {
-    let lockdown = ctx.bmc.lockdown()?;
+pub(super) async fn set_lockdown(cx: &CheckCx<'_>, desired: LockdownDesiredState) -> Step {
+    let bmc = cx.bmc();
+    let lockdown = bmc.lockdown()?;
     let target = match desired {
         LockdownDesiredState::Enabled => LockdownState::Enabled,
         LockdownDesiredState::Disabled => LockdownState::Disabled,
@@ -372,11 +429,11 @@ pub(super) async fn set_lockdown(ctx: &Ctx, desired: LockdownDesiredState) -> St
     if reached(&status) {
         return Ok(format!("already {}", halves(&status)));
     }
-    ctx.trace(format!("lockdown reads {}", halves(&status)));
+    cx.trace(format!("lockdown reads {}", halves(&status)));
     let started = Instant::now();
     let refusals = Cell::new(0);
     let outcome = poll(
-        ctx,
+        cx,
         LOCKDOWN_REFUSAL_TIMEOUT,
         LOCKDOWN_RETRY_INTERVAL,
         async || match lockdown.set(LockdownScope::All, desired).await {
@@ -393,7 +450,7 @@ pub(super) async fn set_lockdown(ctx: &Ctx, desired: LockdownDesiredState) -> St
         },
     )
     .await?;
-    ctx.trace(format!("set lockdown {desired:?}: {}", how(&outcome)));
+    cx.trace(format!("set lockdown {desired:?}: {}", how(&outcome)));
     let refused = match refusals.get() {
         0 => String::new(),
         count => format!(
@@ -401,8 +458,8 @@ pub(super) async fn set_lockdown(ctx: &Ctx, desired: LockdownDesiredState) -> St
             took(started)
         ),
     };
-    let restarted = settle(ctx, &outcome).await?;
-    let (status, restarted) = converge(ctx, restarted, async || match lockdown.status().await {
+    let restarted = settle(cx, &outcome).await?;
+    let (status, restarted) = converge(cx, restarted, async || match lockdown.status().await {
         Ok(status) if reached(&status) => Attempt::Done(status),
         Ok(status) => Attempt::NotYet(format!("lockdown reads {}", halves(&status))),
         Err(error) => Attempt::NotYet(describe("status", &error)),

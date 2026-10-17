@@ -50,8 +50,9 @@ use serde_json::{Map, Value};
 /// every key, so the address is never looked up.
 const CREDENTIAL_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0];
 
-/// How long discovery may take before it gives up.
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long discovery may take before it gives up; one read of a large
+/// inventory can take most of the two-minute request timeout.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(6 * 60);
 
 /// How long exploration waits between retries of a read the BMC refused.
 const EXPLORE_RETRY: Duration = Duration::from_secs(1);

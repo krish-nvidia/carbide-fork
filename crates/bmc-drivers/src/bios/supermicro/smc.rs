@@ -31,7 +31,6 @@ const ATTRIBUTES: &[(&str, AttributeValue)] = &[
     ("TXTSupport", Text("Enabled")),
     ("DeviceSelect", Text("TPM 2.0")),
     ("IntelVTforDirectedI_O_VT_d", Text("Enable")),
-    ("IntelVirtualizationTechnology", Text("Enable")),
     ("SR-IOVSupport", Text("Enabled")),
     ("SR_IOVSupport", Text("Enabled")),
     ("IPv4HTTPSupport", Text("Enabled")),
@@ -40,9 +39,10 @@ const ATTRIBUTES: &[(&str, AttributeValue)] = &[
     ("IPv6PXESupport", Text("Disabled")),
 ];
 
-/// Boards spell this attribute's values either `Enabled`/`Disabled` or
-/// `Enable`/`Disable`; it is enabled in the spelling the board uses.
-const SECURITY_DEVICE_SUPPORT: &str = "SecurityDeviceSupport";
+/// Boards spell these attributes' values either `Enabled`/`Disabled` or
+/// `Enable`/`Disable`; each is enabled in the spelling the board uses.
+const ENABLED_IN_BOARD_SPELLING: &[&str] =
+    &["SecurityDeviceSupport", "IntelVirtualizationTechnology"];
 
 /// The UEFI administrator password's `PasswordName`, before any registry
 /// suffix.
@@ -65,8 +65,11 @@ fn uefi_password_name<'a>(attributes: impl IntoIterator<Item = &'a String>) -> S
 fn expected_settings(current: &BiosSettings) -> Result<BiosSettings, PlatformError> {
     let mut expected = BiosSettings::default();
     for (name, reported) in &current.attributes {
-        let value = if name.starts_with(SECURITY_DEVICE_SUPPORT) {
-            security_device_enabled(name, reported)?
+        let value = if ENABLED_IN_BOARD_SPELLING
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            enabled_in_board_spelling(name, reported)?
         } else if let Some((_, value)) = ATTRIBUTES
             .iter()
             .find(|(prefix, _)| name.starts_with(prefix))
@@ -80,7 +83,7 @@ fn expected_settings(current: &BiosSettings) -> Result<BiosSettings, PlatformErr
     Ok(expected)
 }
 
-fn security_device_enabled(name: &str, reported: &Value) -> Result<Value, PlatformError> {
+fn enabled_in_board_spelling(name: &str, reported: &Value) -> Result<Value, PlatformError> {
     match reported.as_str() {
         Some("Enabled" | "Disabled") => Ok(json!("Enabled")),
         Some("Enable" | "Disable") => Ok(json!("Enable")),
@@ -259,6 +262,7 @@ mod tests {
                 ("SecurityDeviceSupport_0123", "Disabled") => Ok(vec![("SecurityDeviceSupport_0123".to_string(), json!("Enabled"))]),
                 ("SecurityDeviceSupport_0123", "Disable") => Ok(vec![("SecurityDeviceSupport_0123".to_string(), json!("Enable"))]),
                 ("SecurityDeviceSupport_0123", "Enable") => Ok(vec![("SecurityDeviceSupport_0123".to_string(), json!("Enable"))]),
+                ("IntelVirtualizationTechnology_0042", "Disabled") => Ok(vec![("IntelVirtualizationTechnology_0042".to_string(), json!("Enabled"))]),
             }
             "unknown spelling" {
                 ("SecurityDeviceSupport_0123", "Off") => Err(PlatformError::InvalidResponse {

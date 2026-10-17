@@ -59,7 +59,10 @@ pub enum PlatformError {
     NoContent,
     #[error("BMC authentication failed: {0}")]
     Auth(AuthError),
-    #[error("BMC request failed with HTTP status {status}: {message}")]
+    #[error(
+        "BMC request failed with HTTP status {status}{}: {message}",
+        message_id_suffix(.message_id)
+    )]
     Bmc {
         status: u16,
         message_id: Option<String>,
@@ -73,6 +76,14 @@ pub enum PlatformError {
     /// The hardware did not reach the state the operation waited for.
     #[error("BMC did not reach the expected state in time: {message}")]
     Timeout { message: String },
+}
+
+/// ` (<MessageId>)` when the BMC named one.
+fn message_id_suffix(message_id: &Option<String>) -> String {
+    message_id
+        .as_deref()
+        .map(|id| format!(" ({id})"))
+        .unwrap_or_default()
 }
 
 impl PlatformError {
@@ -153,6 +164,27 @@ mod tests {
                 error
             );
             assert!(!error.to_string().is_empty());
+        }
+    }
+
+    /// The MessageId names which Redfish rule the BMC applied, so it is part
+    /// of the message whenever the BMC sends one.
+    #[test]
+    fn bmc_errors_name_the_message_id_when_given() {
+        let cases = [
+            (
+                Some("Base.1.0.ResourceInUse"),
+                "BMC request failed with HTTP status 409 (Base.1.0.ResourceInUse): busy",
+            ),
+            (None, "BMC request failed with HTTP status 409: busy"),
+        ];
+        for (message_id, expected) in cases {
+            let error = PlatformError::Bmc {
+                status: 409,
+                message_id: message_id.map(ToString::to_string),
+                message: "busy".to_string(),
+            };
+            assert_eq!(error.to_string(), expected);
         }
     }
 }

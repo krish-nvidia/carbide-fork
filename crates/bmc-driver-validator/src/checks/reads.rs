@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 
 use bmc_platform::{Capability, ConsoleSpec, EvidenceProgress, PlatformError};
 
-use super::{
-    Check, Checked, Ctx, Detail, Needs, Outcome, Step, boot_order_summary, counted,
-    difference_detail, failed, needed, reported, yes_no,
-};
+use super::context::CheckCx;
+use super::errors::failed;
+use super::model::{Check, Checked, Detail, Needs, Outcome, Step};
+use super::text::{boot_order_summary, counted, difference_detail, reported, yes_no};
 
 /// How long a signed-measurement request may stay pending.
 const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -99,113 +99,72 @@ pub(super) fn checks() -> Vec<Check> {
     ]
 }
 
-async fn power_state(ctx: &Ctx) -> Step {
-    let state = ctx.bmc.power()?.state().await.map_err(failed("state"))?;
+async fn power_state(cx: &CheckCx<'_>) -> Step {
+    let state = cx.bmc().power()?.state().await?;
     Ok(match state {
         Some(state) => format!("{state:?}"),
         None => "the platform reports no single power state".to_string(),
     })
 }
 
-async fn ac_power_cycle_supported(ctx: &Ctx) -> Step {
-    let supported = ctx
-        .bmc
-        .power()?
-        .ac_power_cycle_supported()
-        .await
-        .map_err(failed("ac_power_cycle_supported"))?;
+async fn ac_power_cycle_supported(cx: &CheckCx<'_>) -> Step {
+    let supported = cx.bmc().power()?.ac_power_cycle_supported().await?;
     Ok(yes_no(supported, "supported", "not supported"))
 }
 
-async fn ipmi_over_lan(ctx: &Ctx) -> Step {
-    let enabled = ctx
-        .bmc
-        .bmc_control()?
-        .ipmi_over_lan_enabled()
-        .await
-        .map_err(failed("ipmi_over_lan_enabled"))?;
+async fn ipmi_over_lan(cx: &CheckCx<'_>) -> Step {
+    let enabled = cx.bmc().bmc_control()?.ipmi_over_lan_enabled().await?;
     Ok(yes_no(enabled, "enabled", "disabled"))
 }
 
-async fn manager_settings_status(ctx: &Ctx) -> Checked {
-    let status = ctx
-        .bmc
-        .bmc_control()?
-        .settings_status()
-        .await
-        .map_err(failed("settings_status"))?;
+async fn manager_settings_status(cx: &CheckCx<'_>) -> Checked {
+    let status = cx.bmc().bmc_control()?.settings_status().await?;
     Ok(difference_detail(status.differences.iter().map(|diff| {
         (diff.key.as_str(), &diff.expected, diff.actual.as_ref())
     })))
 }
 
-async fn bios_status(ctx: &Ctx) -> Checked {
-    let status = ctx
-        .bmc
+async fn bios_status(cx: &CheckCx<'_>) -> Checked {
+    let status = cx
+        .bmc()
         .bios()?
         .status(
-            &ctx.inputs.bios_profile,
-            ctx.inputs.boot_interface().as_ref(),
+            &cx.inputs().bios_profile,
+            cx.inputs().boot_interface().as_ref(),
         )
-        .await
-        .map_err(failed("status"))?;
+        .await?;
     Ok(difference_detail(status.differences.iter().map(|diff| {
         (diff.key.as_str(), &diff.expected, diff.actual.as_ref())
     })))
 }
 
-async fn infinite_boot(ctx: &Ctx) -> Step {
-    let enabled = ctx
-        .bmc
-        .bios()?
-        .infinite_boot_enabled()
-        .await
-        .map_err(failed("infinite_boot_enabled"))?;
+async fn infinite_boot(cx: &CheckCx<'_>) -> Step {
+    let enabled = cx.bmc().bios()?.infinite_boot_enabled().await?;
     Ok(match enabled {
         Some(enabled) => yes_no(enabled, "enabled", "disabled"),
         None => "the platform has no infinite-boot setting".to_string(),
     })
 }
 
-async fn boot_order_status(ctx: &Ctx) -> Step {
-    let selector = needed(ctx.inputs.boot_interface(), Needs::BootInterface)?;
-    let status = ctx
-        .bmc
-        .boot_order()?
-        .status(&selector)
-        .await
-        .map_err(failed("status"))?;
+async fn boot_order_status(cx: &CheckCx<'_>) -> Step {
+    let selector = cx.inputs().required_boot_interface()?;
+    let status = cx.bmc().boot_order()?.status(&selector).await?;
     Ok(boot_order_summary(status))
 }
 
-async fn secure_boot_status(ctx: &Ctx) -> Step {
-    let status = ctx
-        .bmc
-        .secure_boot()?
-        .status()
-        .await
-        .map_err(failed("status"))?;
+async fn secure_boot_status(cx: &CheckCx<'_>) -> Step {
+    let status = cx.bmc().secure_boot()?.status().await?;
     Ok(format!("{status:?}"))
 }
 
-async fn platform_key(ctx: &Ctx) -> Step {
-    let present = ctx
-        .bmc
-        .secure_boot()?
-        .has_platform_key()
-        .await
-        .map_err(failed("has_platform_key"))?;
+async fn platform_key(cx: &CheckCx<'_>) -> Step {
+    let present = cx.bmc().secure_boot()?.has_platform_key().await?;
     Ok(yes_no(present, "platform key enrolled", "no platform key"))
 }
 
 /// The aggregate with its host and BMC parts, then the controls the driver read.
-async fn lockdown_status(ctx: &Ctx) -> Checked {
-    let status = ctx
-        .bmc
-        .lockdown()?
-        .status()
-        .await
-        .map_err(failed("status"))?;
+async fn lockdown_status(cx: &CheckCx<'_>) -> Checked {
+    let status = cx.bmc().lockdown()?.status().await?;
     Ok(with_message_fields(
         format!(
             "{:?} · host {:?} · bmc {:?}",
@@ -216,14 +175,14 @@ async fn lockdown_status(ctx: &Ctx) -> Checked {
 }
 
 /// The account this run logged in with must be listed.
-async fn accounts_list(ctx: &Ctx) -> Step {
-    let accounts = ctx.bmc.accounts()?.list().await.map_err(failed("list"))?;
+async fn accounts_list(cx: &CheckCx<'_>) -> Step {
+    let accounts = cx.bmc().accounts()?.list().await?;
     let names: Vec<&str> = accounts
         .iter()
         .filter_map(|account| account.user_name.as_deref())
         .filter(|name| !name.is_empty())
         .collect();
-    if !names.contains(&ctx.target.username()) {
+    if !names.contains(&cx.target().username()) {
         return Err(Outcome::Fail(format!(
             "the account this run logged in with is not listed; listed: {}",
             names.join(", ")
@@ -236,13 +195,8 @@ async fn accounts_list(ctx: &Ctx) -> Step {
     ))
 }
 
-async fn firmware_inventory(ctx: &Ctx) -> Checked {
-    let inventory = ctx
-        .bmc
-        .firmware()?
-        .inventory()
-        .await
-        .map_err(failed("inventory"))?;
+async fn firmware_inventory(cx: &CheckCx<'_>) -> Checked {
+    let inventory = cx.bmc().firmware()?.inventory().await?;
     Ok(Detail {
         summary: counted(inventory.len(), "entry", "entries"),
         fields: inventory
@@ -252,21 +206,16 @@ async fn firmware_inventory(ctx: &Ctx) -> Checked {
     })
 }
 
-async fn boot_controller(ctx: &Ctx) -> Step {
-    let controller = ctx
-        .bmc
-        .storage()?
-        .boot_controller()
-        .await
-        .map_err(failed("boot_controller"))?;
+async fn boot_controller(cx: &CheckCx<'_>) -> Step {
+    let controller = cx.bmc().storage()?.boot_controller().await?;
     Ok(match controller {
         Some(id) => format!("boot controller {id}"),
         None => "no boot controller".to_string(),
     })
 }
 
-async fn dpu_status(ctx: &Ctx) -> Step {
-    let status = ctx.bmc.dpu()?.status().await.map_err(failed("status"))?;
+async fn dpu_status(cx: &CheckCx<'_>) -> Step {
+    let status = cx.bmc().dpu()?.status().await?;
     Ok(format!(
         "nic mode {} · host rshim {}",
         reported(&status.nic_mode),
@@ -274,13 +223,8 @@ async fn dpu_status(ctx: &Ctx) -> Step {
     ))
 }
 
-async fn attestation_components(ctx: &Ctx) -> Step {
-    let components = ctx
-        .bmc
-        .attestation()?
-        .components()
-        .await
-        .map_err(failed("components"))?;
+async fn attestation_components(cx: &CheckCx<'_>) -> Step {
+    let components = cx.bmc().attestation()?.components().await?;
     let ids: Vec<&str> = components
         .iter()
         .map(|component| component.id.as_str())
@@ -298,8 +242,9 @@ async fn attestation_components(ctx: &Ctx) -> Step {
 
 /// Collects signed measurements from the first component, with its
 /// certificate and firmware.
-async fn attestation_evidence(ctx: &Ctx) -> Checked {
-    let attestation = ctx.bmc.attestation()?;
+async fn attestation_evidence(cx: &CheckCx<'_>) -> Checked {
+    let bmc = cx.bmc();
+    let attestation = bmc.attestation()?;
     let components = attestation
         .components()
         .await
@@ -369,21 +314,16 @@ async fn attestation_evidence(ctx: &Ctx) -> Checked {
     }
 }
 
-async fn console_status(ctx: &Ctx) -> Checked {
-    let status = ctx
-        .bmc
-        .console()?
-        .status()
-        .await
-        .map_err(failed("status"))?;
+async fn console_status(cx: &CheckCx<'_>) -> Checked {
+    let status = cx.bmc().console()?.status().await?;
     Ok(with_message_fields(
         format!("{:?}", status.state),
         &status.message,
     ))
 }
 
-async fn console_spec(ctx: &Ctx) -> Step {
-    let spec = ctx.bmc.console()?.spec().await.map_err(failed("spec"))?;
+async fn console_spec(cx: &CheckCx<'_>) -> Step {
+    let spec = cx.bmc().console()?.spec().await?;
     Ok(match spec {
         ConsoleSpec::SshShell(shell) => format!("SSH shell on port {}", shell.port),
         ConsoleSpec::SshDirect { port } => format!("direct SSH on port {port}"),
