@@ -5,7 +5,7 @@
 
 use Capability::{
     Accounts, Attestation, Bios, BmcControl, BootOrder, Console, Dpu, Firmware, Lockdown, Power,
-    SecureBoot,
+    SecureBoot, SuperNic,
 };
 use Quirk::{
     BlueFieldNicModeBiosError, BlueFieldNicModeUnreadable, BlueFieldOemTimeoutInNicMode,
@@ -291,11 +291,20 @@ fn narrower_identity_outranks_broader_rules() {
             ],
         },
         Case {
+            scenario: "Vera Rubin takes its SuperNIC driver",
+            identity: identity("NVIDIA", Some("VR NVL72")),
+            expect: vec![
+                (SuperNic, driver(NvidiaVeraRubinSuperNic)),
+                (Bios, driver(NvidiaVeraRubinBios)),
+            ],
+        },
+        Case {
             scenario: "DGX Viking",
             identity: viking(),
             expect: vec![
                 (Accounts, driver(NvidiaVikingAccounts)),
                 (Bios, driver(NvidiaVikingBios)),
+                (SuperNic, Unsupported),
             ],
         },
         Case {

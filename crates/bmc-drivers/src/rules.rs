@@ -212,6 +212,7 @@ fn built_ins() -> Vec<Rule> {
                 NvidiaHgxAttestation,
                 NvidiaVeraRubinBios,
                 NvidiaOpenBmcConsole,
+                NvidiaVeraRubinSuperNic,
             ])
             .unsupported([Capability::Lockdown]),
     );

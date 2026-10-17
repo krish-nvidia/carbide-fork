@@ -73,6 +73,8 @@ const MANAGER_SETTINGS: CheckId = CheckId::new("bmc_control.settings");
 const AC_CYCLE: CheckId = CheckId::new("power.ac_cycle");
 const UEFI_PASSWORD: CheckId = CheckId::new("bios.uefi_password");
 const LOCKDOWN_ENABLE: CheckId = CheckId::new("lockdown.enable");
+const SUPER_NIC_ENABLE: CheckId = CheckId::new("super_nic.enable_east_west");
+const SUPER_NIC_IN_EFFECT: CheckId = CheckId::new("super_nic.east_west_in_effect");
 const BMC_RSHIM: CheckId = CheckId::new("dpu.bmc_rshim");
 const NIC_MODE: CheckId = CheckId::new("dpu.nic_mode");
 const HOST_PRIVILEGE: CheckId = CheckId::new("dpu.host_privilege");
@@ -93,7 +95,7 @@ pub(super) fn checks(dpu: bool, end_state: EndState) -> Vec<Check> {
         apply::accounts_lifecycle(),
         Check::apply(BMC_RESET, Capability::BmcControl, run!(ops::reset_bmc)).once(),
         Check::apply(NTP, Capability::BmcControl, run!(ntp))
-            .needs(Needs::NtpServers)
+            .needs(&[Needs::NtpServers])
             .after(&[BMC_RESET]),
         Check::apply(UTC, Capability::BmcControl, run!(utc)).after(&[BMC_RESET]),
     ];
@@ -122,10 +124,24 @@ fn host_setup() -> Vec<Check> {
         apply::boot_order().after(&[BIOS]),
         apply::console().after(&[BIOS]),
         apply::power_cycle().after(&[CONSOLE]),
+        Check::apply(
+            SUPER_NIC_ENABLE,
+            Capability::SuperNic,
+            run!(enable_east_west),
+        )
+        .needs(&[Needs::SuperNics])
+        .after(&[BMC_RESET]),
         Check::apply(AC_CYCLE, Capability::Power, run!(ac_cycle))
             .once()
-            .needs(Needs::AcCycle)
+            .needs(&[Needs::AcCycle])
             .after(&[POWER_CYCLE]),
+        Check::apply(
+            SUPER_NIC_IN_EFFECT,
+            Capability::SuperNic,
+            run!(east_west_in_effect),
+        )
+        .needs(&[Needs::SuperNics, Needs::AcCycle])
+        .after(&[SUPER_NIC_ENABLE, AC_CYCLE]),
         uefi_password().after(&[BIOS]),
         Check::apply(LOCKDOWN_ENABLE, Capability::Lockdown, run!(enable_lockdown)).after(&[
             LOCKDOWN_LIFT,
@@ -135,6 +151,8 @@ fn host_setup() -> Vec<Check> {
             CONSOLE,
             POWER_CYCLE,
             AC_CYCLE,
+            SUPER_NIC_ENABLE,
+            SUPER_NIC_IN_EFFECT,
             UEFI_PASSWORD,
         ]),
     ]
@@ -145,7 +163,7 @@ fn dpu_setup() -> Vec<Check> {
     vec![
         Check::apply(BMC_RSHIM, Capability::Dpu, run!(bmc_rshim)).after(&[BMC_RESET]),
         Check::apply(NIC_MODE, Capability::Dpu, run!(nic_mode))
-            .needs(Needs::HostBmc)
+            .needs(&[Needs::HostBmc])
             .after(&[BMC_RESET]),
         Check::apply(HOST_PRIVILEGE, Capability::Dpu, run!(host_privilege)).after(&[NIC_MODE]),
         apply::bios().after(&[HOST_PRIVILEGE]),
@@ -168,7 +186,7 @@ fn factory_reset() -> Vec<Check> {
             run!(clear_uefi_password),
         )
         .once()
-        .needs(Needs::UefiPassword),
+        .needs(&[Needs::UefiPassword]),
         Check::apply(FACTORY_BIOS, Capability::Bios, run!(reset_bios)),
         Check::apply(FACTORY_BMC, Capability::BmcControl, run!(reset_to_factory)).once(),
     ]
@@ -190,7 +208,7 @@ pub(super) fn factory_reset_first() -> Vec<Check> {
 fn uefi_password() -> Check {
     Check::apply(UEFI_PASSWORD, Capability::Bios, run!(set_uefi_password))
         .once()
-        .needs(Needs::UefiPassword)
+        .needs(&[Needs::UefiPassword])
 }
 
 async fn account_policy(cx: &CheckCx<'_>) -> Checked {
@@ -423,6 +441,58 @@ async fn ac_cycle(cx: &CheckCx<'_>) -> Step {
         "the BMC lost power, and everything was back on {} after the request ({})",
         took(started),
         how(&outcome)
+    ))
+}
+
+/// Hands east-west traffic on every SuperNIC to its embedded CPU, as NICo's
+/// `ConfigureAstra` does before AC-power-cycling the host.
+async fn enable_east_west(cx: &CheckCx<'_>) -> Step {
+    let count = cx.inputs().required_super_nics()?;
+    let bmc = cx.bmc();
+    let super_nic = bmc.super_nic()?;
+    let mut requests = Vec::with_capacity(count.into());
+    for index in 0..count {
+        let outcome = requested(
+            cx,
+            "set_east_west_control",
+            super_nic.set_east_west_control(index, true),
+        )
+        .await?;
+        ops::wait_for_operations(cx, &outcome).await?;
+        requests.push(format!("{index}: {}", how(&outcome)));
+    }
+    Ok(format!(
+        "requested on {} ({}); it takes effect on the AC power cycle",
+        counted(count.into(), "SuperNIC", "SuperNICs"),
+        requests.join(", ")
+    ))
+}
+
+/// Waits until every SuperNIC reads east-west control enabled, after the AC
+/// power cycle that applies it.
+async fn east_west_in_effect(cx: &CheckCx<'_>) -> Step {
+    let count = cx.inputs().required_super_nics()?;
+    let bmc = cx.bmc();
+    let super_nic = bmc.super_nic()?;
+    poll(cx, SETTLE_TIMEOUT, SETTLE_POLL_INTERVAL, async || {
+        let mut not_enabled = Vec::new();
+        for index in 0..count {
+            match super_nic.east_west_control(index).await {
+                Ok(Some(true)) => {}
+                Ok(state) => not_enabled.push(format!("{index} reads {}", reported(&state))),
+                Err(error) => return Attempt::NotYet(describe("east_west_control", &error)),
+            }
+        }
+        if not_enabled.is_empty() {
+            Attempt::Done(())
+        } else {
+            Attempt::NotYet(format!("SuperNIC {}", not_enabled.join(", ")))
+        }
+    })
+    .await?;
+    Ok(format!(
+        "east-west control reads enabled on {} after the AC power cycle",
+        counted(count.into(), "SuperNIC", "SuperNICs")
     ))
 }
 

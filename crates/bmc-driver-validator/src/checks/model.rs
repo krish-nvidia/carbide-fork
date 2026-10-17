@@ -41,6 +41,8 @@ pub(crate) struct Inputs {
     pub(crate) host_bmc: Option<Target>,
     /// The factory account, which a factory reset must restore.
     pub(crate) factory: Option<Target>,
+    /// How many CX9 SuperNICs the host has.
+    pub(crate) super_nics: Option<u8>,
 }
 
 pub(crate) struct UefiPassword {
@@ -59,6 +61,7 @@ pub(super) enum Needs {
     UefiPassword,
     AcCycle,
     HostBmc,
+    SuperNics,
 }
 
 impl Needs {
@@ -70,6 +73,7 @@ impl Needs {
             Self::UefiPassword => "--uefi-password",
             Self::AcCycle => "--allow-ac-cycle",
             Self::HostBmc => "--host-bmc",
+            Self::SuperNics => "--super-nics",
         };
         Outcome::Skipped(format!("needs {flag}"))
     }
@@ -83,6 +87,7 @@ impl Inputs {
             Needs::UefiPassword => self.uefi_password.is_some(),
             Needs::AcCycle => self.allow_ac_cycle,
             Needs::HostBmc => self.host_bmc.is_some(),
+            Needs::SuperNics => self.super_nics.is_some(),
         }
     }
 
@@ -99,6 +104,10 @@ impl Inputs {
         self.uefi_password
             .as_ref()
             .ok_or_else(|| Needs::UefiPassword.skipped())
+    }
+
+    pub(super) fn required_super_nics(&self) -> Result<u8, Outcome> {
+        self.super_nics.ok_or_else(|| Needs::SuperNics.skipped())
     }
 
     pub(super) fn required_host_bmc(&self) -> Result<&Target, Outcome> {
@@ -184,7 +193,7 @@ pub(crate) struct Check {
     pub(crate) id: CheckId,
     pub(crate) capability: Capability,
     pub(crate) kind: Kind,
-    pub(super) needs: Option<Needs>,
+    pub(super) needs: &'static [Needs],
     /// Checks that must not have failed for this one to run.
     pub(super) after: &'static [CheckId],
     /// Whether the check may run again when it finds the BMC unreachable;
@@ -200,7 +209,7 @@ impl Check {
             id: CheckId::new(id),
             capability,
             kind: Kind::Read,
-            needs: None,
+            needs: &[],
             after: &[],
             rerun: true,
             timeout: Duration::from_secs(60),
@@ -222,11 +231,8 @@ impl Check {
         Self { timeout, ..self }
     }
 
-    pub(super) fn needs(self, needs: Needs) -> Self {
-        Self {
-            needs: Some(needs),
-            ..self
-        }
+    pub(super) fn needs(self, needs: &'static [Needs]) -> Self {
+        Self { needs, ..self }
     }
 
     pub(super) fn after(self, after: &'static [CheckId]) -> Self {

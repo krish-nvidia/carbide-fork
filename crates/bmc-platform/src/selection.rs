@@ -53,6 +53,7 @@ pub enum Capability {
     Dpu,
     Attestation,
     Console,
+    SuperNic,
 }
 
 impl Capability {

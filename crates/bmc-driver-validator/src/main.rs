@@ -165,6 +165,11 @@ struct Args {
     )]
     current_uefi_password: String,
 
+    /// How many CX9 SuperNICs the host has, as its expected machine lists
+    /// them; SuperNIC checks need it.
+    #[arg(long, value_name = "COUNT")]
+    super_nics: Option<u8>,
+
     /// Let `--validate` cut and restore AC power to the host.
     #[arg(long, requires = "validate")]
     allow_ac_cycle: bool,
@@ -392,6 +397,7 @@ fn inputs(args: &Args, factory: Option<Target>) -> Result<Inputs, String> {
             )
         }),
         factory,
+        super_nics: args.super_nics,
     })
 }
 

@@ -19,7 +19,7 @@
 
 use bmc_platform::Capability;
 
-use super::model::{Check, Inputs, Kind, Needs, Outcome};
+use super::model::{Check, Inputs, Kind, Outcome};
 use super::validate::{self, EndState};
 use super::{apply, reads};
 use crate::selection::Selection;
@@ -65,8 +65,9 @@ pub(crate) fn plan(
             } else {
                 check
                     .needs
-                    .filter(|needs| !inputs.has(*needs))
-                    .map(Needs::skipped)
+                    .iter()
+                    .find(|needs| !inputs.has(**needs))
+                    .map(|needs| needs.skipped())
             };
             Planned { check, skip }
         })

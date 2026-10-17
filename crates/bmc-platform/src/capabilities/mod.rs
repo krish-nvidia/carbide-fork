@@ -27,6 +27,7 @@ mod lockdown;
 mod power;
 mod secure_boot;
 mod storage;
+mod super_nic;
 
 pub use accounts::Accounts;
 pub use attestation::{Attestation, EvidenceProgress};
@@ -45,3 +46,4 @@ pub use lockdown::{Lockdown, LockdownDesiredState, LockdownScope, LockdownState,
 pub use power::Power;
 pub use secure_boot::{SecureBoot, SecureBootStatus};
 pub use storage::Storage;
+pub use super_nic::SuperNic;

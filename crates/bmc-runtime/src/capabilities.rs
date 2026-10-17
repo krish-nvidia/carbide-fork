@@ -29,7 +29,7 @@ use bmc_platform::{
     DpuStatus, DriverOutcome, EvidenceProgress, Firmware, FirmwareUpload, HostPrivilegeLevel,
     Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, ManagerSettings,
     ManagerSettingsStatus, NicMode, OperationReference, PlatformError, Power, RshimState,
-    SecureBoot, SecureBootStatus, Storage, TimeStatus,
+    SecureBoot, SecureBootStatus, Storage, SuperNic, TimeStatus,
 };
 use nv_redfish::Bmc;
 use nv_redfish::account::ManagerAccountCreate;
@@ -149,6 +149,14 @@ where
     pub fn storage(&self) -> Result<BoundDriver<'_, dyn Storage<B>, B>, CatalogError> {
         Ok(BoundDriver {
             driver: self.drivers().storage()?,
+            bmc: self,
+        })
+    }
+
+    /// The SuperNIC driver selected for this BMC.
+    pub fn super_nic(&self) -> Result<BoundDriver<'_, dyn SuperNic<B>, B>, CatalogError> {
+        Ok(BoundDriver {
+            driver: self.drivers().super_nic()?,
             bmc: self,
         })
     }
@@ -647,6 +655,29 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         self.driver
             .create_volume(&self.bmc.operation_context(), controller_id, volume_name)
+            .await
+    }
+}
+
+impl<B: Bmc + 'static> BoundDriver<'_, dyn SuperNic<B>, B>
+where
+    B::Error: ClassifyBmcError,
+{
+    /// See [`SuperNic::east_west_control`].
+    pub async fn east_west_control(&self, index: u8) -> Result<Option<bool>, PlatformError> {
+        self.driver
+            .east_west_control(&self.bmc.operation_context(), index)
+            .await
+    }
+
+    /// See [`SuperNic::set_east_west_control`].
+    pub async fn set_east_west_control(
+        &self,
+        index: u8,
+        enabled: bool,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.driver
+            .set_east_west_control(&self.bmc.operation_context(), index, enabled)
             .await
     }
 }

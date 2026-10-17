@@ -82,7 +82,7 @@ pub(super) fn boot_order() -> Check {
         Capability::BootOrder,
         run!(boot_order_configure),
     )
-    .needs(Needs::BootInterface)
+    .needs(&[Needs::BootInterface])
 }
 
 pub(super) fn console() -> Check {
