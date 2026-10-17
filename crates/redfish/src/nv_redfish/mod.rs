@@ -308,6 +308,26 @@ impl Bmc for RedfishBmc {
 pub type ServiceRoot = NvServiceRoot<RedfishBmc>;
 pub type Error = NvError<RedfishBmc>;
 
+/// An authenticated transport and the service root created from that exact transport.
+///
+/// Keeping these together lets operation drivers use typed `Bmc` requests for
+/// OEM resources without creating a second connection or carrying credentials.
+///
+/// This pair exists only because nv-redfish's `ServiceRoot<B>` keeps its
+/// transport private. Once nv-redfish exposes a `bmc()` accessor on
+/// `ServiceRoot` (it already owns an `NvBmc<B>` wrapping `Arc<B>`), the pool
+/// can go back to caching `Arc<ServiceRoot>` alone, this type and
+/// `connection_with_bmc_credentials` can be deleted, and
+/// `bmc_runtime::ConnectedBmc` can hold just the root. That is an upstream
+/// change to be agreed with the nv-redfish maintainers.
+#[derive(Clone)]
+pub struct NvRedfishConnection {
+    /// The authenticated transport.
+    pub bmc: Arc<RedfishBmc>,
+    /// The service root fetched through `bmc`.
+    pub service_root: Arc<ServiceRoot>,
+}
+
 /// Service roots are refreshed hourly so long-running processes eventually
 /// observe BMC replacements, upgrades, and configuration changes.
 const DEFAULT_SERVICE_ROOT_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -461,10 +481,16 @@ impl ServiceRootCache {
         self.next_generation += 1;
         generation
     }
+
+    fn invalidate_bmc(&mut self, bmc_address: SocketAddr) {
+        self.roots.retain(|key, _| key.bmc_address != bmc_address);
+        self.expirations
+            .retain(|expiration| expiration.0.key.bmc_address != bmc_address);
+    }
 }
 
 struct CachedServiceRoot {
-    root: Arc<ServiceRoot>,
+    connection: NvRedfishConnection,
     generation: u64,
 }
 
@@ -547,14 +573,38 @@ impl NvRedfishClientPool {
         should_cache: impl FnOnce(&ServiceRoot) -> bool,
     ) -> Result<Arc<ServiceRoot>, Error> {
         let bmc_credentials = self.bmc_credentials(credentials)?;
+        self.connection_with_cache_predicate(bmc_address, bmc_credentials, should_cache)
+            .await
+            .map(|connection| connection.service_root)
+    }
+
+    /// Returns an authenticated BMC transport and its service root.
+    ///
+    /// The credentials, including the complete token or username/password
+    /// material, are part of the cache key.
+    pub async fn connection_with_bmc_credentials(
+        &self,
+        bmc_address: SocketAddr,
+        credentials: BmcCredentials,
+    ) -> Result<NvRedfishConnection, Error> {
+        self.connection_with_cache_predicate(bmc_address, credentials, |_| true)
+            .await
+    }
+
+    async fn connection_with_cache_predicate(
+        &self,
+        bmc_address: SocketAddr,
+        bmc_credentials: BmcCredentials,
+        should_cache: impl FnOnce(&ServiceRoot) -> bool,
+    ) -> Result<NvRedfishConnection, Error> {
         self.remove_expired(Instant::now());
         self.refresh_mutual_client().await?;
 
-        if let Some(cached) = self.cached_root(bmc_address, bmc_credentials.clone()) {
+        if let Some(cached) = self.cached_connection(bmc_address, bmc_credentials.clone()) {
             Ok(cached)
         } else {
-            let bmc = self.create_bmc(bmc_address, bmc_credentials.clone(), false)?;
-            let service_root = ServiceRoot::new(bmc).await?;
+            let mut bmc = self.create_bmc(bmc_address, bmc_credentials.clone(), false)?;
+            let service_root = ServiceRoot::new(bmc.clone()).await?;
             let service_root = if service_root.vendor()
                 == Some(nv_redfish::service_root::Vendor::new("HPE"))
                 && let Some(HpeManagerType::Ilo(version)) = service_root
@@ -572,16 +622,19 @@ impl NvRedfishClientPool {
                 // when reqwest thinks that connection is alive but it
                 // is about to close by server. Reusing such
                 // connections causes errors.
-                let bmc = self.create_bmc(bmc_address, bmc_credentials.clone(), true)?;
-                service_root.replace_bmc(bmc)
+                bmc = self.create_bmc(bmc_address, bmc_credentials.clone(), true)?;
+                service_root.replace_bmc(bmc.clone())
             } else {
                 service_root
             };
-            let service_root = Arc::new(service_root);
-            if should_cache(&service_root) {
-                self.update_cache(bmc_address, bmc_credentials, service_root.clone());
+            let connection = NvRedfishConnection {
+                bmc,
+                service_root: Arc::new(service_root),
+            };
+            if should_cache(&connection.service_root) {
+                self.update_cache(bmc_address, bmc_credentials, connection.clone());
             }
-            Ok(service_root)
+            Ok(connection)
         }
     }
 
@@ -603,11 +656,11 @@ impl NvRedfishClientPool {
         }
     }
 
-    fn cached_root(
+    fn cached_connection(
         &self,
         bmc_address: SocketAddr,
         credentials: BmcCredentials,
-    ) -> Option<Arc<ServiceRoot>> {
+    ) -> Option<NvRedfishConnection> {
         let proxy_address = self.proxy_address.load();
         let key = PoolKey {
             proxy_address: proxy_address.clone(),
@@ -619,14 +672,14 @@ impl NvRedfishClientPool {
             .expect("nv-redfish client cache mutex poisoned")
             .roots
             .get(&key)
-            .map(|entry| entry.root.clone())
+            .map(|entry| entry.connection.clone())
     }
 
     fn update_cache(
         &self,
         bmc_address: SocketAddr,
         credentials: BmcCredentials,
-        root: Arc<ServiceRoot>,
+        connection: NvRedfishConnection,
     ) {
         let proxy_address = self.proxy_address.load();
         let key = PoolKey {
@@ -640,9 +693,13 @@ impl NvRedfishClientPool {
             .expect("nv-redfish client cache mutex poisoned");
         let expires_at = Instant::now() + self.cache_ttl;
         let generation = cache.allocate_generation();
-        cache
-            .roots
-            .insert(key.clone(), CachedServiceRoot { root, generation });
+        cache.roots.insert(
+            key.clone(),
+            CachedServiceRoot {
+                connection,
+                generation,
+            },
+        );
         cache.expirations.push(Reverse(CacheExpiration {
             expires_at,
             generation,
@@ -729,6 +786,16 @@ impl NvRedfishClientPool {
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// Evicts every cached service root for `bmc_address`.
+    ///
+    /// All credential and proxy variants for the address are removed.
+    pub fn invalidate_service_roots_for_bmc(&self, bmc_address: SocketAddr) {
+        self.cache
+            .lock()
+            .expect("nv-redfish client cache mutex poisoned")
+            .invalidate_bmc(bmc_address);
     }
 
     pub fn create_bmc(
@@ -837,6 +904,63 @@ mod tests {
     use carbide_instrument::testing::{CapturedFieldKind, capture_logs};
 
     use super::*;
+
+    fn pool_key(
+        proxy_address: Option<HostPortPair>,
+        bmc_address: &str,
+        credentials: BmcCredentials,
+    ) -> PoolKey {
+        PoolKey {
+            proxy_address: Arc::new(proxy_address),
+            bmc_address: bmc_address.parse().unwrap(),
+            credentials,
+        }
+    }
+
+    #[test]
+    fn bmc_invalidation_removes_matching_expirations() {
+        let target_address = "127.0.0.1:443";
+        let other_address = "127.0.0.2:443";
+        let expirations = [
+            pool_key(
+                None,
+                target_address,
+                BmcCredentials::token("direct-token".to_string()),
+            ),
+            pool_key(
+                Some(HostPortPair::PortOnly(8443)),
+                target_address,
+                BmcCredentials::token("proxied-token".to_string()),
+            ),
+            pool_key(
+                None,
+                other_address,
+                BmcCredentials::token("other-token".to_string()),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(generation, key)| {
+            Reverse(CacheExpiration {
+                expires_at: Instant::now(),
+                generation: generation as u64,
+                key,
+            })
+        })
+        .collect();
+        let mut cache = ServiceRootCache {
+            expirations,
+            ..Default::default()
+        };
+
+        cache.invalidate_bmc(target_address.parse().unwrap());
+
+        assert_eq!(cache.expirations.len(), 1);
+        assert_eq!(
+            cache.expirations.peek().unwrap().0.key.bmc_address,
+            other_address.parse().unwrap(),
+        );
+    }
 
     fn test_bmc(credentials: BmcCredentials) -> RedfishBmc {
         let sensitive_values = sensitive_values(&credentials);

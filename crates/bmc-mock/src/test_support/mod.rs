@@ -253,6 +253,8 @@ pub struct TestBmcHandle<C: Callbacks = TestCallbacks> {
     /// The client behind `service_root`, for collectors that take the BMC
     /// directly rather than a service root.
     pub bmc: Arc<TestBmc>,
+    /// The router client behind `bmc`, which records every request.
+    pub http_client: AxumRouterHttpClient,
     pub state: BmcState<C>,
 }
 
@@ -261,6 +263,7 @@ impl<C: Callbacks> Clone for TestBmcHandle<C> {
         Self {
             service_root: self.service_root.clone(),
             bmc: self.bmc.clone(),
+            http_client: self.http_client.clone(),
             state: self.state.clone(),
         }
     }
@@ -271,7 +274,7 @@ async fn test_bmc<C: Callbacks>((router, state): (axum::Router, BmcState<C>)) ->
     let endpoint = Url::parse("https://bmc-mock.local").expect("valid URL");
     let credentials = BmcCredentials::new("root".to_string(), "password".to_string());
     let bmc = Arc::new(HttpBmc::new(
-        client,
+        client.clone(),
         endpoint,
         credentials,
         CacheSettings::with_capacity(32),
@@ -282,6 +285,7 @@ async fn test_bmc<C: Callbacks>((router, state): (axum::Router, BmcState<C>)) ->
             .unwrap()
             .into(),
         bmc,
+        http_client: client,
         state,
     }
 }

@@ -18,6 +18,7 @@
 use std::convert::identity;
 use std::fmt;
 
+use bmc_platform::ChassisIdentity;
 use carbide_network::BaseMac;
 use itertools::Itertools;
 use mac_address::MacAddress;
@@ -89,6 +90,21 @@ impl<B: Bmc> ExploredChassisCollection<B> {
 
     pub(crate) fn to_model(&self) -> Vec<Chassis> {
         self.members.iter().map(|v| v.to_model()).collect()
+    }
+
+    pub(crate) fn identities(&self) -> Vec<ChassisIdentity> {
+        self.members
+            .iter()
+            .map(|member| {
+                let raw = member.chassis.raw();
+                ChassisIdentity {
+                    id: raw.id.clone(),
+                    manufacturer: raw.manufacturer.clone().flatten(),
+                    model: raw.model.clone().flatten(),
+                    part_number: raw.part_number.clone().flatten(),
+                }
+            })
+            .collect()
     }
 
     /// `fetch_network_adapter_ports` reads supplemental adapter `Port`
