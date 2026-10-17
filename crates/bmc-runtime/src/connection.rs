@@ -23,6 +23,7 @@ use carbide_redfish::nv_redfish::{
 };
 use thiserror::Error;
 
+use crate::observe::observe;
 use crate::{
     BmcRef, ConnectError, ConnectedBmc, CredentialLease, CredentialRequest, CredentialRequestError,
     RuntimeAuthMode, RuntimeCredentialProvider,
@@ -68,6 +69,14 @@ impl ConnectionManager {
         ipmi: Option<Arc<dyn IpmiOps>>,
     ) -> Result<ConnectedBmc<RedfishBmc>, ConnectError> {
         let connection = self.authenticated_connection(&endpoint).await?;
+        let selection = endpoint.selection();
+        tracing::debug!(
+            bmc = %endpoint.address(),
+            drivers = %selection.drivers,
+            quirks = ?selection.quirks,
+            rules_hash = %selection.hash,
+            "BMC connected with its selected drivers"
+        );
         Ok(ConnectedBmc::new(
             endpoint,
             connection.bmc,
@@ -132,12 +141,14 @@ impl ConnectionManager {
             .issue(&request)
             .await
             .map_err(ConnectError::Credentials)?;
-        self.pool
-            .connection_with_bmc_credentials(endpoint.address(), lease.credentials().clone())
-            .await
-            .map_err(|error: RedfishError| {
-                ConnectError::Transport(PlatformError::from_redfish(error))
-            })
+        observe(endpoint, None, "create_client", async {
+            self.pool
+                .connection_with_bmc_credentials(endpoint.address(), lease.credentials().clone())
+                .await
+                .map_err(|error: RedfishError| PlatformError::from_redfish(error))
+        })
+        .await
+        .map_err(ConnectError::Transport)
     }
 }
 

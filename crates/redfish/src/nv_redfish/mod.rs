@@ -120,6 +120,31 @@ impl RedfishBmc {
     }
 }
 
+impl RedfishBmc {
+    /// A write can carry a password other than the client's own, such as an
+    /// account's new password or a BIOS password change. Include the values
+    /// of request fields named like a password when sanitizing the returned
+    /// and logged HTTP error.
+    fn finish_request<T, V: Serialize>(
+        &self,
+        operation: &'static str,
+        request: &V,
+        result: Result<T, BmcError>,
+    ) -> Result<T, BmcError> {
+        if result.is_ok() {
+            return result;
+        }
+        let mut sensitive_values = self.sensitive_values.to_vec();
+        if let Ok(request) = serde_json::to_value(request) {
+            collect_password_fields(&request, &mut sensitive_values);
+        }
+        sensitive_values.sort_unstable();
+        sensitive_values.dedup();
+
+        self.finish_with_sensitive_values(operation, result, &sensitive_values)
+    }
+}
+
 fn redact_bmc_error<T>(
     result: Result<T, BmcError>,
     sensitive_values: &[String],
@@ -169,6 +194,31 @@ fn sensitive_values(credentials: &BmcCredentials) -> Arc<[String]> {
         BmcCredentials::Token { .. } => Vec::new(),
     };
     Arc::from(sensitive_values)
+}
+
+/// Collects the non-empty strings under every field whose name contains
+/// `password`, in any letter case and at any depth.
+fn collect_password_fields(value: &serde_json::Value, strings: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                if name.to_ascii_lowercase().contains("password") {
+                    collect_nonempty_json_strings(value, strings);
+                } else {
+                    collect_password_fields(value, strings);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_password_fields(value, strings);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
 }
 
 fn collect_nonempty_json_strings(value: &serde_json::Value, strings: &mut Vec<String>) {
@@ -234,7 +284,7 @@ impl Bmc for RedfishBmc {
         query: &V,
     ) -> Result<ModificationResponse<R>, Self::Error> {
         let result = self.inner.create(id, query).await;
-        self.finish("create", result)
+        self.finish_request("create", query, result)
     }
 
     async fn create_session<
@@ -259,7 +309,7 @@ impl Bmc for RedfishBmc {
         update: &V,
     ) -> Result<ModificationResponse<R>, Self::Error> {
         let result = self.inner.update(id, etag, update).await;
-        self.finish("update", result)
+        self.finish_request("update", update, result)
     }
 
     async fn delete<R: EntityTypeRef + for<'de> Deserialize<'de>>(
@@ -279,7 +329,7 @@ impl Bmc for RedfishBmc {
         params: &T,
     ) -> Result<ModificationResponse<R>, Self::Error> {
         let result = self.inner.action(action, params).await;
-        self.finish("action", result)
+        self.finish_request("action", params, result)
     }
 
     async fn multipart_update<U, V, R>(
@@ -1152,6 +1202,52 @@ mod tests {
         assert_eq!(
             response["error"]["message"],
             "REDACTED rejected REDACTED for REDACTED"
+        );
+    }
+
+    /// A write's password fields, at any depth, are masked in the logged and
+    /// returned error; its other fields stay readable.
+    #[test]
+    fn write_failure_redacts_request_password_fields_before_logging_and_returning() {
+        let bmc = test_bmc(BmcCredentials::Token {
+            token: "client-token".to_string(),
+        });
+        let request = serde_json::json!({
+            "UserName": "operator",
+            "Password": "account-secret",
+            "Attributes": { "AdministratorPassword_00B7": "uefi-secret" },
+        });
+        let error = BmcError::InvalidResponse {
+            url: Url::parse("https://bmc.example/redfish/v1/AccountService/Accounts/3")
+                .expect("valid test URL"),
+            status: http::StatusCode::BAD_REQUEST,
+            text: r#"{"error":{"message":"operator: account-secret and uefi-secret rejected"}}"#
+                .to_string(),
+        };
+
+        let mut result: Option<Result<(), BmcError>> = None;
+        let logs = capture_logs(|| {
+            result = Some(bmc.finish_request("update", &request, Err(error)));
+        });
+        let error = result
+            .expect("captured result")
+            .expect_err("HTTP failure remains an error");
+
+        let log = logs.first().expect("one nv-redfish failure log");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(log.field("operation"), Some("update"));
+        assert_eq!(
+            log.field("error"),
+            Some("operator: REDACTED and REDACTED rejected")
+        );
+        let BmcError::InvalidResponse { text, .. } = error else {
+            panic!("HTTP error remains an HTTP error after redaction");
+        };
+        let response: serde_json::Value =
+            serde_json::from_str(&text).expect("redacted body remains valid JSON");
+        assert_eq!(
+            response["error"]["message"],
+            "operator: REDACTED and REDACTED rejected"
         );
     }
 

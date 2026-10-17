@@ -27,6 +27,7 @@ repository.workspace = true
 async-trait = { workspace = true }
 bmc-drivers = { path = "../bmc-drivers" }
 bmc-platform = { path = "../bmc-platform" }
+carbide-instrument = { path = "../instrument" }
 carbide-ipmi = { path = "../ipmi" }
 carbide-redfish = { path = "../redfish" }
 carbide-secrets = { path = "../secrets", default-features = false }
@@ -47,9 +48,12 @@ nv-redfish = { features = [
 serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+carbide-instrument = { path = "../instrument", features = ["test-support"] }
 carbide-test-support = { path = "../test-support" }
+tokio = { features = ["macros", "rt"], workspace = true }
 
 [lints]
 workspace = true

@@ -952,6 +952,7 @@ dependencies = [
  "async-trait",
  "bmc-drivers",
  "bmc-platform",
+ "carbide-instrument",
  "carbide-ipmi",
  "carbide-redfish",
  "carbide-secrets",
@@ -963,6 +964,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

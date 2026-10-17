@@ -32,13 +32,20 @@ pub enum CapabilitySelection {
     Driver(Driver),
 }
 
+/// The selection's wire form: `standard`, `unsupported`, or the driver id.
+impl fmt::Display for CapabilitySelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Standard => "standard",
+            Self::Unsupported => "unsupported",
+            Self::Driver(driver) => driver.as_str(),
+        })
+    }
+}
+
 impl Serialize for CapabilitySelection {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Standard => serializer.serialize_str("standard"),
-            Self::Unsupported => serializer.serialize_str("unsupported"),
-            Self::Driver(driver) => serializer.serialize_str(driver.as_str()),
-        }
+        serializer.collect_str(self)
     }
 }
 
@@ -88,6 +95,19 @@ impl DriverMap {
     /// Iterates selections in [`Capability`] declaration order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (Capability, &CapabilitySelection)> {
         Capability::iter().zip(&self.0)
+    }
+}
+
+/// `capability=selection` pairs in [`Capability`] declaration order.
+impl fmt::Display for DriverMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, (capability, selection)) in self.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(" ")?;
+            }
+            write!(formatter, "{capability}={selection}")?;
+        }
+        Ok(())
     }
 }
 
