@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+use bmc_platform::FirmwareInventoryIdentity;
 use model::site_explorer::{Inventory as ModelInventory, Service as ModelService};
 use nv_redfish::update_service::SoftwareInventory;
 use nv_redfish::{Bmc, ServiceRoot};
@@ -57,36 +58,7 @@ impl<B: Bmc> ExploredInventories<B> {
                 .map(|inventory| ModelInventory {
                     id: inventory.raw().id.clone(),
                     description: inventory.raw().description.clone().flatten(),
-                    version: match hw_type {
-                        Some(hw::HwType::Lenovo) => {
-                            inventory.version().map(|v| {
-                                // Original comment from libredfish:
-                                //
-                                // Lenovo prepends the last two characters of
-                                // their "Build/Vendor" ID and a dash to most
-                                // of the versions.  This confuses things, so
-                                // trim off anything that's before a dash.
-                                v.into_inner()
-                                    .split('-')
-                                    .next_back()
-                                    .unwrap_or("")
-                                    .to_string()
-                            })
-                        }
-                        Some(hw::HwType::Gb200) => {
-                            inventory.version().map(|v| {
-                                // Original comment from libredfish:
-                                //
-                                // BMC firmware gets prepended with "GB200Nvl-", (L, not 1!) so trim that off when we see it.
-                                let x = v.into_inner();
-                                x.strip_prefix("GB200Nvl-").unwrap_or(x).to_string()
-                            })
-                        }
-                        Some(hw::HwType::Supermicro) => inventory
-                            .version()
-                            .map(|v| hw::supermicro::firmware_version(v.into_inner()).to_string()),
-                        _ => inventory.version().map(|v| v.to_string()),
-                    },
+                    version: normalized_version(inventory, hw_type),
                     release_date: inventory.release_date().map(|v| v.into_inner().to_string()),
                     drive: None,
                 })
@@ -94,5 +66,51 @@ impl<B: Bmc> ExploredInventories<B> {
                 .collect(),
         };
         vec![fw_inventories]
+    }
+
+    pub(crate) fn identities(&self, hw_type: Option<hw::HwType>) -> Vec<FirmwareInventoryIdentity> {
+        self.members
+            .iter()
+            .map(|inventory| FirmwareInventoryIdentity {
+                id: inventory.raw().id.clone(),
+                version: normalized_version(inventory, hw_type),
+            })
+            .collect()
+    }
+}
+
+fn normalized_version<B: Bmc>(
+    inventory: &SoftwareInventory<B>,
+    hw_type: Option<hw::HwType>,
+) -> Option<String> {
+    match hw_type {
+        Some(hw::HwType::Lenovo) => {
+            inventory.version().map(|v| {
+                // Original comment from libredfish:
+                //
+                // Lenovo prepends the last two characters of
+                // their "Build/Vendor" ID and a dash to most
+                // of the versions.  This confuses things, so
+                // trim off anything that's before a dash.
+                v.into_inner()
+                    .split('-')
+                    .next_back()
+                    .unwrap_or("")
+                    .to_string()
+            })
+        }
+        Some(hw::HwType::Gb200) => {
+            inventory.version().map(|v| {
+                // Original comment from libredfish:
+                //
+                // BMC firmware gets prepended with "GB200Nvl-", (L, not 1!) so trim that off when we see it.
+                let x = v.into_inner();
+                x.strip_prefix("GB200Nvl-").unwrap_or(x).to_string()
+            })
+        }
+        Some(hw::HwType::Supermicro) => inventory
+            .version()
+            .map(|v| hw::supermicro::firmware_version(v.into_inner()).to_string()),
+        _ => inventory.version().map(|v| v.to_string()),
     }
 }

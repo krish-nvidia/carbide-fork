@@ -47,6 +47,7 @@ mod computer_system;
 mod drives;
 mod error;
 pub mod hw;
+mod identity;
 mod inventories;
 mod manager;
 mod network_adapter;
@@ -58,11 +59,13 @@ use std::convert::identity;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bmc_platform::PlatformIdentity;
 use chassis::ExploredChassisCollection;
 use component_integrity::ExploredComponentIntegrity;
 use computer_system::ExploredComputerSystem;
 use drives::ExploredDrives;
 pub use error::Error;
+pub use identity::service_root_identity;
 use inventories::ExploredInventories;
 use itertools::Itertools;
 use mac_address::MacAddress;
@@ -97,6 +100,29 @@ pub enum ErrorClass {
 }
 
 pub type ErrorClassifier<'a, B> = &'a (dyn Fn(&<B as Bmc>::Error) -> Option<ErrorClass> + Sync);
+
+/// Classifies errors of nv-redfish's HTTP client, for [`Config::error_classifier`].
+pub fn nv_redfish_error_class(
+    error: &nv_redfish::bmc_http::reqwest::BmcError,
+) -> Option<ErrorClass> {
+    match error {
+        nv_redfish::bmc_http::reqwest::BmcError::InvalidResponse { status, .. } => {
+            match status.as_u16() {
+                404 => Some(ErrorClass::NotFound),
+                500 => Some(ErrorClass::InternalServerError),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// What exploring an endpoint found: the report site-explorer stores, and
+/// the identity driver selection matches on, projected from the same reads.
+pub struct Exploration {
+    pub report: EndpointExplorationReport,
+    pub identity: PlatformIdentity,
+}
 
 fn is_bluefield_system_id(id: &str) -> bool {
     matches!(id, "Bluefield" | "BlueField_0")
@@ -172,9 +198,20 @@ fn build_chassis_explore_config<B: Bmc>(root: &ServiceRoot<B>) -> chassis::Confi
 /// Collects required resources, then converts them into an exploration report.
 #[tracing::instrument(name = "generate_exploration_report", skip_all)]
 pub async fn nv_generate_exploration_report<B: Bmc>(
-    mut root: Arc<ServiceRoot<B>>,
+    root: Arc<ServiceRoot<B>>,
     config: &Config<'_, B>,
 ) -> Result<EndpointExplorationReport, Error<B>> {
+    nv_explore(root, config)
+        .await
+        .map(|exploration| exploration.report)
+}
+
+/// Explores as [`nv_generate_exploration_report`] does, also returning the
+/// identity driver selection matches on.
+pub async fn nv_explore<B: Bmc>(
+    mut root: Arc<ServiceRoot<B>>,
+    config: &Config<'_, B>,
+) -> Result<Exploration, Error<B>> {
     let chassis_explore_config = build_chassis_explore_config(&root);
     let mut explored_chassis =
         ExploredChassisCollection::explore(&root, &chassis_explore_config).await?;
@@ -433,12 +470,20 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let identity = identity::project(
+        &root,
+        Some(&explored_system.system),
+        &explored_manager.manager,
+        &explored_chassis,
+        &explored_inventories,
+        hw_type,
+    );
     let manager = explored_manager.to_model()?;
     let service = explored_inventories.to_model(hw_type, explored_drives.as_ref());
     let hardware_class = hardware_class(&root, &systems[0]);
     let chassis = explored_chassis.to_model();
     let component_integrities = explored_component_integrities.to_model();
-    Ok(EndpointExplorationReport {
+    let report = EndpointExplorationReport {
         endpoint_type: EndpointType::Bmc,
         last_exploration_error: None,
         last_exploration_latency: None,
@@ -460,7 +505,8 @@ pub async fn nv_generate_exploration_report<B: Bmc>(
         lockdown_status,
         remediation_error: None,
         ..Default::default()
-    })
+    };
+    Ok(Exploration { report, identity })
 }
 
 /// `should_use_network_adapter_port_fallback` limits supplemental host MAC
@@ -497,7 +543,7 @@ async fn build_delta_powershelf_report<B: Bmc>(
     explored_chassis: ExploredChassisCollection<B>,
     explored_inventories: ExploredInventories<B>,
     explored_component_integrities: ExploredComponentIntegrity<B>,
-) -> Result<EndpointExplorationReport, Error<B>> {
+) -> Result<Exploration, Error<B>> {
     let hw_type = hw::HwType::DeltaPowerShelf;
 
     let manager = root
@@ -513,11 +559,19 @@ async fn build_delta_powershelf_report<B: Bmc>(
         .ok_or_else(Error::bmc_not_provided("at least one manager"))?;
     let explored_manager = ExploredManager::explore(manager, &manager::Config::default()).await?;
 
+    let identity = identity::project(
+        root,
+        None,
+        &explored_manager.manager,
+        &explored_chassis,
+        &explored_inventories,
+        Some(hw_type),
+    );
     let system = explored_chassis.synthesized_powershelf_system();
     let hardware_class = hardware_class(root, &system);
     let component_integrities = explored_component_integrities.to_model();
 
-    Ok(EndpointExplorationReport {
+    let report = EndpointExplorationReport {
         endpoint_type: EndpointType::Bmc,
         last_exploration_error: None,
         last_exploration_latency: None,
@@ -543,7 +597,8 @@ async fn build_delta_powershelf_report<B: Bmc>(
         lockdown_status: None,
         remediation_error: None,
         ..Default::default()
-    })
+    };
+    Ok(Exploration { report, identity })
 }
 
 /// The class recorded for an endpoint: the host system's reported identity,
