@@ -55,7 +55,7 @@ pub(super) fn checks() -> Vec<Check> {
             Capability::BootOrder,
             run!(boot_order_status),
         )
-        .needs(Needs::BootInterface),
+        .needs(&[Needs::BootInterface]),
         Check::read(
             "secure_boot.status",
             Capability::SecureBoot,
@@ -96,6 +96,12 @@ pub(super) fn checks() -> Vec<Check> {
         .timeout(EVIDENCE_TIMEOUT + Duration::from_secs(60)),
         Check::read("console.status", Capability::Console, run!(console_status)),
         Check::read("console.spec", Capability::Console, run!(console_spec)),
+        Check::read(
+            "super_nic.east_west",
+            Capability::SuperNic,
+            run!(super_nic_east_west),
+        )
+        .needs(&[Needs::SuperNics]),
     ]
 }
 
@@ -329,6 +335,32 @@ async fn console_spec(cx: &CheckCx<'_>) -> Step {
         ConsoleSpec::SshDirect { port } => format!("direct SSH on port {port}"),
         ConsoleSpec::IpmiSol { port, .. } => format!("IPMI SOL on port {port}"),
         ConsoleSpec::None { reason } => format!("no console transport: {reason}"),
+    })
+}
+
+/// Whether each SuperNIC's embedded CPU manages its east-west traffic.
+async fn super_nic_east_west(cx: &CheckCx<'_>) -> Checked {
+    let count = cx.inputs().required_super_nics()?;
+    let bmc = cx.bmc();
+    let super_nic = bmc.super_nic()?;
+    let mut fields = Vec::with_capacity(count.into());
+    for index in 0..count {
+        let state = super_nic
+            .east_west_control(index)
+            .await
+            .map_err(failed("east_west_control"))?;
+        let state = match state {
+            Some(enabled) => yes_no(enabled, "enabled", "disabled"),
+            None => "unreported".to_string(),
+        };
+        fields.push((format!("SuperNIC {index}"), state));
+    }
+    Ok(Detail {
+        summary: format!(
+            "east-west control on {}",
+            counted(count.into(), "SuperNIC", "SuperNICs")
+        ),
+        fields,
     })
 }
 

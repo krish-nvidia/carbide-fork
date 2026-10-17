@@ -17,7 +17,7 @@ use std::str::FromStr;
 
 use bmc_platform::{
     Accounts, Attestation, Bios, BmcControl, BootOrder, Capability, Console, Dpu, Firmware,
-    Lockdown, Power, SecureBoot, Storage,
+    Lockdown, Power, SecureBoot, Storage, SuperNic,
 };
 use nv_redfish::core::{ActionError, Bmc};
 use thiserror::Error;
@@ -25,7 +25,7 @@ use thiserror::Error;
 use crate::selection::{CapabilitySelection, DriverMap, Rules};
 use crate::{
     accounts, attestation, bios, bmc_control, boot_order, console, dpu, firmware, lockdown, power,
-    secure_boot, storage,
+    secure_boot, storage, super_nic,
 };
 
 /// Declares the catalogue: one block per capability naming its
@@ -289,6 +289,9 @@ drivers! {
         NvidiaOpenBmcConsole = "nvidia-openbmc-console" => console::nvidia::openbmc::OpenBmcConsole,
         NvidiaVikingConsole = "nvidia-viking-console" => console::nvidia::viking::VikingConsole,
         SupermicroBmcConsole = "supermicro-bmc-console" => console::supermicro::bmc::SupermicroBmcConsole,
+    }
+    SuperNic as super_nic, with_super_nic: SuperNic {
+        NvidiaVeraRubinSuperNic = "nvidia-vera-rubin-super-nic" => super_nic::nvidia::vera_rubin::VeraRubinSuperNic,
     }
 }
 

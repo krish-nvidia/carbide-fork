@@ -37,6 +37,7 @@ mod rules;
 mod secure_boot;
 mod selection;
 mod storage;
+mod super_nic;
 #[cfg(test)]
 mod test_support;
 
