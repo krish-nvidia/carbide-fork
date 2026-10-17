@@ -24,6 +24,7 @@ mod credentials;
 mod endpoint;
 mod error;
 mod ipmi;
+mod observe;
 mod status;
 
 pub use capabilities::BoundDriver;

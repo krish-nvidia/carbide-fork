@@ -30,6 +30,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::ConnectedBmc;
+use crate::observe::observe;
 
 /// The message of a `Scheduled` iDRAC job that will never start.
 const JOB_INITIALIZATION_FAILURE: &str = "Job processing initialization failure.";
@@ -45,6 +46,16 @@ where
     ///
     /// A task that handed its work to a job reports the job's status.
     pub async fn operation_status(
+        &self,
+        reference: &OperationReference,
+    ) -> Result<OperationStatus, PlatformError> {
+        observe(self.endpoint(), None, "operation_status", async {
+            self.read_operation_status(reference).await
+        })
+        .await
+    }
+
+    async fn read_operation_status(
         &self,
         reference: &OperationReference,
     ) -> Result<OperationStatus, PlatformError> {
