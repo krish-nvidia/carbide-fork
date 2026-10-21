@@ -87,6 +87,21 @@ impl RedfishBmc {
         self.finish_with_sensitive_values(operation, result, &self.sensitive_values)
     }
 
+    /// [`Self::finish`] for a read that repairs the document: only a
+    /// transport failure carries a BMC body to redact and log.
+    fn finish_repaired<T>(
+        &self,
+        operation: &'static str,
+        result: Result<T, RepairError<BmcError>>,
+    ) -> Result<T, RepairError<BmcError>> {
+        match result {
+            Err(RepairError::Transport(error)) => self
+                .finish(operation, Err(error))
+                .map_err(RepairError::Transport),
+            result => result,
+        }
+    }
+
     fn finish_with_sensitive_values<T>(
         &self,
         operation: &'static str,
@@ -683,6 +698,7 @@ struct PoolKey {
     proxy_address: Arc<Option<HostPortPair>>,
     bmc_address: SocketAddr,
     credentials: BmcCredentials,
+    cache_responses: bool,
 }
 
 impl NvRedfishClientPool {
@@ -734,7 +750,7 @@ impl NvRedfishClientPool {
         should_cache: impl FnOnce(&ServiceRoot) -> bool,
     ) -> Result<Arc<ServiceRoot>, Error> {
         let bmc_credentials = self.bmc_credentials(credentials)?;
-        self.connection_with_cache_predicate(bmc_address, bmc_credentials, should_cache)
+        self.connection_with_cache_predicate(bmc_address, bmc_credentials, true, should_cache)
             .await
             .map(|connection| connection.service_root)
     }
@@ -748,7 +764,19 @@ impl NvRedfishClientPool {
         bmc_address: SocketAddr,
         credentials: BmcCredentials,
     ) -> Result<NvRedfishConnection, Error> {
-        self.connection_with_cache_predicate(bmc_address, credentials, |_| true)
+        self.connection_with_cache_predicate(bmc_address, credentials, true, |_| true)
+            .await
+    }
+
+    /// Same as [`Self::connection_with_bmc_credentials`], but the transport
+    /// reads every resource afresh instead of revalidating a cached copy,
+    /// for a BMC whose ETag does not change when the resource does.
+    pub async fn uncached_connection_with_bmc_credentials(
+        &self,
+        bmc_address: SocketAddr,
+        credentials: BmcCredentials,
+    ) -> Result<NvRedfishConnection, Error> {
+        self.connection_with_cache_predicate(bmc_address, credentials, false, |_| true)
             .await
     }
 
@@ -756,18 +784,42 @@ impl NvRedfishClientPool {
         &self,
         bmc_address: SocketAddr,
         bmc_credentials: BmcCredentials,
+        cache_responses: bool,
         should_cache: impl FnOnce(&ServiceRoot) -> bool,
     ) -> Result<NvRedfishConnection, Error> {
         self.remove_expired(Instant::now());
         self.refresh_mutual_client().await?;
 
-        if let Some(cached) = self.cached_connection(bmc_address, bmc_credentials.clone()) {
+        let key = PoolKey {
+            proxy_address: self.proxy_address.load_full(),
+            bmc_address,
+            credentials: bmc_credentials.clone(),
+            cache_responses,
+        };
+        if let Some(cached) = self.cached_connection(&key) {
             tracing::Span::current().record("cache_hit", true);
             Ok(cached)
         } else {
             tracing::Span::current().record("cache_hit", false);
-            let mut bmc = self.create_bmc(bmc_address, bmc_credentials.clone(), false)?;
-            let service_root = ServiceRoot::new(bmc.clone()).await?;
+            let mut bmc =
+                self.create_bmc(bmc_address, bmc_credentials.clone(), false, cache_responses)?;
+            // A factory BMC that refuses the credentials until the password
+            // changes still serves its service root anonymously; the
+            // connection keeps the credentials so the account PATCH can be
+            // sent, and is not cached past the change.
+            let (service_root, cacheable) = match ServiceRoot::new(bmc.clone()).await {
+                Err(error) if requires_password_change(&error) => {
+                    let anonymous = self.create_bmc(
+                        bmc_address,
+                        BmcCredentials::anonymous(),
+                        false,
+                        cache_responses,
+                    )?;
+                    let root = ServiceRoot::new(anonymous).await?;
+                    (root.replace_bmc(bmc.clone()), false)
+                }
+                result => (result?, true),
+            };
             let service_root = if service_root.vendor()
                 == Some(nv_redfish::service_root::Vendor::new("HPE"))
                 && let Some(HpeManagerType::Ilo(version)) = service_root
@@ -785,7 +837,7 @@ impl NvRedfishClientPool {
                 // when reqwest thinks that connection is alive but it
                 // is about to close by server. Reusing such
                 // connections causes errors.
-                bmc = self.create_bmc(bmc_address, bmc_credentials.clone(), true)?;
+                bmc = self.create_bmc(bmc_address, bmc_credentials, true, cache_responses)?;
                 service_root.replace_bmc(bmc.clone())
             } else {
                 service_root
@@ -794,24 +846,30 @@ impl NvRedfishClientPool {
                 bmc,
                 service_root: Arc::new(service_root),
             };
-            if should_cache(&connection.service_root) {
-                self.update_cache(bmc_address, bmc_credentials, connection.clone());
+            // nv-redfish picks its quirks from the root's vendor, which a BMC
+            // still starting can omit; caching that root would keep the wrong
+            // quirks. Power shelves never report a vendor, so theirs is read
+            // on every connection.
+            if cacheable
+                && connection.service_root.vendor().is_some()
+                && should_cache(&connection.service_root)
+            {
+                self.update_cache(key, connection.clone());
             }
             Ok(connection)
         }
     }
 
     /// The credential nv-redfish's client type carries for one BMC. `None`
-    /// is valid only on the proxied pool: nico-bmc-proxy authenticates
-    /// upstream and strips any `Authorization` header, so an empty
-    /// credential stands in for the type's sake and nothing else.
+    /// is valid only on the proxied pool, which sends none: nico-bmc-proxy
+    /// authenticates upstream.
     fn bmc_credentials(&self, credentials: Option<Credentials>) -> Result<BmcCredentials, Error> {
         match credentials {
             Some(Credentials::UsernamePassword { username, password }) => {
                 Ok(BmcCredentials::new(username, password))
             }
             None if matches!(self.client_tls, NvClientTls::Mutual { .. }) => {
-                Ok(BmcCredentials::new(String::new(), String::new()))
+                Ok(BmcCredentials::anonymous())
             }
             None => Err(Error::Bmc(BmcError::InvalidRequest(
                 "BMC credentials are required for a direct (non-proxied) connection".to_string(),
@@ -819,37 +877,16 @@ impl NvRedfishClientPool {
         }
     }
 
-    fn cached_connection(
-        &self,
-        bmc_address: SocketAddr,
-        credentials: BmcCredentials,
-    ) -> Option<NvRedfishConnection> {
-        let proxy_address = self.proxy_address.load();
-        let key = PoolKey {
-            proxy_address: proxy_address.clone(),
-            bmc_address,
-            credentials,
-        };
+    fn cached_connection(&self, key: &PoolKey) -> Option<NvRedfishConnection> {
         self.cache
             .lock()
             .expect("nv-redfish client cache mutex poisoned")
             .roots
-            .get(&key)
+            .get(key)
             .map(|entry| entry.connection.clone())
     }
 
-    fn update_cache(
-        &self,
-        bmc_address: SocketAddr,
-        credentials: BmcCredentials,
-        connection: NvRedfishConnection,
-    ) {
-        let proxy_address = self.proxy_address.load();
-        let key = PoolKey {
-            proxy_address: proxy_address.clone(),
-            bmc_address,
-            credentials,
-        };
+    fn update_cache(&self, key: PoolKey, connection: NvRedfishConnection) {
         let mut cache = self
             .cache
             .lock()
@@ -966,6 +1003,7 @@ impl NvRedfishClientPool {
         bmc_address: SocketAddr,
         credentials: BmcCredentials,
         connection_close: bool,
+        cache_responses: bool,
     ) -> Result<Arc<RedfishBmc>, Error> {
         // Mirrors the libredfish proxied pool: the Forwarded header carries
         // only the BMC's host and nico-bmc-proxy dials the https default, so
@@ -1026,7 +1064,7 @@ impl NvRedfishClientPool {
             SpanIsolatedHttpClient::new(client),
             bmc_url,
             credentials,
-            CacheSettings::with_capacity(10),
+            CacheSettings::with_capacity(if cache_responses { 10 } else { 0 }),
             headers,
         );
         Ok(Arc::new(RedfishBmc::new(bmc, sensitive_values)))
@@ -1038,6 +1076,16 @@ impl NvRedfishClientPool {
 /// Mirrors `health::BmcAddr::to_url()`: IPv6 hosts are bracketed so the URL
 /// authority parses — a bare `IpAddr` Display leaves IPv6 unbracketed
 /// (e.g. `2001:db8::1`), which `Url::parse` rejects.
+/// Whether the BMC refused a request with `PasswordChangeRequired`, as a
+/// factory BMC does for every credentialed request until the password changes.
+fn requires_password_change(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Bmc(BmcError::InvalidResponse { status, text, .. })
+            if *status == reqwest::StatusCode::FORBIDDEN && text.contains("PasswordChangeRequired")
+    )
+}
+
 fn build_bmc_url(
     proxy_address: &Option<HostPortPair>,
     bmc_address: SocketAddr,
@@ -1077,6 +1125,7 @@ mod tests {
             proxy_address: Arc::new(proxy_address),
             bmc_address: bmc_address.parse().unwrap(),
             credentials,
+            cache_responses: true,
         }
     }
 
@@ -1370,6 +1419,7 @@ mod tests {
             proxy_address: Arc::new(None),
             bmc_address: "127.0.0.1:443".parse().unwrap(),
             credentials: BmcCredentials::new("root".to_string(), "password".to_string()),
+            cache_responses: true,
         };
         let mut cache = ServiceRootCache {
             expirations: BinaryHeap::from([Reverse(CacheExpiration {
@@ -1516,13 +1566,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let pool = proxied_pool_with_generated_pems(&dir);
         let bmc: SocketAddr = "192.0.2.10:443".parse().unwrap();
-        let credentials = BmcCredentials::new(String::new(), String::new());
+        let credentials = BmcCredentials::anonymous();
 
-        pool.create_bmc(bmc, credentials.clone(), false)
+        pool.create_bmc(bmc, credentials.clone(), false, true)
             .expect("valid PEMs must build a proxied client");
 
         let odd_port: SocketAddr = "192.0.2.10:8443".parse().unwrap();
-        let Err(err) = pool.create_bmc(odd_port, credentials.clone(), false) else {
+        let Err(err) = pool.create_bmc(odd_port, credentials.clone(), false, true) else {
             panic!("a non-443 BMC port must fail loudly, not drop the port");
         };
         assert!(
@@ -1531,7 +1581,7 @@ mod tests {
         );
 
         std::fs::remove_file(dir.path().join("tls.key")).expect("remove key");
-        let Err(err) = pool.create_bmc(bmc, credentials, false) else {
+        let Err(err) = pool.create_bmc(bmc, credentials, false, true) else {
             panic!("a missing PEM must fail the client build");
         };
         assert!(
@@ -1553,6 +1603,266 @@ mod tests {
             err.to_string().contains("credentials"),
             "the error should name the missing credentials: {err}"
         );
+    }
+
+    /// Serves `app` over HTTPS with a self-signed certificate on a free
+    /// local port.
+    async fn serve_tls(
+        app: axum::Router,
+    ) -> (SocketAddr, tokio::task::JoinHandle<std::io::Result<()>>) {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
+            .expect("test cert self-signs");
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            certified.cert.pem().into_bytes(),
+            certified.signing_key.serialize_pem().into_bytes(),
+        )
+        .await
+        .expect("test TLS config");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, tls)
+                .expect("test TLS server")
+                .serve(app.into_make_service()),
+        );
+        (address, server)
+    }
+
+    /// An uncached connection reads every resource afresh, so a BMC that
+    /// keeps a resource's ETag across changes cannot answer with a stale 304;
+    /// a cached connection to the same BMC still revalidates.
+    #[tokio::test]
+    async fn uncached_connections_never_revalidate_reads() {
+        use axum::Router;
+        use axum::http::{StatusCode, header};
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use serde_json::json;
+
+        let revalidations = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route(
+                "/redfish/v1",
+                get(|| async {
+                    axum::Json(json!({
+                        "@odata.id": "/redfish/v1", "Id": "RootService", "Name": "Root Service",
+                        "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                        "Links": {"Sessions": {
+                            "@odata.id": "/redfish/v1/SessionService/Sessions",
+                        }},
+                    }))
+                }),
+            )
+            .route(
+                "/redfish/v1/Chassis",
+                get({
+                    let revalidations = revalidations.clone();
+                    move |headers: axum::http::HeaderMap| async move {
+                        let revalidated = headers.contains_key(header::IF_NONE_MATCH);
+                        revalidations.lock().unwrap().push(revalidated);
+                        if revalidated {
+                            StatusCode::NOT_MODIFIED.into_response()
+                        } else {
+                            (
+                                [(header::ETAG, "\"1\"")],
+                                axum::Json(json!({
+                                    "@odata.id": "/redfish/v1/Chassis",
+                                    "@odata.type": "#ChassisCollection.ChassisCollection",
+                                    "@odata.etag": "\"1\"",
+                                    "Name": "Chassis Collection", "Members": [],
+                                })),
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            );
+        let (address, server) = serve_tls(app).await;
+
+        let pool = NvRedfishClientPool::new(Arc::new(ArcSwap::from_pointee(None)));
+        let credentials = BmcCredentials::new("root".to_string(), "password".to_string());
+        for (cache_responses, expected) in [(false, [false, false]), (true, [false, true])] {
+            let connection = if cache_responses {
+                pool.connection_with_bmc_credentials(address, credentials.clone())
+                    .await
+            } else {
+                pool.uncached_connection_with_bmc_credentials(address, credentials.clone())
+                    .await
+            }
+            .expect("the BMC connects");
+            for _ in 0..2 {
+                connection
+                    .service_root
+                    .chassis()
+                    .await
+                    .expect("the chassis collection reads");
+            }
+            assert_eq!(
+                std::mem::take(&mut *revalidations.lock().unwrap()),
+                expected,
+                "cache_responses={cache_responses}"
+            );
+        }
+        server.abort();
+    }
+
+    /// A factory BMC refusing its credentials until the password changes
+    /// still connects: the service root is read without an `Authorization`
+    /// header, which such a BMC refuses even when empty, later requests carry
+    /// the credentials, and the connection is not cached.
+    #[tokio::test]
+    async fn password_change_required_reads_the_service_root_anonymously() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::Router;
+        use axum::http::{StatusCode, header};
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use serde_json::json;
+
+        let (factory, _) = redfish_basic_authorization_context("admin", Some("admin"));
+        let factory = Arc::new(factory);
+        let refused_roots = Arc::new(AtomicUsize::new(0));
+        let is_factory = {
+            let factory = factory.clone();
+            move |headers: &axum::http::HeaderMap| {
+                headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    == Some(factory.as_str())
+            }
+        };
+        let app = Router::new()
+            .route(
+                "/redfish/v1",
+                get({
+                    let is_factory = is_factory.clone();
+                    let refused_roots = refused_roots.clone();
+                    move |headers: axum::http::HeaderMap| async move {
+                        if is_factory(&headers) {
+                            refused_roots.fetch_add(1, Ordering::SeqCst);
+                            let refused = json!({"error": {
+                                "code": "Base.1.12.PasswordChangeRequired",
+                                "@Message.ExtendedInfo": [{
+                                    "MessageId": "Base.1.12.PasswordChangeRequired",
+                                    "MessageArgs": ["/redfish/v1/AccountService/Accounts/4"],
+                                }],
+                            }});
+                            (StatusCode::FORBIDDEN, axum::Json(refused)).into_response()
+                        } else if headers.contains_key(header::AUTHORIZATION) {
+                            StatusCode::UNAUTHORIZED.into_response()
+                        } else {
+                            axum::Json(json!({
+                                "@odata.id": "/redfish/v1", "Id": "RootService",
+                                "Name": "Root Service", "Vendor": "Lenovo",
+                                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                                "Links": {"Sessions": {
+                                    "@odata.id": "/redfish/v1/SessionService/Sessions",
+                                }},
+                            }))
+                            .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/redfish/v1/Chassis",
+                get(move |headers: axum::http::HeaderMap| async move {
+                    if is_factory(&headers) {
+                        axum::Json(json!({
+                            "@odata.id": "/redfish/v1/Chassis",
+                            "@odata.type": "#ChassisCollection.ChassisCollection",
+                            "Name": "Chassis Collection", "Members": [],
+                        }))
+                        .into_response()
+                    } else {
+                        StatusCode::UNAUTHORIZED.into_response()
+                    }
+                }),
+            );
+        let (address, server) = serve_tls(app).await;
+
+        let pool = NvRedfishClientPool::new(Arc::new(ArcSwap::from_pointee(None)));
+        let credentials = BmcCredentials::new("admin".to_string(), "admin".to_string());
+        for attempt in 1..=2 {
+            let connection = pool
+                .connection_with_bmc_credentials(address, credentials.clone())
+                .await
+                .expect("a factory BMC connects");
+            assert_eq!(
+                connection.service_root.vendor(),
+                Some(nv_redfish::service_root::Vendor::new("Lenovo"))
+            );
+            assert!(
+                connection
+                    .service_root
+                    .chassis()
+                    .await
+                    .expect("requests after the root carry the credentials")
+                    .is_some()
+            );
+            assert_eq!(refused_roots.load(Ordering::SeqCst), attempt);
+        }
+        server.abort();
+    }
+
+    /// A root without a vendor, as a BMC still starting can serve, is not
+    /// cached: the next connection reads the root again, and the complete
+    /// root it then gets is cached.
+    #[tokio::test]
+    async fn a_root_without_a_vendor_is_not_cached() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::Router;
+        use axum::routing::get;
+        use serde_json::json;
+
+        let roots = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/redfish/v1",
+            get({
+                let roots = roots.clone();
+                move || async move {
+                    let mut root = json!({
+                        "@odata.id": "/redfish/v1", "Id": "RootService", "Name": "Root Service",
+                        "Links": {"Sessions": {
+                            "@odata.id": "/redfish/v1/SessionService/Sessions",
+                        }},
+                    });
+                    if roots.fetch_add(1, Ordering::SeqCst) > 0 {
+                        root["Vendor"] = json!("NVIDIA");
+                    }
+                    axum::Json(root)
+                }
+            }),
+        );
+        let (address, server) = serve_tls(app).await;
+
+        let pool = NvRedfishClientPool::new(Arc::new(ArcSwap::from_pointee(None)));
+        let credentials = BmcCredentials::new("root".to_string(), "password".to_string());
+        let mut vendors = Vec::new();
+        for _ in 0..3 {
+            let connection = pool
+                .connection_with_bmc_credentials(address, credentials.clone())
+                .await
+                .expect("the BMC connects");
+            vendors.push(
+                connection
+                    .service_root
+                    .vendor()
+                    .map(|vendor| vendor.into_inner().to_string()),
+            );
+        }
+        assert_eq!(
+            vendors,
+            [None, Some("NVIDIA".to_string()), Some("NVIDIA".to_string())]
+        );
+        assert_eq!(roots.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 
     /// The rebuild cadence: within the interval the cached client is served

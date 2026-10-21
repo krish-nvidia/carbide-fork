@@ -76,6 +76,11 @@ pub enum PlatformError {
     /// The hardware did not reach the state the operation waited for.
     #[error("BMC did not reach the expected state in time: {message}")]
     Timeout { message: String },
+    /// The BMC cannot yet answer for something its platform supports, such
+    /// as BIOS settings the host has not reported since the BMC restarted;
+    /// asking again later can succeed.
+    #[error("BMC is not ready: {message}")]
+    NotReady { message: String },
 }
 
 /// ` (<MessageId>)` when the BMC named one.
@@ -148,6 +153,9 @@ mod tests {
             },
             PlatformError::Timeout {
                 message: "host did not power off".to_string(),
+            },
+            PlatformError::NotReady {
+                message: "the BIOS has not reported its attributes".to_string(),
             },
         ];
 

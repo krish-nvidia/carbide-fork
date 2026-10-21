@@ -144,33 +144,13 @@ pub(crate) fn driver_unavailable(endpoint: &BmcRef, capability: Capability, erro
 
 #[cfg(test)]
 mod tests {
-    use bmc_drivers::{CapabilitySelection, Driver, DriverMap, ResolvedSelection, Rules};
-    use bmc_platform::PlatformIdentity;
+    use bmc_drivers::Driver;
     use carbide_instrument::testing::{MetricsCapture, capture_logs, capture_logs_async};
-    use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
-    use mac_address::MacAddress;
 
     use super::*;
 
     fn endpoint() -> BmcRef {
-        BmcRef::new(
-            "192.0.2.10:443".parse().expect("valid socket address"),
-            CredentialKey::BmcCredentials {
-                credential_type: BmcCredentialType::BmcRoot {
-                    bmc_mac_address: MacAddress::new([2, 0, 0, 0, 0, 1]),
-                },
-            },
-            PlatformIdentity::default(),
-            ResolvedSelection {
-                drivers: DriverMap::filled(CapabilitySelection::Standard),
-                matched_rules: Vec::new(),
-                quirks: Default::default(),
-                hash: Rules::new(Vec::new())
-                    .expect("empty rules are valid")
-                    .hash(),
-            },
-        )
-        .expect("root credential key is valid")
+        crate::test_support::endpoint(Default::default())
     }
 
     /// Every completion is timed under its outcome, as libredfish's are. A

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-use nv_redfish::core::ODataId;
+use nv_redfish::core::{AsyncTask, ODataId};
 use serde_json::json;
 
 use super::*;
@@ -24,6 +24,18 @@ fn task_reference() -> OperationReference {
     OperationReference::RedfishTask {
         uri: ODataId::from("/redfish/v1/TaskService/Tasks/42".to_string()),
         retry_after_seconds: Some(5),
+        task: None,
+    }
+}
+
+/// A task monitor whose `202` body named the Task behind it.
+fn monitor_reference() -> OperationReference {
+    OperationReference::RedfishTask {
+        uri: ODataId::from("/redfish/v1/TaskService/TaskMonitors/42".to_string()),
+        retry_after_seconds: None,
+        task: Some(ODataId::from(
+            "/redfish/v1/TaskService/Tasks/42".to_string(),
+        )),
     }
 }
 
@@ -46,6 +58,15 @@ fn operation_references_are_stable() {
                 "type": "redfish_task",
                 "uri": "/redfish/v1/TaskService/Tasks/42",
                 "retry_after_seconds": 5
+            }),
+        ),
+        (
+            monitor_reference(),
+            json!({
+                "type": "redfish_task",
+                "uri": "/redfish/v1/TaskService/TaskMonitors/42",
+                "retry_after_seconds": null,
+                "task": "/redfish/v1/TaskService/Tasks/42"
             }),
         ),
         (
@@ -108,6 +129,23 @@ fn driver_outcomes_are_stable() {
             outcome
         );
     }
+}
+
+/// An accepted request keeps the Task its `202` body named, which a status
+/// read falls back to once the monitor is gone.
+#[test]
+fn an_accepted_request_keeps_the_task_its_202_named() {
+    let accepted = ModificationResponse::<()>::Task(AsyncTask {
+        location: ODataId::from("/redfish/v1/TaskService/TaskMonitors/42".to_string()).into(),
+        retry_after: None,
+        task: Some(ODataId::from(
+            "/redfish/v1/TaskService/Tasks/42".to_string(),
+        )),
+    });
+    assert_eq!(
+        DriverOutcome::from(accepted),
+        DriverOutcome::accepted(monitor_reference())
+    );
 }
 
 #[test]

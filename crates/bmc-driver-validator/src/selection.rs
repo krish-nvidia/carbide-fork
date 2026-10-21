@@ -60,10 +60,25 @@ impl Selection {
         Self::with_pins(identity, pins)
     }
 
-    /// Whether `identity` resolves, with the same overrides, to the same
-    /// drivers, quirks, and rules hash.
-    pub(crate) fn resolves_same(&self, identity: &PlatformIdentity) -> Result<bool, String> {
-        Ok(Self::with_pins(identity, self.overrides.clone())?.resolved == self.resolved)
+    /// How `identity`, resolved with the same overrides, differs from this
+    /// selection: each capability whose driver or deciding rule changes, then
+    /// the quirks if they change. Empty when it resolves the same.
+    pub(crate) fn changes(&self, identity: &PlatformIdentity) -> Result<Vec<String>, String> {
+        let other = Self::with_pins(identity, self.overrides.clone())?.resolved;
+        let mut changes: Vec<String> = Capability::iter()
+            .filter_map(|capability| {
+                let before = decided(&self.resolved, capability);
+                let after = decided(&other, capability);
+                (before != after).then(|| format!("{capability}: {before} -> {after}"))
+            })
+            .collect();
+        if other.quirks != self.resolved.quirks {
+            changes.push(format!(
+                "quirks: {:?} -> {:?}",
+                self.resolved.quirks, other.quirks
+            ));
+        }
+        Ok(changes)
     }
 
     fn with_pins(
@@ -270,6 +285,15 @@ fn label(selection: &CapabilitySelection) -> String {
     }
 }
 
+/// The selection for `capability` and what decided it, e.g.
+/// `ami-megarac-bios (rule lenovo-ami)`.
+fn decided(resolved: &ResolvedSelection, capability: Capability) -> String {
+    let source = resolved
+        .rule_for(capability)
+        .map_or_else(|| "default".to_string(), |id| format!("rule {id}"));
+    format!("{} ({source})", label(resolved.drivers.get(capability)))
+}
+
 fn rule_reason(resolved: &ResolvedSelection, rules: &Rules, capability: Capability) -> String {
     let unsupported = resolved.drivers.get(capability) == &CapabilitySelection::Unsupported;
     match resolved.rule_for(capability) {
@@ -337,4 +361,43 @@ fn matcher(matcher: &IdentityMatcher) -> String {
         MatchPattern::VersionBelow(value) => format!("< {value}"),
     };
     format!("{field} {comparison}")
+}
+
+#[cfg(test)]
+mod tests {
+    use bmc_platform::ServiceRootIdentity;
+
+    use super::*;
+
+    fn identity(vendor: &str, oem_keys: &[&str]) -> PlatformIdentity {
+        PlatformIdentity {
+            service_root: ServiceRootIdentity {
+                vendor: Some(vendor.to_string()),
+                product: None,
+                oem_keys: oem_keys.iter().map(ToString::to_string).collect(),
+            },
+            ..PlatformIdentity::default()
+        }
+    }
+
+    /// Rediscovery names each capability whose driver or deciding rule
+    /// changed, and the quirks, so a failed reset check shows what moved.
+    #[test]
+    fn changes_name_each_moved_capability_and_the_quirks() {
+        let selection = Selection::resolve(&identity("Lenovo", &["Ami"]), &[]).unwrap();
+        assert_eq!(
+            selection.changes(&identity("Lenovo", &["Ami"])),
+            Ok(Vec::new())
+        );
+        let changes = selection.changes(&identity("Contoso", &[])).unwrap();
+        for expected in [
+            "bios: ami-megarac-bios (rule lenovo-ami) -> standard (default)",
+            "quirks: {EtagUnchangedOnUpdate} -> {}",
+        ] {
+            assert!(
+                changes.iter().any(|change| change == expected),
+                "{expected:?} missing from {changes:?}"
+            );
+        }
+    }
 }

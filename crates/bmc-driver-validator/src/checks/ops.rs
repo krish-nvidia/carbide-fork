@@ -90,17 +90,27 @@ pub(super) async fn poll<T>(
     cx: &CheckCx<'_>,
     timeout: Duration,
     interval: Duration,
+    attempt: impl AsyncFnMut() -> Attempt<T>,
+) -> Result<T, Outcome> {
+    poll_traced(|step| cx.trace(step), timeout, interval, attempt).await
+}
+
+/// [`poll`], tracing through `trace`.
+pub(super) async fn poll_traced<T>(
+    trace: impl Fn(String),
+    timeout: Duration,
+    interval: Duration,
     mut attempt: impl AsyncFnMut() -> Attempt<T>,
 ) -> Result<T, Outcome> {
-    let deadline = Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let reason = match attempt().await {
             Attempt::Done(value) => return Ok(value),
             Attempt::Failed(outcome) => return Err(outcome),
             Attempt::NotYet(reason) => reason,
         };
-        cx.trace(format!("waiting: {reason}"));
-        if Instant::now() + interval > deadline {
+        trace(format!("waiting: {reason}"));
+        if tokio::time::Instant::now() + interval > deadline {
             return Err(Outcome::Fail(format!(
                 "{reason} after {}s",
                 timeout.as_secs()
@@ -303,23 +313,26 @@ pub(super) async fn reset_bmc(cx: &CheckCx<'_>) -> Step {
     wait_for_bmc_down(cx, BMC_DOWN_TIMEOUT).await?;
     wait_for_bmc_up(cx).await?;
     let down_and_up = took(started);
-    // A BMC can accept logins before it serves every resource discovery reads.
-    let identity = poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
-        match cx.target().discover().await {
-            Ok(identity) => Attempt::Done(identity),
+    // A BMC can accept logins before it serves every resource discovery reads,
+    // and before its ServiceRoot reports the product the rules match on.
+    poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
+        let discovered = cx
+            .target()
+            .discover_settled(|reason| cx.trace(format!("waiting: {reason}")))
+            .await;
+        match discovered {
+            Ok((identity, _)) => match cx.selection().changes(&identity) {
+                Ok(changes) if changes.is_empty() => Attempt::Done(()),
+                Ok(changes) => Attempt::NotYet(format!(
+                    "rediscovery selects different drivers: {}",
+                    changes.join("; ")
+                )),
+                Err(reason) => Attempt::Failed(Outcome::Fail(reason)),
+            },
             Err(reason) => Attempt::NotYet(format!("rediscovery fails: {reason}")),
         }
     })
     .await?;
-    if !cx
-        .selection()
-        .resolves_same(&identity)
-        .map_err(Outcome::Fail)?
-    {
-        return Err(Outcome::Fail(
-            "after the reset the BMC's identity selects different drivers".to_string(),
-        ));
-    }
     Ok(format!(
         "answered again {down_and_up} after the reset ({}); rediscovery selects the same drivers",
         how(&outcome)

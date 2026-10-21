@@ -79,5 +79,6 @@ pub(super) fn pending(task: &AsyncTask) -> OperationReference {
     OperationReference::RedfishTask {
         uri: task.location.0.clone(),
         retry_after_seconds: task.retry_after.map(|delay| delay.as_secs()),
+        task: task.task.clone(),
     }
 }

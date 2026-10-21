@@ -112,7 +112,9 @@ fn built_ins() -> Vec<Rule> {
     // root; the extra OEM-key matcher outranks the plain XCC vendor
     // rule. The AMI firmware takes AMI accounts and standard resets, not
     // XCC's, and has no XCC AC power cycle. Its SecureBoot resource reports
-    // a null SecureBootEnable and no current-boot state.
+    // a null SecureBootEnable and no current-boot state. A finished task's
+    // monitor is gone, so its status comes from the task itself, and ETags
+    // survive changes, so reads are not cached.
     rules.push(
         Rule::new(
             "lenovo-ami",
@@ -128,7 +130,8 @@ fn built_ins() -> Vec<Rule> {
             LenovoAmiConsole,
         ])
         .standard([Capability::Power])
-        .unsupported([Capability::SecureBoot]),
+        .unsupported([Capability::SecureBoot])
+        .quirks([Quirk::EtagUnchangedOnUpdate]),
     );
 
     // Power shelves have no ServiceRoot vendor; their chassis manufacturer

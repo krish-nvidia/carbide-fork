@@ -57,6 +57,14 @@ const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(60);
 /// the BIOS settings that create it read back.
 const BOOT_OPTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// How long settings may take to take effect after the first apply before
+/// they are applied again.
+const APPLY_AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// How long the BIOS may take to report its attributes once the host
+/// restarts.
+const BIOS_REPORT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// How long the settings still differing after a partial apply must read
 /// the same before they are applied again.
 const STALLED_FOR: Duration = Duration::from_secs(2 * 60);
@@ -112,6 +120,12 @@ async fn bios_apply(cx: &CheckCx<'_>) -> Step {
     let profile = &cx.inputs().bios_profile;
     let boot_interface = cx.inputs().boot_interface();
     let boot_interface = boot_interface.as_ref();
+    await_bios_report(
+        |step| cx.trace(step),
+        async || bios.status(profile, boot_interface).await.map(drop),
+        async || ops::restart_host(cx).await,
+    )
+    .await?;
     apply_until_in_effect(
         cx,
         async || {
@@ -137,6 +151,32 @@ async fn bios_apply(cx: &CheckCx<'_>) -> Step {
             bios.apply(profile, boot_interface)
                 .await
                 .map_err(failed("apply"))
+        },
+    )
+    .await
+}
+
+/// Restarts the host once when `read` finds the BIOS has not reported its
+/// attributes, then waits up to [`BIOS_REPORT_TIMEOUT`] for them: the BIOS
+/// reports them to the BMC only as the host starts, so a BMC restarted since
+/// then has none until the host restarts.
+async fn await_bios_report(
+    trace: impl Fn(String),
+    read: impl AsyncFn() -> Result<(), PlatformError>,
+    restart: impl AsyncFnOnce() -> Result<(), Outcome>,
+) -> Result<(), Outcome> {
+    let Err(PlatformError::NotReady { message }) = read().await else {
+        return Ok(());
+    };
+    trace(format!("{message}; restarting the host"));
+    restart().await?;
+    ops::poll_traced(
+        trace,
+        BIOS_REPORT_TIMEOUT,
+        SETTLE_POLL_INTERVAL,
+        async || match read().await {
+            Err(PlatformError::NotReady { message }) => Attempt::NotYet(message),
+            _ => Attempt::Done(()),
         },
     )
     .await
@@ -212,9 +252,10 @@ impl NotInEffect {
 
 /// Applies settings and verifies they take effect: `pending` reads why the
 /// settings are not yet in effect, or `None` once they are. When the first
-/// restart applies only some of the named settings, they are applied and
-/// the host restarted once more. Settings already in effect are applied once
-/// more, which must start no work.
+/// restart applies only some of the named settings, or they are still not
+/// in effect after [`APPLY_AGAIN_AFTER`], they are applied and the host
+/// restarted once more. Settings already in effect are applied once more,
+/// which must start no work.
 async fn apply_until_in_effect(
     cx: &CheckCx<'_>,
     pending: impl AsyncFn() -> Result<Option<NotInEffect>, Outcome>,
@@ -230,7 +271,8 @@ async fn apply_until_in_effect(
     cx.trace(format!("apply: {}", how(&outcome)));
     ops::take_effect(cx, &outcome).await?;
     let mut applied = format!("applying ({}) and a host restart", how(&outcome));
-    if let Some(rest) = wait_in_effect(cx, &pending, Some(&before.settings)).await? {
+    let trace = |step: String| cx.trace(step);
+    if let Some(rest) = wait_in_effect(&trace, &pending, Some(&before.settings)).await? {
         let took_effect = before
             .settings
             .iter()
@@ -238,14 +280,14 @@ async fn apply_until_in_effect(
             .count();
         cx.trace(format!(
             "{took_effect} of {} settings took effect, but {} still differ; applying again, \
-             as a setting can depend on another applying first",
+             as a setting can depend on another applying first or need a second boot",
             before.settings.len(),
             rest.summary
         ));
         let again = apply().await?;
         cx.trace(format!("apply again: {}", how(&again)));
         ops::take_effect(cx, &again).await?;
-        wait_in_effect(cx, &pending, None).await?;
+        wait_in_effect(&trace, &pending, None).await?;
         applied.push_str(&format!(
             ", then applying again ({}) and a second restart",
             how(&again)
@@ -265,22 +307,27 @@ fn partly_in_effect(before: &BTreeSet<String>, differing: &BTreeSet<String>) -> 
 /// Polls `pending` until the settings are in effect, returning `None`.
 /// Given the settings that differed `before` applying, it instead returns
 /// what still differs once some of them took effect and what differs has
-/// read the same for [`STALLED_FOR`]: a BIOS applies, or even reports, a
-/// setting that depends on another, such as a TPM device behind TPM
-/// support, only on the boot after that one applies.
+/// read the same for [`STALLED_FOR`], or once [`APPLY_AGAIN_AFTER`] passes:
+/// a BIOS applies, or even reports, a setting that depends on another, such
+/// as a TPM device behind TPM support, only on the boot after that one
+/// applies, and some settings take a second boot of their own.
 async fn wait_in_effect(
-    cx: &CheckCx<'_>,
+    trace: impl Fn(String),
     pending: &impl AsyncFn() -> Result<Option<NotInEffect>, Outcome>,
     before: Option<&BTreeSet<String>>,
 ) -> Result<Option<NotInEffect>, Outcome> {
-    let mut stalled: Option<(BTreeSet<String>, Instant)> = None;
-    poll(
-        cx,
+    let started = tokio::time::Instant::now();
+    let mut stalled: Option<(BTreeSet<String>, tokio::time::Instant)> = None;
+    ops::poll_traced(
+        trace,
         SETTLE_TIMEOUT,
         SETTLE_POLL_INTERVAL,
         async || match pending().await {
             Ok(None) => Attempt::Done(None),
             Ok(Some(rest)) => {
+                if before.is_some() && started.elapsed() >= APPLY_AGAIN_AFTER {
+                    return Attempt::Done(Some(rest));
+                }
                 let partial = before.is_some_and(|before| partly_in_effect(before, &rest.settings));
                 if !partial {
                     stalled = None;
@@ -291,7 +338,7 @@ async fn wait_in_effect(
                         return Attempt::Done(Some(rest));
                     }
                 } else {
-                    stalled = Some((rest.settings.clone(), Instant::now()));
+                    stalled = Some((rest.settings.clone(), tokio::time::Instant::now()));
                 }
                 Attempt::NotYet(format!("not in effect: {}", rest.summary))
             }
@@ -484,7 +531,90 @@ async fn toggle_lockdown(cx: &CheckCx<'_>) -> Step {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+
     use super::*;
+
+    /// The host restarts only when the BIOS has not reported its attributes,
+    /// and only once; the wait then ends when they appear or after
+    /// `BIOS_REPORT_TIMEOUT`. Any other reading leaves the apply to report it.
+    #[tokio::test(start_paused = true)]
+    async fn the_host_restarts_once_when_the_bios_has_not_reported() {
+        let not_ready = || {
+            Err(PlatformError::NotReady {
+                message: "no attributes".to_string(),
+            })
+        };
+        let cases = [
+            ("already reported", vec![Ok(())], 0, true),
+            (
+                "reported after the restart",
+                vec![not_ready(), not_ready(), Ok(())],
+                1,
+                true,
+            ),
+            ("never reported", vec![], 1, false),
+            (
+                "another error",
+                vec![Err(PlatformError::Unsupported)],
+                0,
+                true,
+            ),
+        ];
+        for (scenario, reads, restarts, passes) in cases {
+            let reads = RefCell::new(VecDeque::from(reads));
+            let restarted = Cell::new(0);
+            let result = await_bios_report(
+                |_| {},
+                async || reads.borrow_mut().pop_front().unwrap_or_else(not_ready),
+                async || {
+                    restarted.set(restarted.get() + 1);
+                    Ok(())
+                },
+            )
+            .await;
+            assert_eq!(restarted.get(), restarts, "{scenario}: restarts");
+            assert_eq!(result.is_ok(), passes, "{scenario}: {result:?}");
+        }
+    }
+
+    /// A setting still not in effect `APPLY_AGAIN_AFTER` the first apply is
+    /// applied again even though nothing took effect; after the second apply
+    /// the wait runs to `SETTLE_TIMEOUT` and fails.
+    #[tokio::test(start_paused = true)]
+    async fn a_setting_still_not_in_effect_is_applied_again_once() {
+        let pending = async || {
+            Ok(Some(NotInEffect {
+                summary: "TPM differs".to_string(),
+                settings: BTreeSet::from(["TPM".to_string()]),
+            }))
+        };
+        let before = BTreeSet::from(["TPM".to_string()]);
+        for (scenario, before, apply_again, waited) in [
+            (
+                "after the first apply",
+                Some(&before),
+                true,
+                APPLY_AGAIN_AFTER,
+            ),
+            ("after the second apply", None, false, SETTLE_TIMEOUT),
+        ] {
+            let started = tokio::time::Instant::now();
+            let result = wait_in_effect(|_| {}, &pending, before).await;
+            let elapsed = started.elapsed();
+            assert_eq!(
+                matches!(result, Ok(Some(_))),
+                apply_again,
+                "{scenario}: {:?}",
+                result.err()
+            );
+            assert!(
+                elapsed >= waited.saturating_sub(SETTLE_POLL_INTERVAL) && elapsed <= waited,
+                "{scenario}: returned after {elapsed:?}"
+            );
+        }
+    }
 
     /// A second apply is worth a restart only once the first applied some
     /// settings; settings the BIOS reports only after it count as differing.

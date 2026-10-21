@@ -9,9 +9,9 @@ use Capability::{
 };
 use Quirk::{
     BlueFieldNicModeBiosError, BlueFieldNicModeUnreadable, BlueFieldOemTimeoutInNicMode,
-    BlueFieldSpacedBiosAttributeNames, LenovoForceRestartHangs, RedfishRestartCutsDpuPower,
-    SupermicroHostInterfaceRequired, SupermicroIpmiHostInterface, SupermicroMgxC2,
-    VikingLockdownFirmware,
+    BlueFieldSpacedBiosAttributeNames, EtagUnchangedOnUpdate, LenovoForceRestartHangs,
+    RedfishRestartCutsDpuPower, SupermicroHostInterfaceRequired, SupermicroIpmiHostInterface,
+    SupermicroMgxC2, VikingLockdownFirmware,
 };
 use bmc_platform::{
     ChassisIdentity, FirmwareInventoryIdentity, ManagerIdentity, PlatformIdentity,
@@ -486,6 +486,11 @@ fn firmware_and_model_resolve_to_their_quirks() {
                 &[("UEFI", "7.11"), ("BMC-Primary", "9.10")],
             ),
             expect: vec![],
+        },
+        Case {
+            scenario: "Lenovo AMI, whose ETags survive changes",
+            identity: lenovo_ami(),
+            expect: vec![EtagUnchangedOnUpdate],
         },
         Case {
             scenario: "Viking at its lockdown firmware minimums or newer",

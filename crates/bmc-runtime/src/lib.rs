@@ -26,6 +26,8 @@ mod error;
 mod ipmi;
 mod observe;
 mod status;
+#[cfg(test)]
+mod test_support;
 
 pub use capabilities::BoundDriver;
 pub use connection::{AuthRetryError, ConnectionManager};

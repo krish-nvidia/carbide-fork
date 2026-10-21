@@ -51,9 +51,13 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
+bmc-mock = { path = "../bmc-mock" }
 carbide-instrument = { path = "../instrument", features = ["test-support"] }
 carbide-test-support = { path = "../test-support" }
+nv-redfish = { features = ["bmc-http"], workspace = true }
 tokio = { features = ["macros", "rt"], workspace = true }
+url = { workspace = true }
 
 [lints]
 workspace = true

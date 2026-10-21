@@ -39,6 +39,7 @@ use std::time::Instant;
 use bmc_platform::{BiosSettings, Capability, PlatformIdentity};
 use clap::Parser;
 use mac_address::MacAddress;
+use tracing_subscriber::EnvFilter;
 
 use crate::checks::{CheckResult, Ctx, EndState, Inputs, Outcome, Planned, Scope, UefiPassword};
 use crate::connect::Target;
@@ -52,7 +53,9 @@ const HTTPS_PORT: u16 = 443;
 #[derive(Debug, Parser)]
 #[command(
     name = "bmc-validate",
-    about = "Validate the compiled BMC drivers against a real BMC."
+    about = "Validate the compiled BMC drivers against a real BMC.",
+    after_help = "Set RUST_LOG (for example RUST_LOG=warn) to also print library logs to stderr, \
+                  such as the URL and status of each failed Redfish request."
 )]
 struct Args {
     /// IP address of the BMC.
@@ -207,6 +210,12 @@ fn bmc_address(value: &str) -> Result<SocketAddr, String> {
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
+    if std::env::var_os("RUST_LOG").is_some() {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .init();
+    }
     let redactor = Redactor::new(
         [
             Some(args.password.as_str()),
@@ -360,9 +369,22 @@ impl Session {
 async fn discover(target: &Target, terminal: &Terminal) -> Result<PlatformIdentity, String> {
     const ATTEMPTS: usize = 3;
     let mut attempt = 1;
+    let mut warned = false;
     loop {
-        match target.discover().await {
-            Ok(identity) => return Ok(identity),
+        let waiting = |reason: &str| {
+            if !warned {
+                terminal.warn(reason);
+                warned = true;
+            }
+        };
+        match target.discover_settled(waiting).await {
+            Ok((identity, true)) => return Ok(identity),
+            Ok((identity, false)) => {
+                terminal.warn(
+                    "the ServiceRoot still reports neither a vendor nor a product; continuing",
+                );
+                return Ok(identity);
+            }
             Err(error) if attempt < ATTEMPTS => {
                 terminal.warn(&format!(
                     "discovery attempt {attempt} of {ATTEMPTS} failed; trying again: {error}"

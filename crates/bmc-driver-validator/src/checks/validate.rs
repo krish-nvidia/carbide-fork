@@ -85,9 +85,9 @@ const FACTORY_LOCKDOWN: CheckId = CheckId::new("factory.lockdown");
 const FACTORY_UEFI_PASSWORD: CheckId = CheckId::new("factory.uefi_password");
 const FACTORY_BIOS: CheckId = CheckId::new("factory.bios");
 const FACTORY_BMC: CheckId = CheckId::new("factory.bmc");
-const RESET_LOCKDOWN: CheckId = CheckId::new("reset.lockdown");
-const RESET_BIOS: CheckId = CheckId::new("reset.bios");
-const RESET_BMC: CheckId = CheckId::new("reset.bmc");
+const FACTORY_RESET_LOCKDOWN: CheckId = CheckId::new("factory_reset.lockdown");
+const FACTORY_RESET_BIOS: CheckId = CheckId::new("factory_reset.bios");
+const FACTORY_RESET_BMC: CheckId = CheckId::new("factory_reset.bmc");
 
 pub(super) fn checks(dpu: bool, end_state: EndState) -> Vec<Check> {
     let mut checks = vec![
@@ -197,11 +197,20 @@ fn factory_reset() -> Vec<Check> {
 /// it removes the account the run logged in with.
 pub(super) fn factory_reset_first() -> Vec<Check> {
     vec![
-        Check::apply(RESET_LOCKDOWN, Capability::Lockdown, run!(lift_lockdown)),
-        Check::apply(RESET_BIOS, Capability::Bios, run!(reset_bios)).after(&[RESET_LOCKDOWN]),
-        Check::apply(RESET_BMC, Capability::BmcControl, run!(reset_to_factory))
-            .once()
-            .after(&[RESET_BIOS]),
+        Check::apply(
+            FACTORY_RESET_LOCKDOWN,
+            Capability::Lockdown,
+            run!(lift_lockdown),
+        ),
+        Check::apply(FACTORY_RESET_BIOS, Capability::Bios, run!(reset_bios))
+            .after(&[FACTORY_RESET_LOCKDOWN]),
+        Check::apply(
+            FACTORY_RESET_BMC,
+            Capability::BmcControl,
+            run!(reset_to_factory),
+        )
+        .once()
+        .after(&[FACTORY_RESET_BIOS]),
     ]
 }
 

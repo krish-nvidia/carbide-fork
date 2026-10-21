@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-//! How driver and catalogue errors end a check: unsupported, unreachable
-//! (which the runner retries), or failed.
+//! How driver and catalogue errors end a check: unsupported, unreachable or
+//! not ready (which the runner retries), or failed.
 
 use bmc_drivers::CatalogError;
 use bmc_platform::PlatformError;
@@ -56,9 +56,9 @@ pub(super) fn describe(operation: &str, error: &PlatformError) -> String {
 fn ended(error: PlatformError, reason: String) -> Outcome {
     match error {
         PlatformError::Unsupported => Outcome::Unsupported(reason),
-        PlatformError::Unreachable | PlatformError::Bmc { status: 503, .. } => {
-            Outcome::Unreachable(reason)
-        }
+        PlatformError::Unreachable
+        | PlatformError::NotReady { .. }
+        | PlatformError::Bmc { status: 503, .. } => Outcome::Unreachable(reason),
         _ => Outcome::Fail(reason),
     }
 }
@@ -68,5 +68,24 @@ fn shortened(text: String) -> String {
     match text.char_indices().nth(MAX_CHARS) {
         Some((end, _)) => format!("{}…", &text[..end]),
         None => text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A BMC that is not ready yet is retried like one that did not answer;
+    /// only an unsupported answer skips the check.
+    #[test]
+    fn not_ready_is_retried_and_unsupported_is_not() {
+        let not_ready = PlatformError::NotReady {
+            message: "the BIOS has not reported its attributes".to_string(),
+        };
+        assert!(matches!(Outcome::from(not_ready), Outcome::Unreachable(_)));
+        assert!(matches!(
+            Outcome::from(PlatformError::Unsupported),
+            Outcome::Unsupported(_)
+        ));
     }
 }

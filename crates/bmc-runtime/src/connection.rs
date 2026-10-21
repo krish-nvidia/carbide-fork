@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use bmc_platform::{AuthError, IpmiOps, PlatformError};
+use bmc_platform::{AuthError, IpmiOps, PlatformError, Quirk};
 use carbide_redfish::nv_redfish::{
     Error as RedfishError, NvRedfishClientPool, NvRedfishConnection, RedfishBmc,
 };
@@ -141,11 +141,22 @@ impl ConnectionManager {
             .issue(&request)
             .await
             .map_err(ConnectError::Credentials)?;
+        let (address, credentials) = (endpoint.address(), lease.credentials().clone());
+        let stale_etags = endpoint
+            .selection()
+            .quirks
+            .contains(&Quirk::EtagUnchangedOnUpdate);
         observe(endpoint, None, "create_client", async {
-            self.pool
-                .connection_with_bmc_credentials(endpoint.address(), lease.credentials().clone())
-                .await
-                .map_err(|error: RedfishError| PlatformError::from_redfish(error))
+            if stale_etags {
+                self.pool
+                    .uncached_connection_with_bmc_credentials(address, credentials)
+                    .await
+            } else {
+                self.pool
+                    .connection_with_bmc_credentials(address, credentials)
+                    .await
+            }
+            .map_err(|error: RedfishError| PlatformError::from_redfish(error))
         })
         .await
         .map_err(ConnectError::Transport)

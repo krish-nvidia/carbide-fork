@@ -15,11 +15,22 @@
  * limitations under the License.
  */
 
+use std::collections::BTreeSet;
+
+use axum::Router;
+use axum::http::StatusCode;
+use axum::routing::get;
+use bmc_mock::test_support::TestBmc;
+use bmc_mock::test_support::axum_http_client::AxumRouterHttpClient;
 use carbide_test_support::value_scenarios;
+use nv_redfish::ServiceRoot;
+use nv_redfish::bmc_http::{BmcCredentials, CacheSettings, HttpBmc};
 use nv_redfish::core::AsyncTask;
 use serde_json::{Value, json};
+use url::Url;
 
 use super::*;
+use crate::test_support::endpoint;
 
 fn with_envelope(uri: &str, id: &str, fields: Value) -> Value {
     let mut body = json!({"@odata.id": uri, "Id": id, "Name": id});
@@ -152,6 +163,7 @@ fn task_polls_read_monitors_and_tasks_alike() {
         Ok(ModificationResponse::Task(AsyncTask {
             location: ODataId::from("/redfish/v1/TaskMonitor/1".to_string()).into(),
             retry_after: None,
+            task: None,
         }))
     };
     let status = |polled| match task_poll(polled) {
@@ -225,4 +237,69 @@ fn a_task_that_transitioned_to_a_job_names_that_job() {
         transitioned_job(&task(json!({"TaskState": "Running"}))),
         None
     );
+}
+
+/// A BMC whose task 2 finished: its monitor is gone and the task remains.
+async fn finished_task_bmc() -> ConnectedBmc<TestBmc> {
+    let router = Router::new()
+        .route(
+            "/redfish/v1",
+            get(|| async {
+                axum::Json(json!({
+                    "@odata.id": "/redfish/v1", "Id": "RootService", "Name": "Root Service",
+                    "Links": {"Sessions": {"@odata.id": "/redfish/v1/SessionService/Sessions"}},
+                }))
+            }),
+        )
+        .route(
+            "/redfish/v1/TaskService/TaskMonitors/2",
+            get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/redfish/v1/TaskService/Tasks/2",
+            get(|| async {
+                axum::Json(with_envelope(
+                    "/redfish/v1/TaskService/Tasks/2",
+                    "2",
+                    json!({"TaskState": "Completed", "TaskStatus": "OK"}),
+                ))
+            }),
+        );
+    let bmc = Arc::new(HttpBmc::new(
+        AxumRouterHttpClient::new(router),
+        Url::parse("https://bmc.test").expect("valid URL"),
+        BmcCredentials::new("root".to_string(), "password".to_string()),
+        CacheSettings::with_capacity(0),
+    ));
+    let root = ServiceRoot::new(bmc.clone())
+        .await
+        .expect("test BMC serves a service root");
+    ConnectedBmc::new(endpoint(BTreeSet::new()), bmc, Arc::new(root), None)
+}
+
+/// A removed monitor is read through the Task its `202` named; without one,
+/// the monitor's 404 is the answer.
+#[tokio::test]
+async fn a_removed_monitor_reads_the_task_its_202_named() {
+    let monitor = |task: Option<&str>| OperationReference::RedfishTask {
+        uri: ODataId::from("/redfish/v1/TaskService/TaskMonitors/2".to_string()),
+        retry_after_seconds: None,
+        task: task.map(|task| ODataId::from(task.to_string())),
+    };
+    let cases = [
+        (
+            "the 202 named its Task",
+            monitor(Some("/redfish/v1/TaskService/Tasks/2")),
+            Ok(OperationStatus::Completed),
+        ),
+        ("the 202 named no Task", monitor(None), Err(())),
+    ];
+    let bmc = finished_task_bmc().await;
+    for (scenario, reference, expected) in cases {
+        assert_eq!(
+            bmc.operation_status(&reference).await.map_err(drop),
+            expected,
+            "{scenario}"
+        );
+    }
 }

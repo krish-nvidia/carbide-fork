@@ -68,6 +68,12 @@ pub(super) fn compare(current: &BiosSettings, expected: &BiosSettings) -> BiosSt
 
 /// BIOS attribute checks and password mechanics shared by BIOS drivers.
 pub(super) trait RedfishBiosExt<B: Bmc> {
+    /// The attributes the BIOS currently runs with, for a BIOS that reports
+    /// them to the BMC as the host starts: a BMC restarted since then serves
+    /// no `Bios` link, or an empty `Bios` resource, which is
+    /// [`PlatformError::NotReady`] until the host starts again.
+    async fn reported_bios_settings(&self) -> Result<BiosSettings, PlatformError>;
+
     /// Whether the current BIOS holds `attribute`'s expected value; `None` when
     /// the BIOS does not report the attribute.
     async fn bios_attribute_holds(
@@ -88,6 +94,19 @@ pub(super) trait RedfishBiosExt<B: Bmc> {
 }
 
 impl<B: Bmc> RedfishBiosExt<B> for OpCx<'_, B> {
+    async fn reported_bios_settings(&self) -> Result<BiosSettings, PlatformError> {
+        let not_ready = || PlatformError::NotReady {
+            message: "the BIOS has not reported its attributes since the BMC restarted; \
+                      they return once the host starts again"
+                .to_string(),
+        };
+        match self.current_bios_settings().await {
+            Ok(current) if current.attributes.is_empty() => Err(not_ready()),
+            Err(PlatformError::Unsupported) => Err(not_ready()),
+            result => result,
+        }
+    }
+
     async fn bios_attribute_holds(
         &self,
         attribute: BiosAttribute,

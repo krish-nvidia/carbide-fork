@@ -76,6 +76,10 @@ pub enum OperationReference {
     RedfishTask {
         uri: ODataId,
         retry_after_seconds: Option<u64>,
+        /// The Task resource the `202 Accepted` body named, read when the
+        /// task monitor at `uri` is gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<ODataId>,
     },
     /// A vendor job service entry, polled at `uri` and identified by `job_id`.
     VendorJob {
@@ -90,6 +94,14 @@ impl OperationReference {
     pub const fn uri(&self) -> &ODataId {
         match self {
             Self::RedfishTask { uri, .. } | Self::VendorJob { uri, .. } => uri,
+        }
+    }
+
+    /// The Task resource a standard task's `202 Accepted` body named, if any.
+    pub const fn task(&self) -> Option<&ODataId> {
+        match self {
+            Self::RedfishTask { task, .. } => task.as_ref(),
+            Self::VendorJob { .. } => None,
         }
     }
 
@@ -208,6 +220,7 @@ impl<T> From<ModificationResponse<T>> for DriverOutcome {
             ModificationResponse::Task(task) => Self::accepted(OperationReference::RedfishTask {
                 uri: task.location.0,
                 retry_after_seconds: task.retry_after.map(|duration| duration.as_secs()),
+                task: task.task,
             }),
         }
     }

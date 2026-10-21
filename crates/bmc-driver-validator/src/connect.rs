@@ -22,7 +22,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -53,6 +53,11 @@ const CREDENTIAL_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0];
 /// How long discovery may take before it gives up; one read of a large
 /// inventory can take most of the two-minute request timeout.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+
+/// How long discovery waits for the ServiceRoot to report a vendor or a
+/// product, and how often it looks again meanwhile.
+const UNSETTLED_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const UNSETTLED_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long exploration waits between retries of a read the BMC refused.
 const EXPLORE_RETRY: Duration = Duration::from_secs(1);
@@ -155,6 +160,33 @@ impl Target {
         })
         .await
         .map_err(|_| format!("discovery did not finish within {DISCOVERY_TIMEOUT:?}"))?
+    }
+
+    /// Discovers the BMC, discovering again while its ServiceRoot reports
+    /// neither a vendor nor a product, as one still starting can, and calling
+    /// `waiting` before each wait. Gives up waiting after
+    /// `UNSETTLED_TIMEOUT`, since power shelves never report either, and
+    /// returns whether the ServiceRoot reported one.
+    pub(crate) async fn discover_settled(
+        &self,
+        mut waiting: impl FnMut(&str),
+    ) -> Result<(PlatformIdentity, bool), String> {
+        let deadline = Instant::now() + UNSETTLED_TIMEOUT;
+        loop {
+            let identity = self.discover().await?;
+            let root = &identity.service_root;
+            let settled = root.vendor.is_some() || root.product.is_some();
+            if settled || Instant::now() + UNSETTLED_INTERVAL > deadline {
+                return Ok((identity, settled));
+            }
+            waiting(&format!(
+                "the ServiceRoot reports neither a vendor nor a product, as a BMC still \
+                 starting can; discovering again every {}s for up to {}s",
+                UNSETTLED_INTERVAL.as_secs(),
+                UNSETTLED_TIMEOUT.as_secs()
+            ));
+            tokio::time::sleep(UNSETTLED_INTERVAL).await;
+        }
     }
 
     /// Connects through `bmc-runtime` with this account, attaching

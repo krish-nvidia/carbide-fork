@@ -119,6 +119,7 @@ pub(crate) async fn job_outcome<B: Bmc, T>(
         other => return Ok(DriverOutcome::from(other)),
     };
     let retry_after_seconds = task.retry_after.map(|duration| duration.as_secs());
+    let body_task = task.task;
     let location = task.location.0;
     let job_id = location
         .last_segment()
@@ -139,6 +140,7 @@ pub(crate) async fn job_outcome<B: Bmc, T>(
         None => OperationReference::RedfishTask {
             uri: location,
             retry_after_seconds,
+            task: body_task,
         },
     }))
 }
@@ -446,6 +448,7 @@ mod tests {
         ModificationResponse::Task(AsyncTask {
             location: AsyncTaskLocation(location.to_string().into()),
             retry_after: Some(Duration::from_secs(7)),
+            task: None,
         })
     }
 
@@ -492,6 +495,7 @@ mod tests {
             Ok(DriverOutcome::accepted(OperationReference::RedfishTask {
                 uri: "/redfish/v1/TaskService/Tasks/42".to_string().into(),
                 retry_after_seconds: Some(7),
+                task: None,
             }))
         );
     }

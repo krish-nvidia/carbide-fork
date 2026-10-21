@@ -1413,16 +1413,16 @@ mod test {
     async fn unroutable_request_returns_404_from_transport() {
         let client = AxumRouterHttpClient::new(Router::new());
         let url = Url::parse("https://bmc-mock.local/redfish/v1").unwrap();
-        let err = client
-            .get::<serde_json::Value>(
+        let result: Result<serde_json::Value, _> = client
+            .get(
                 url,
                 &BmcCredentials::new("root".to_string(), "password".to_string()),
                 None,
                 &axum::http::HeaderMap::new(),
                 &NoRepair,
             )
-            .await
-            .expect_err("empty router should return transport error");
+            .await;
+        let err = result.expect_err("empty router should return transport error");
 
         match err {
             Error::InvalidResponse { status, .. } => {

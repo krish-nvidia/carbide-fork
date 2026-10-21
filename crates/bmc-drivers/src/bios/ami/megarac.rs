@@ -58,7 +58,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let current = cx.current_bios_settings().await?;
+        let current = cx.reported_bios_settings().await?;
         cx.stage_bios_attributes(&expected(ATTRIBUTES, &current, profile).attributes)
             .await
     }
@@ -69,7 +69,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
-        let current = cx.current_bios_settings().await?;
+        let current = cx.reported_bios_settings().await?;
         Ok(compare(&current, &expected(ATTRIBUTES, &current, profile)))
     }
 
@@ -88,7 +88,12 @@ where
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {
-        cx.bios_attribute_holds(INFINITE_BOOT).await
+        Ok(cx
+            .reported_bios_settings()
+            .await?
+            .attributes
+            .get(INFINITE_BOOT.name)
+            .map(|value| INFINITE_BOOT.value.matches(value)))
     }
 }
 
@@ -100,6 +105,46 @@ mod tests {
     const SYSTEM: &str = "/redfish/v1/Systems/Self";
     const BIOS: &str = "/redfish/v1/Systems/Self/Bios";
     const SETTINGS: &str = "/redfish/v1/Systems/Self/Bios/SD";
+
+    /// A BMC restarted since the host last started has no BIOS attributes to
+    /// report yet; that is a wait, not a platform without a BIOS.
+    #[tokio::test]
+    async fn missing_bios_attributes_are_not_ready_rather_than_unsupported() {
+        let bios = |attributes: serde_json::Value| json!({"@odata.id": BIOS, "Id": "BIOS", "Name": "BIOS", "Attributes": attributes});
+        let cases = [
+            ("no Bios link", None, true),
+            ("an empty Bios resource", Some(bios(json!({}))), true),
+            (
+                "reported attributes",
+                Some(bios(json!({"VMXEN": "Enable"}))),
+                false,
+            ),
+        ];
+        for (scenario, document, not_ready) in cases {
+            let system = match &document {
+                Some(_) => json!({"@odata.id": SYSTEM, "Id": "Self", "Name": "System",
+                                  "Bios": {"@odata.id": BIOS}}),
+                None => json!({"@odata.id": SYSTEM, "Id": "Self", "Name": "System"}),
+            };
+            let mut fixture =
+                Fixture::new("AMI", "AMI Redfish Server", "Self", "Self").document(SYSTEM, system);
+            if let Some(document) = document {
+                fixture = fixture.document(BIOS, document);
+            }
+            let bmc = fixture.build().await;
+            let cx = bmc.cx().await;
+
+            let status = MegaRacBios
+                .status(&cx, &BiosSettings::default(), None)
+                .await;
+            assert_eq!(
+                matches!(status, Err(PlatformError::NotReady { .. })),
+                not_ready,
+                "{scenario}: {status:?}"
+            );
+            assert!(status.is_ok() || not_ready, "{scenario}: {status:?}");
+        }
+    }
 
     #[tokio::test]
     async fn tpm_clear_stages_the_bare_enum_value() {

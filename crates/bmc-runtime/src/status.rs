@@ -60,12 +60,21 @@ where
         reference: &OperationReference,
     ) -> Result<OperationStatus, PlatformError> {
         match reference {
-            OperationReference::RedfishTask { uri, .. } => {
-                let polled = self
-                    .bmc()
-                    .poll::<Value>(uri)
-                    .await
-                    .map_err(ClassifyBmcError::classify);
+            OperationReference::RedfishTask { uri, task, .. } => {
+                let mut polled = self.poll(uri).await;
+                // A service can remove a task monitor once the work completes
+                // (DSP0266 12.2); the Task its 202 named still reports how it
+                // ended.
+                if matches!(
+                    polled,
+                    Err(PlatformError::Bmc {
+                        status: 404 | 410,
+                        ..
+                    })
+                ) && let Some(task) = task
+                {
+                    polled = self.poll(task).await;
+                }
                 match task_poll(polled)? {
                     TaskPoll::Status(status) => Ok(status),
                     TaskPoll::Task(task) => match transitioned_job(&task) {
@@ -78,6 +87,13 @@ where
                 dell_job_status(&*self.get::<DellJob>(uri).await?)
             }
         }
+    }
+
+    async fn poll(&self, uri: &ODataId) -> Result<ModificationResponse<Value>, PlatformError> {
+        self.bmc()
+            .poll::<Value>(uri)
+            .await
+            .map_err(ClassifyBmcError::classify)
     }
 
     async fn get<T>(&self, uri: &ODataId) -> Result<Arc<T>, PlatformError>

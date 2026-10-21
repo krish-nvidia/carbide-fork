@@ -161,6 +161,7 @@ pub(super) fn upload_outcome(response: ModificationResponse<UploadResponse>) -> 
         Some(uri) => DriverOutcome::accepted(OperationReference::RedfishTask {
             uri,
             retry_after_seconds: None,
+            task: None,
         }),
         None => DriverOutcome::complete(),
     }
@@ -187,6 +188,7 @@ mod tests {
             DriverOutcome::accepted(OperationReference::RedfishTask {
                 uri: "/redfish/v1/TaskService/Tasks/3".to_string().into(),
                 retry_after_seconds: None,
+                task: None,
             })
         );
         assert_eq!(

@@ -124,6 +124,18 @@ pub struct Exploration {
     pub identity: PlatformIdentity,
 }
 
+/// The host among a BMC's `(id, has BIOS)` systems: `System_0` where the BMC
+/// lists it, since NVIDIA trays also list their GPU baseboard
+/// (`HGX_Baseboard_0`) with its own BIOS; otherwise the first with a BIOS,
+/// then the first.
+fn host_system_index(systems: &[(&str, bool)]) -> usize {
+    systems
+        .iter()
+        .position(|(id, _)| *id == "System_0")
+        .or_else(|| systems.iter().position(|(_, has_bios)| *has_bios))
+        .unwrap_or(0)
+}
+
 fn is_bluefield_system_id(id: &str) -> bool {
     matches!(id, "Bluefield" | "BlueField_0")
 }
@@ -245,13 +257,16 @@ pub async fn nv_explore<B: Bmc>(
         .await
         .map_err(Error::nv_redfish("systems members"))?;
 
-    let primary_index = systems
+    let raw_systems = systems
         .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, system)| system.raw().bios.is_some())
-        .map(|(index, _)| index)
-        .unwrap_or(0);
+        .map(|system| system.raw())
+        .collect::<Vec<_>>();
+    let primary_index = host_system_index(
+        &raw_systems
+            .iter()
+            .map(|raw| (raw.id.as_str(), raw.bios.is_some()))
+            .collect::<Vec<_>>(),
+    );
     if systems.is_empty() {
         return Err(Error::bmc_not_provided("at least one computer system")());
     }
@@ -1527,9 +1542,9 @@ mod tests {
 
     use super::hw::HwType;
     use super::{
-        InternalLockdownStatus, Product, giga_computing_ami_lockdown_status, is_bf4_product,
-        should_fetch_bf4_chassis_except_irot_nic, should_fetch_supplemental_network_adapter_ports,
-        should_use_network_adapter_port_fallback,
+        InternalLockdownStatus, Product, giga_computing_ami_lockdown_status, host_system_index,
+        is_bf4_product, should_fetch_bf4_chassis_except_irot_nic,
+        should_fetch_supplemental_network_adapter_ports, should_use_network_adapter_port_fallback,
     };
 
     /// Build a host interface schema from the JSON a Giga Computing BMC returns
@@ -1592,6 +1607,27 @@ mod tests {
             }
             "no host interfaces at all is not lockdown" {
                 Vec::<serde_json::Value>::new() => InternalLockdownStatus::Partial,
+            }
+        );
+    }
+
+    #[test]
+    fn the_host_system_is_system_0_then_the_first_with_a_bios() {
+        value_scenarios!(run = |systems: Vec<(&str, bool)>| host_system_index(&systems);
+            "GB200 lists the host before its GPU baseboard, both with a BIOS" {
+                vec![("System_0", true), ("HGX_Baseboard_0", true)] => 0,
+            }
+            "the GPU baseboard listed first" {
+                vec![("HGX_Baseboard_0", true), ("System_0", true)] => 1,
+            }
+            "no System_0, and the first system has no BIOS" {
+                vec![("Baseboard", false), ("Host", true)] => 1,
+            }
+            "a single system without System_0, such as Viking's DGX" {
+                vec![("DGX", true)] => 0,
+            }
+            "no system has a BIOS" {
+                vec![("A", false), ("B", false)] => 0,
             }
         );
     }

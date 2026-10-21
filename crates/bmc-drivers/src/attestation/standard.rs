@@ -97,6 +97,7 @@ impl<B: Bmc> Attestation<B> for StandardAttestation {
         let task = AsyncTask {
             location: pending.uri().clone().into(),
             retry_after: pending.retry_after_seconds().map(Duration::from_secs),
+            task: pending.task().cloned(),
         };
         cx.poll_signed_measurements(AsyncActionResult::resume(&signed_measurements(), task))
             .await
@@ -197,6 +198,7 @@ mod tests {
         let pending = OperationReference::RedfishTask {
             uri: TASK.to_string().into(),
             retry_after_seconds: None,
+            task: None,
         };
         assert!(
             matches!(&progress, EvidenceProgress::Pending(reference) if *reference == pending),

@@ -27,6 +27,7 @@ use http_body_util::BodyExt;
 use nv_redfish::bmc_http::{
     BmcCredentials, CacheableError, HttpClient, RejectedUriReferenceError, RequestError,
 };
+use nv_redfish::core::odata::ODataType;
 use nv_redfish::core::upload::{HttpPushUriUpdateRequest, MultipartUpdateRequest, UploadReader};
 use nv_redfish::core::{
     ActionError, AsyncTask, BmcError, BmcErrorClass, BoxTryStream, ModificationResponse, ODataETag,
@@ -244,6 +245,7 @@ impl AxumRouterHttpClient {
             return Ok(ModificationResponse::Task(AsyncTask {
                 location: ODataId::from(location.to_string()).into(),
                 retry_after: retry_after(&headers),
+                task: task_from_body(&bytes),
             }));
         }
         if bytes.is_empty() {
@@ -258,6 +260,20 @@ impl AxumRouterHttpClient {
             Err(error) => Err(Error::Json(error)),
         }
     }
+}
+
+/// The `Task` resource a `202 Accepted` body represents, as the reqwest
+/// client reads it.
+fn task_from_body(body: &[u8]) -> Option<ODataId> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let odata_type = ODataType::parse_from(&value)?;
+    if odata_type.namespace.first() != Some(&"Task") || odata_type.type_name != "Task" {
+        return None;
+    }
+    value
+        .get("@odata.id")
+        .and_then(serde_json::Value::as_str)
+        .map(|id| ODataId::from(id.to_string()))
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
@@ -318,10 +334,15 @@ impl HttpClient for AxumRouterHttpClient {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         match response.status() {
-            StatusCode::ACCEPTED => Ok(ModificationResponse::Task(AsyncTask {
-                location: ODataId::from(location.unwrap_or_else(|| url.path().to_string())).into(),
-                retry_after: retry_after(response.headers()),
-            })),
+            StatusCode::ACCEPTED => {
+                let (_, headers, bytes) = Self::response_bytes(response).await?;
+                Ok(ModificationResponse::Task(AsyncTask {
+                    location: ODataId::from(location.unwrap_or_else(|| url.path().to_string()))
+                        .into(),
+                    retry_after: retry_after(&headers),
+                    task: task_from_body(&bytes),
+                }))
+            }
             StatusCode::NO_CONTENT => {
                 location.map_or(Ok(ModificationResponse::Empty), |location| {
                     serde_json::from_value(serde_json::json!({"@odata.id": location}))
