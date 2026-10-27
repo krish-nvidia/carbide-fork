@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use bmc_platform::{
     Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
+    Quirk,
 };
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::{Value, json};
@@ -214,11 +215,19 @@ where
         change_password_with_job(cx, current_password, new_password).await
     }
 
+    /// With [`Quirk::DellUefiPasswordClearJobFails`], the accepted
+    /// `Bios.ChangePassword` request leaves nothing to fall back from, so the
+    /// clear goes straight to the import, once the job queue that would
+    /// refuse it is empty.
     async fn clear_uefi_password(
         &self,
         cx: &OpCx<'_, B>,
         current_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
+        if cx.has_quirk(Quirk::DellUefiPasswordClearJobFails) {
+            dell::clear_job_queue(cx).await?;
+            return dell::clear_uefi_password_via_import(cx, current_password).await;
+        }
         match change_password_with_job(cx, current_password, "").await {
             Ok(outcome) => Ok(outcome),
             Err(_) => dell::clear_uefi_password_via_import(cx, current_password).await,
@@ -236,10 +245,86 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use carbide_test_support::value_scenarios;
 
     use super::*;
     use crate::bios::attributes::AttributeValue;
+    use crate::test_support::{Fixture, body};
+
+    /// An XE9680's iDRAC accepts a `Bios.ChangePassword` clear and then fails
+    /// its configuration job, so with the quirk a clear empties the job
+    /// queue, which would refuse the import, and imports the old and empty
+    /// setup passwords.
+    #[tokio::test]
+    async fn the_uefi_password_is_cleared_through_a_configuration_import() {
+        const MANAGER: &str = "/redfish/v1/Managers/iDRAC.Embedded.1";
+        const ATTRIBUTES: &str =
+            "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/DellAttributes/iDRAC.Embedded.1";
+        const JOB_SERVICE: &str = "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/DellJobService";
+        const DELETE_JOB_QUEUE: &str = "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/DellJobService/Actions/DellJobService.DeleteJobQueue";
+        const IMPORT: &str = "/redfish/v1/Managers/iDRAC.Embedded.1/Actions/Oem/EID_674_Manager.ImportSystemConfiguration";
+        let bmc = Fixture::new(
+            "Dell",
+            "Integrated Dell Remote Access Controller",
+            "System.Embedded.1",
+            "iDRAC.Embedded.1",
+        )
+        .document(
+            MANAGER,
+            json!({
+                "@odata.id": MANAGER,
+                "Id": "iDRAC.Embedded.1",
+                "Name": "Manager",
+                "Links": {"Oem": {"Dell": {
+                    "DellAttributes": [{"@odata.id": ATTRIBUTES}],
+                    "DellJobService": {"@odata.id": JOB_SERVICE},
+                }}},
+                "Actions": {"Oem": {
+                    "#OemManager.ImportSystemConfiguration": {"target": IMPORT},
+                }},
+            }),
+        )
+        .document(
+            ATTRIBUTES,
+            json!({
+                "@odata.id": ATTRIBUTES,
+                "Id": "iDRAC.Embedded.1",
+                "Name": "Manager Attributes",
+                "Attributes": {"Lockdown.1.SystemLockdown": "Disabled"},
+            }),
+        )
+        .document(
+            JOB_SERVICE,
+            json!({
+                "@odata.id": JOB_SERVICE,
+                "Id": "Job Service",
+                "Name": "DellJobService",
+                "Actions": {"#DellJobService.DeleteJobQueue": {"target": DELETE_JOB_QUEUE}},
+            }),
+        )
+        .build()
+        .await;
+        let quirks = BTreeSet::from([Quirk::DellUefiPasswordClearJobFails]);
+        let cx = bmc.lazy_cx().with_quirks(&quirks);
+
+        IdracBios
+            .clear_uefi_password(&cx, "old<password")
+            .await
+            .expect("the clear is requested");
+        let writes = bmc.writes();
+        let uris: Vec<_> = writes.iter().map(|write| write.uri.as_str()).collect();
+        assert!(uris[0].ends_with(DELETE_JOB_QUEUE), "{uris:?}");
+        assert!(uris[1].ends_with(IMPORT), "{uris:?}");
+        assert_eq!(uris.len(), 2, "{uris:?}");
+        assert_eq!(
+            body(&writes[1])["ImportBuffer"],
+            json!(
+                r#"<SystemConfiguration><Component FQDD="BIOS.Setup.1-1"><Attribute Name="OldSetupPassword">old&lt;password</Attribute><Attribute Name="NewSetupPassword"></Attribute></Component></SystemConfiguration>"#
+            )
+        );
+    }
 
     #[test]
     fn http_device_follows_the_boot_interface_and_only_the_interface_is_checked() {

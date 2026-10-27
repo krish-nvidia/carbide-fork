@@ -48,6 +48,8 @@ where
 
     /// An empty list leaves the NTP configuration unchanged; the first two
     /// servers are written, padding a single server with an empty entry.
+    /// `Unsupported` while iLO takes its NTP servers from DHCP, which then
+    /// owns them.
     async fn set_ntp_servers(
         &self,
         cx: &OpCx<'_, B>,
@@ -73,7 +75,15 @@ where
             )
             .await
             .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error))
+            .map_err(|error| match cx.map_redfish_error(error) {
+                PlatformError::Bmc {
+                    message_id: Some(id),
+                    ..
+                } if id.ends_with(".SNTPConfigurationManagedByDHCPAndIsReadOnly") => {
+                    PlatformError::Unsupported
+                }
+                error => error,
+            })
     }
 
     /// The servers come from the `DateTime` service, which has no NTP switch.
@@ -98,10 +108,67 @@ where
 
 #[cfg(test)]
 mod tests {
+    use axum::http::{Method, StatusCode};
     use serde_json::json;
 
     use super::*;
     use crate::test_support::Fixture;
+
+    /// iLO 5 v2.72 refuses static NTP servers while DHCP supplies them, which
+    /// is unsupported rather than a failure; another refusal stays an error.
+    #[tokio::test]
+    async fn ntp_servers_from_dhcp_are_unsupported() {
+        const DATE_TIME: &str = "/redfish/v1/Managers/1/DateTime";
+        let refusal = |message_id: &str| {
+            json!({"error": {"code": "iLO.0.10.ExtendedInfo",
+                             "message": "See @Message.ExtendedInfo for more information.",
+                             "@Message.ExtendedInfo": [{"MessageId": message_id}]}})
+        };
+        for (scenario, message_id, unsupported) in [
+            (
+                "managed by DHCP",
+                "iLO.2.15.SNTPConfigurationManagedByDHCPAndIsReadOnly",
+                true,
+            ),
+            (
+                "another refusal",
+                "iLO.2.15.PropertyNotWritableOrUnknown",
+                false,
+            ),
+        ] {
+            let bmc = Fixture::new("HPE", "", "1", "1")
+                .document(
+                    "/redfish/v1/Managers/1",
+                    json!({"@odata.id": "/redfish/v1/Managers/1", "Id": "1", "Name": "Manager",
+                           "Oem": {"Hpe": {"@odata.type": "#HpeiLO.v2_11_0.HpeiLO",
+                                           "Links": {"DateTimeService": {"@odata.id": DATE_TIME}}}}}),
+                )
+                .document(
+                    DATE_TIME,
+                    json!({"@odata.id": DATE_TIME, "@odata.type": "#HpeiLODateTime.v2_0_0.HpeiLODateTime",
+                           "Id": "DateTime", "Name": "Date Time",
+                           "StaticNTPServers": ["0.0.0.0", "0.0.0.0"]}),
+                )
+                .respond(
+                    Method::PATCH,
+                    DATE_TIME,
+                    StatusCode::BAD_REQUEST,
+                    Some(refusal(message_id)),
+                )
+                .build()
+                .await;
+            let cx = bmc.cx().await;
+            let result = IloBmcControl
+                .set_ntp_servers(&cx, &["10.0.0.1".to_string()])
+                .await;
+            assert_eq!(
+                matches!(result, Err(PlatformError::Unsupported)),
+                unsupported,
+                "{scenario}: {:?}",
+                result.err()
+            );
+        }
+    }
 
     /// iLO lists its NTP servers on its `DateTime` service, empty slots
     /// included, and has no NTP switch.

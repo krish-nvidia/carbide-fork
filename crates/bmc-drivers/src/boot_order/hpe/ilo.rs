@@ -7,13 +7,16 @@ use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
 };
+use nv_redfish::computer_system::ComputerSystemUpdate;
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::hpe::server_boot_settings::HpeServerBootSettingsUpdate;
 use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
-use crate::boot_order::support::{RedfishBootOrderExt as _, boot_order, display_name, reference};
+use crate::boot_order::support::{
+    RedfishBootOrderExt as _, boot_order, display_name, reference, system_etag,
+};
 use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// HPE iLO boot behavior.
@@ -81,9 +84,16 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
                 description: format!("BootOrder entry {http_option}"),
             })?;
         order.swap(0, position);
+        // iLO answers `If-Match: *` with 412.
+        let system = cx.system_uri(None).await?;
+        let etag = system_etag(cx, &system).await?;
+        let update = ComputerSystemUpdate::builder()
+            .with_boot(BootUpdate::builder().with_boot_order(order).build())
+            .build();
         match cx
-            .write_boot_order(&cx.system_uri(None).await?, order)
+            .patch_system(&system, &update, Some(&etag))
             .await
+            .map(DriverOutcome::from)
         {
             Err(PlatformError::Bmc {
                 message_id,
@@ -174,7 +184,77 @@ fn category_first(order: &[String], category: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::test_support::{Fixture, body, path};
+
+    /// iLO 5 v2.72 answers `If-Match: *` with 412, so the boot order goes
+    /// with the system's own ETag.
+    #[tokio::test]
+    async fn the_boot_order_is_written_with_the_system_etag() {
+        const SYSTEM: &str = "/redfish/v1/Systems/1";
+        const BOOT_OPTIONS: &str = "/redfish/v1/Systems/1/BootOptions";
+        let option = |id: &str, name: &str| {
+            json!({"@odata.id": format!("{BOOT_OPTIONS}/{id}"), "Id": id, "Name": id,
+                   "BootOptionReference": format!("Boot{id}"), "DisplayName": name})
+        };
+        let bmc = Fixture::new("HPE", "", "1", "1")
+            .document(
+                SYSTEM,
+                json!({"@odata.id": SYSTEM, "@odata.etag": "W/\"B01D9781\"", "Id": "1",
+                       "Name": "Computer System",
+                       "Boot": {"BootOrder": ["Boot0001", "Boot0002"],
+                                "BootOptions": {"@odata.id": BOOT_OPTIONS}}}),
+            )
+            .document(
+                BOOT_OPTIONS,
+                json!({"@odata.id": BOOT_OPTIONS, "Name": "Boot Options",
+                       "@odata.type": "#BootOptionCollection.BootOptionCollection",
+                       "Members": [{"@odata.id": format!("{BOOT_OPTIONS}/0001")},
+                                   {"@odata.id": format!("{BOOT_OPTIONS}/0002")}]}),
+            )
+            .document(
+                &format!("{BOOT_OPTIONS}/0001"),
+                option("0001", "Embedded RAID"),
+            )
+            .document(
+                &format!("{BOOT_OPTIONS}/0002"),
+                option("0002", "HTTP IPv4 Network Adapter - B8:3F:D2:D7:F7:4A"),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+        IloBootOrder
+            .configure(
+                &cx,
+                &BootInterfaceSelector::Mac("B8:3F:D2:D7:F7:4A".parse().expect("MAC")),
+            )
+            .await
+            .expect("configure succeeds");
+        let writes: Vec<_> = bmc
+            .writes()
+            .iter()
+            .map(|request| {
+                (
+                    path(request).to_string(),
+                    request.headers["if-match"]
+                        .to_str()
+                        .expect("ASCII")
+                        .to_string(),
+                    body(request),
+                )
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            [(
+                SYSTEM.to_string(),
+                "W/\"B01D9781\"".to_string(),
+                json!({"Boot": {"BootOrder": ["Boot0002", "Boot0001"]}}),
+            )]
+        );
+    }
 
     #[test]
     fn category_entries_move_to_the_front_in_reverse_order() {

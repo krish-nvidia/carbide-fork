@@ -19,7 +19,7 @@
 
 use bmc_platform::Capability;
 
-use super::model::{Check, Inputs, Kind, Outcome};
+use super::model::{Check, Inputs, Outcome};
 use super::validate::{self, EndState};
 use super::{apply, reads};
 use crate::selection::Selection;
@@ -32,13 +32,11 @@ pub(crate) struct Planned {
 
 /// Which checks a run plans.
 pub(crate) enum Scope<'a> {
-    /// Every read check, plus the apply checks with `apply`, narrowed to the
-    /// capabilities in `only` and the checks in `ids`.
-    Checks {
-        apply: bool,
-        only: &'a [Capability],
-        ids: &'a [String],
-    },
+    /// Every read check, narrowed to the capabilities given, if any.
+    Reads(&'a [Capability]),
+    /// Exactly the checks named. A `--validate` step runs alone, without the
+    /// steps it follows there.
+    Checks(&'a [String]),
     /// The `--validate` sequence.
     Validate(EndState),
     /// The factory reset `--factory-reset-first` runs before `--validate`.
@@ -51,7 +49,11 @@ pub(crate) fn plan(
     scope: Scope<'_>,
 ) -> Result<Vec<Planned>, String> {
     let checks = match scope {
-        Scope::Checks { apply, only, ids } => chosen(apply, only, ids)?,
+        Scope::Reads(only) => reads::checks()
+            .into_iter()
+            .filter(|check| only.is_empty() || only.contains(&check.capability))
+            .collect(),
+        Scope::Checks(ids) => named(ids)?,
         Scope::Validate(end_state) => {
             validate::checks(selection.is_supported(Capability::Dpu), end_state)
         }
@@ -74,75 +76,60 @@ pub(crate) fn plan(
         .collect())
 }
 
-fn chosen(apply: bool, only: &[Capability], ids: &[String]) -> Result<Vec<Check>, String> {
-    let all: Vec<Check> = reads::checks().into_iter().chain(apply::checks()).collect();
-    for id in ids {
-        let check = all
-            .iter()
-            .find(|check| check.id.as_str() == id)
-            .ok_or_else(|| {
-                let known: Vec<&str> = all.iter().map(|check| check.id.as_str()).collect();
-                format!("unknown check {id}; known checks: {}", known.join(", "))
-            })?;
-        if check.kind == Kind::Apply && !apply {
-            return Err(format!("{id} changes the BMC; pass --apply to run it"));
+/// The checks `ids` name, in that order, each run alone.
+fn named(ids: &[String]) -> Result<Vec<Check>, String> {
+    ids.iter()
+        .map(|id| {
+            catalog()
+                .into_iter()
+                .find(|check| check.id.as_str() == id)
+                .ok_or_else(|| {
+                    let known: Vec<&str> =
+                        catalog().iter().map(|check| check.id.as_str()).collect();
+                    format!("unknown check {id}; known checks: {}", known.join(", "))
+                })
+        })
+        .collect()
+}
+
+/// Every check `--check` can name, once each: the read checks, the apply
+/// checks, and the `--validate` steps.
+fn catalog() -> Vec<Check> {
+    let mut all: Vec<Check> = Vec::new();
+    for check in reads::checks()
+        .into_iter()
+        .chain(apply::checks())
+        .chain(validate::steps())
+    {
+        if !all.iter().any(|known| known.id == check.id) {
+            all.push(check.after(&[]));
         }
     }
-    let narrowed = !only.is_empty() || !ids.is_empty();
-    Ok(all
-        .into_iter()
-        .filter(|check| check.kind == Kind::Read || apply)
-        .filter(|check| {
-            !narrowed
-                || only.contains(&check.capability)
-                || ids.iter().any(|id| id == check.id.as_str())
-        })
-        .collect())
+    all
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `--only` and `--check` narrow the default set together, and a check
-    /// that changes the BMC is refused unless `--apply` is given.
+    /// `--check` runs exactly the checks it names, a `--validate` step among
+    /// them alone, and refuses a name it does not know.
     #[test]
-    fn checks_are_chosen_by_capability_id_and_apply() {
-        let ids = |checks: Vec<Check>| -> Vec<&'static str> {
+    fn checks_are_run_as_named() {
+        let ids = |checks: &[Check]| -> Vec<&'static str> {
             checks.iter().map(|check| check.id.as_str()).collect()
         };
-        let reads_only = ids(chosen(false, &[], &[]).expect("chosen"));
-        assert!(!reads_only.is_empty());
-        assert!(reads_only.iter().all(|id| !id.ends_with(".apply")));
-        assert!(ids(chosen(true, &[], &[]).expect("chosen")).contains(&"bios.apply"));
+        let chosen = named(&["bmc_control.ntp".to_string(), "power.state".to_string()])
+            .expect("known checks");
+        assert_eq!(ids(&chosen), ["bmc_control.ntp", "power.state"]);
+        assert!(chosen[0].after.is_empty(), "{:?}", chosen[0].after);
 
-        let narrowed = ids(chosen(
-            false,
-            &[Capability::Power],
-            &["lockdown.status".to_string()],
-        )
-        .expect("chosen"));
-        assert_eq!(
-            narrowed,
-            [
-                "power.state",
-                "power.ac_power_cycle_supported",
-                "lockdown.status"
-            ]
+        let unknown = named(&["no.such_check".to_string()]).map(|checks| ids(&checks));
+        assert!(
+            unknown
+                .as_ref()
+                .is_err_and(|message| message.contains("unknown check no.such_check")),
+            "{unknown:?}"
         );
-
-        let refused = [
-            ("unknown", "no.such_check", "unknown check no.such_check"),
-            ("apply without --apply", "bios.apply", "pass --apply"),
-        ];
-        for (scenario, id, error) in refused {
-            let result = chosen(false, &[], &[id.to_string()]).map(ids);
-            assert!(
-                result
-                    .as_ref()
-                    .is_err_and(|message| message.contains(error)),
-                "{scenario}: {result:?}"
-            );
-        }
     }
 }

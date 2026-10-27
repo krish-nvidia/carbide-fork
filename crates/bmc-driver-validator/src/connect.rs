@@ -109,16 +109,20 @@ impl Target {
         &self.username
     }
 
+    pub(crate) fn password(&self) -> &str {
+        &self.password
+    }
+
     fn credentials(&self) -> BmcCredentials {
         BmcCredentials::new(self.username.clone(), self.password.clone())
     }
 
-    /// A connection over a ServiceRoot read now, so nothing it reads was
-    /// cached before an earlier change.
+    /// A connection over a ServiceRoot read now that reads every resource
+    /// afresh, so nothing it reads was cached before an earlier change.
     pub(crate) async fn fresh_connection(&self) -> Result<NvRedfishConnection, PlatformError> {
         self.pool.invalidate_service_roots_for_bmc(self.address);
         self.pool
-            .connection_with_bmc_credentials(self.address, self.credentials())
+            .uncached_connection_with_bmc_credentials(self.address, self.credentials())
             .await
             .map_err(PlatformError::from_redfish)
     }

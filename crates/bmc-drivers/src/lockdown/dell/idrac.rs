@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use bmc_platform::{
-    DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownStatus, OpCx,
-    PlatformError,
+    DriverOutcome, Lockdown, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
+    OpCx, PlatformError,
 };
 use nv_redfish::core::{ActionError, Bmc};
 use serde_json::json;
@@ -20,8 +20,20 @@ use crate::resources::{RedfishResourcesExt as _, attribute_map, bios_update};
 /// Lockdown is the iDRAC system-lockdown switch with `racadm` disabled and the
 /// first boot device pinned. The BIOS in-band and UEFI-variable restrictions
 /// block IPMI, so they are staged only for an explicit host lockdown and are
-/// always lifted on a full unlock; the aggregate status follows the BMC.
+/// always lifted on a full unlock; the aggregate follows the BMC, except that
+/// an unlock is done only once UEFI variable access is lifted too.
 pub(crate) struct IdracLockdown;
+
+/// The aggregate of `bmc` and the UEFI variable restriction `uefi`. Locking
+/// leaves the host restrictions open, while a full unlock lifts them; only
+/// `UefiVariableAccess` counts, since it blocks BIOS changes, while BIOS
+/// setup disables the in-band interface itself.
+fn aggregate(bmc: LockdownState, uefi: LockdownState) -> LockdownState {
+    match (bmc, uefi) {
+        (LockdownState::Disabled, LockdownState::Enabled) => LockdownState::Partial,
+        (bmc, _) => bmc,
+    }
+}
 
 /// The device lockdown pins first; the XE9680 cannot PXE boot.
 async fn first_boot_device<B: Bmc>(cx: &OpCx<'_, B>) -> Result<&'static str, PlatformError> {
@@ -120,9 +132,10 @@ where
         let uefi = bios
             .attribute("UefiVariableAccess")
             .and_then(|value| value.str_value().map(str::to_owned));
+        let uefi_restricted = signal(uefi.as_deref(), "Controlled", "Standard");
         let host = state_from_signals(&[
             signal(in_band.as_deref(), "Disabled", "Enabled"),
-            signal(uefi.as_deref(), "Controlled", "Standard"),
+            uefi_restricted,
         ]);
 
         let attrs = cx
@@ -143,7 +156,7 @@ where
             signal(racadm.as_deref(), "Disabled", "Enabled"),
         ]);
         Ok(LockdownStatus {
-            aggregate: bmc,
+            aggregate: aggregate(bmc, state_from_signals(&[uefi_restricted])),
             message: format!(
                 "in_band={}, uefi_variable_access={}, system_lockdown={}, racadm={}",
                 reported(&in_band),
@@ -186,6 +199,31 @@ mod tests {
     const MANAGER: &str = "/redfish/v1/Managers/iDRAC.Embedded.1";
     const ATTRIBUTES: &str =
         "/redfish/v1/Managers/iDRAC.Embedded.1/Oem/Dell/DellAttributes/iDRAC.Embedded.1";
+
+    /// A full unlock is done only once UEFI variable access is lifted too;
+    /// locking leaves it open, so the BMC alone decides it.
+    #[test]
+    fn an_unlock_waits_for_uefi_variable_access() {
+        use LockdownState::{Disabled, Enabled, Partial, Unknown};
+        for (scenario, bmc, uefi, expected) in [
+            (
+                "BMC unlocked, UEFI variables controlled",
+                Disabled,
+                Enabled,
+                Partial,
+            ),
+            ("fully unlocked", Disabled, Disabled, Disabled),
+            (
+                "BMC unlocked, UEFI access unread",
+                Disabled,
+                Unknown,
+                Disabled,
+            ),
+            ("locked, UEFI variables open", Enabled, Disabled, Enabled),
+        ] {
+            assert_eq!(aggregate(bmc, uefi), expected, "{scenario}");
+        }
+    }
 
     #[tokio::test]
     async fn system_lockdown_scope_flips_only_the_switch_at_once() {

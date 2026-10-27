@@ -9,7 +9,7 @@ use Capability::{
 };
 use Quirk::{
     BlueFieldNicModeBiosError, BlueFieldNicModeUnreadable, BlueFieldOemTimeoutInNicMode,
-    BlueFieldSpacedBiosAttributeNames, EtagUnchangedOnUpdate, LenovoForceRestartHangs,
+    BlueFieldSpacedBiosAttributeNames, DellUefiPasswordClearJobFails, LenovoForceRestartHangs,
     RedfishRestartCutsDpuPower, SupermicroHostInterfaceRequired, SupermicroIpmiHostInterface,
     SupermicroMgxC2, VikingLockdownFirmware,
 };
@@ -488,11 +488,6 @@ fn firmware_and_model_resolve_to_their_quirks() {
             expect: vec![],
         },
         Case {
-            scenario: "Lenovo AMI, whose ETags survive changes",
-            identity: lenovo_ami(),
-            expect: vec![EtagUnchangedOnUpdate],
-        },
-        Case {
             scenario: "Viking at its lockdown firmware minimums or newer",
             identity: with_firmware_inventory(
                 viking(),
@@ -524,6 +519,18 @@ fn firmware_and_model_resolve_to_their_quirks() {
                 },
             ),
             expect: vec![RedfishRestartCutsDpuPower],
+        },
+        Case {
+            scenario: "Dell XE9680",
+            identity: with_system(
+                identity("Dell", None),
+                SystemIdentity {
+                    id: "System.Embedded.1".to_string(),
+                    model: Some("PowerEdge XE9680".to_string()),
+                    ..SystemIdentity::default()
+                },
+            ),
+            expect: vec![DellUefiPasswordClearJobFails],
         },
         Case {
             scenario: "Supermicro ARS-121L",

@@ -33,6 +33,8 @@ impl<B: Bmc> Accounts<B> for BlueFieldAccounts {
     async fn apply_default_policy(
         &self,
         _cx: &OpCx<'_, B>,
+        _account_username: &str,
+        _password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
         Ok(DriverOutcome::complete())
     }

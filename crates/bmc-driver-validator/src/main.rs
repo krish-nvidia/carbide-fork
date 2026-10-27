@@ -69,7 +69,7 @@ struct Args {
     #[arg(long, short)]
     username: String,
 
-    /// Password of that account; with `--validate`, its factory password.
+    /// Password of that account; with `--new-password`, its factory password.
     /// Prefer the environment variable: command arguments are visible to
     /// other users of the machine.
     #[arg(long, env = "BMC_PASSWORD", hide_env_values = true)]
@@ -81,23 +81,19 @@ struct Args {
     #[arg(long = "driver", value_name = "[CAPABILITY=]DRIVER")]
     drivers: Vec<String>,
 
-    /// Also run checks that change the BMC and host: stage BIOS, console,
-    /// and boot-order settings and restart the host to apply them (leaving
-    /// them applied), cycle host power, toggle lockdown, and create and
-    /// delete a temporary account.
-    #[arg(long)]
-    apply: bool,
-
     /// Take a BMC from factory state through everything NICo does to it,
-    /// in production order.
-    #[arg(long, conflicts_with_all = ["apply", "only", "checks"], requires = "new_password")]
+    /// in production order. Without `--validate` or `--check`, a run only
+    /// reads the BMC.
+    #[arg(long, conflicts_with_all = ["only", "checks"], requires = "new_password")]
     validate: bool,
 
-    /// Run only the checks of these capabilities.
-    #[arg(long, value_delimiter = ',')]
+    /// Read only the checks of these capabilities.
+    #[arg(long, value_delimiter = ',', conflicts_with = "checks")]
     only: Vec<Capability>,
 
-    /// Run only these checks; combines with `--only`.
+    /// Run exactly these checks, including ones that change the BMC and
+    /// host. A `--validate` step runs alone, without the steps it follows
+    /// there.
     #[arg(long = "check", value_delimiter = ',', value_name = "CHECK_ID")]
     checks: Vec<String>,
 
@@ -124,14 +120,10 @@ struct Args {
     #[arg(long, short)]
     verbose: bool,
 
-    /// The password `--validate` sets on `--username` in place of the
-    /// factory one.
-    #[arg(
-        long,
-        env = "BMC_NEW_PASSWORD",
-        hide_env_values = true,
-        requires = "validate"
-    )]
+    /// The password `--username` has in place of the factory one, which is
+    /// set first if the BMC still has the factory password. Factory reset
+    /// checks need it to know the factory password.
+    #[arg(long, env = "BMC_NEW_PASSWORD", hide_env_values = true)]
     new_password: Option<String>,
 
     /// What `--validate` leaves the BMC in.
@@ -145,16 +137,11 @@ struct Args {
     factory_reset_first: bool,
 
     /// NTP server the BMC should sync from. Repeatable.
-    #[arg(long = "ntp-server", value_name = "SERVER", requires = "validate")]
+    #[arg(long = "ntp-server", value_name = "SERVER")]
     ntp_servers: Vec<String>,
 
-    /// UEFI setup password `--validate` sets.
-    #[arg(
-        long,
-        env = "BMC_UEFI_PASSWORD",
-        hide_env_values = true,
-        requires = "validate"
-    )]
+    /// UEFI setup password to set.
+    #[arg(long, env = "BMC_UEFI_PASSWORD", hide_env_values = true)]
     uefi_password: Option<String>,
 
     /// The UEFI setup password the firmware has now, such as its factory
@@ -173,17 +160,22 @@ struct Args {
     #[arg(long, value_name = "COUNT")]
     super_nics: Option<u8>,
 
-    /// Let `--validate` cut and restore AC power to the host.
-    #[arg(long, requires = "validate")]
+    /// Let the AC power cycle check cut and restore AC power to the host.
+    #[arg(long)]
     allow_ac_cycle: bool,
 
+    /// Let the storage checks erase the boot controller, wiping the host's
+    /// boot disk, and create the boot volume NICo creates.
+    #[arg(long)]
+    allow_storage_erase: bool,
+
     /// PEM file of the platform key secure boot enrolls on a DPU.
-    #[arg(long, requires = "validate")]
+    #[arg(long)]
     pk_pem: Option<PathBuf>,
 
-    /// The host BMC of a DPU under `--validate`, as `IP` or `IP:PORT`; it
-    /// power-cycles the host when the DPU changes NIC mode.
-    #[arg(long, value_parser = bmc_address, requires_all = ["validate", "host_username", "host_password"])]
+    /// The host BMC of a DPU, as `IP` or `IP:PORT`; it power-cycles the
+    /// host when the DPU changes NIC mode.
+    #[arg(long, value_parser = bmc_address, requires_all = ["host_username", "host_password"])]
     host_bmc: Option<SocketAddr>,
 
     /// Account on the host BMC.
@@ -241,12 +233,10 @@ async fn run(args: Args, terminal: Arc<Terminal>) -> Result<ExitCode, String> {
     let jobs = args.jobs.max(1);
     let scope = if args.validate {
         Scope::Validate(args.end_state)
+    } else if !args.checks.is_empty() {
+        Scope::Checks(&args.checks)
     } else {
-        Scope::Checks {
-            apply: args.apply,
-            only: &args.only,
-            ids: &args.checks,
-        }
+        Scope::Reads(&args.only)
     };
     let mut session = Session::open(&args, &terminal).await?;
     if args.plan {
@@ -406,6 +396,7 @@ fn inputs(args: &Args, factory: Option<Target>) -> Result<Inputs, String> {
             new,
         }),
         allow_ac_cycle: args.allow_ac_cycle,
+        allow_storage_erase: args.allow_storage_erase,
         platform_key: args
             .pk_pem
             .as_deref()

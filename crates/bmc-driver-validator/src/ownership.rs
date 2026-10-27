@@ -26,7 +26,9 @@ use bmc_platform::{AuthError, Capability, PlatformError, PlatformIdentity};
 use crate::connect::Target;
 use crate::selection::Selection;
 
-/// How long a new password may take to be accepted.
+/// How long a password may take to be accepted: a new one takes effect a
+/// while after it is set, and some BMCs, as HPE iLO does, refuse every login
+/// for a few seconds after a failed one.
 const PASSWORD_TIMEOUT: Duration = Duration::from_secs(60);
 const PASSWORD_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -49,9 +51,15 @@ pub(crate) async fn take(
     match factory.log_in().await {
         Ok(()) | Err(PlatformError::Auth(AuthError::PasswordChangeRequired { .. })) => {}
         Err(PlatformError::Auth(AuthError::InvalidCredentials)) => {
-            owned.log_in().await.map_err(|error| {
-                format!("the BMC refuses both the factory and the new password: {error}")
-            })?;
+            logged_in_within(async || owned.log_in().await)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "the BMC refuses both the factory and the new password, the new one for \
+                         {}s: {error}",
+                        PASSWORD_TIMEOUT.as_secs()
+                    )
+                })?;
             let ownership = Ownership {
                 summary: "the factory password was already replaced".to_string(),
                 accounts_driver: None,
@@ -82,16 +90,14 @@ pub(crate) async fn take(
         .await
         .map_err(|error| format!("change_password: {error}"))?;
 
-    let deadline = started + PASSWORD_TIMEOUT;
-    while let Err(error) = owned.log_in().await {
-        if Instant::now() + PASSWORD_POLL_INTERVAL > deadline {
-            return Err(format!(
+    logged_in_within(async || owned.log_in().await)
+        .await
+        .map_err(|error| {
+            format!(
                 "the new password is still refused after {}s: {error}",
                 PASSWORD_TIMEOUT.as_secs()
-            ));
-        }
-        tokio::time::sleep(PASSWORD_POLL_INTERVAL).await;
-    }
+            )
+        })?;
     match factory.log_in().await {
         Err(PlatformError::Auth(AuthError::InvalidCredentials)) => {}
         Ok(()) => return Err("the new password works, but so does the factory one".to_string()),
@@ -111,4 +117,54 @@ pub(crate) async fn take(
         accounts_driver: Some(driver),
     };
     Ok((owned, ownership))
+}
+
+/// Runs `log_in` until it succeeds, every [`PASSWORD_POLL_INTERVAL`] for up to
+/// [`PASSWORD_TIMEOUT`], returning the last refusal when it never does.
+async fn logged_in_within(
+    log_in: impl AsyncFn() -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    let deadline = tokio::time::Instant::now() + PASSWORD_TIMEOUT;
+    loop {
+        match log_in().await {
+            Ok(()) => return Ok(()),
+            Err(error) if tokio::time::Instant::now() + PASSWORD_POLL_INTERVAL > deadline => {
+                return Err(error);
+            }
+            Err(_) => tokio::time::sleep(PASSWORD_POLL_INTERVAL).await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// A refused login is tried again until the BMC accepts it, as HPE iLO
+    /// does a few seconds after a failed one, and given up after
+    /// `PASSWORD_TIMEOUT`.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_login_is_tried_again_for_a_while() {
+        let refused = || Err(PlatformError::Auth(AuthError::InvalidCredentials));
+        for (scenario, refusals, logged_in, attempts) in [
+            ("accepted at once", 0, true, 1),
+            ("accepted after two refusals", 2, true, 3),
+            ("never accepted", usize::MAX, false, 13),
+        ] {
+            let made = Cell::new(0);
+            let result = logged_in_within(async || {
+                made.set(made.get() + 1);
+                if made.get() > refusals {
+                    Ok(())
+                } else {
+                    refused()
+                }
+            })
+            .await;
+            assert_eq!(result.is_ok(), logged_in, "{scenario}: {result:?}");
+            assert_eq!(made.get(), attempts, "{scenario}: attempts");
+        }
+    }
 }

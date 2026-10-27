@@ -21,7 +21,12 @@ impl<B: Bmc> Accounts<B> for IloAccounts {
         &StandardAccounts
     }
 
-    async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+    async fn apply_default_policy(
+        &self,
+        cx: &OpCx<'_, B>,
+        _account_username: &str,
+        _password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
         let policy = AccountServiceUpdate::builder()
             .build()
             .with_oem_hpe(

@@ -195,11 +195,13 @@ where
         .map_err(|error| cx.map_redfish_error(error))?;
     let lc_status = match response {
         ModificationResponse::Entity(status) => status.lc_status,
-        ModificationResponse::Task(_) | ModificationResponse::Empty => None,
+        ModificationResponse::Task(_)
+        | ModificationResponse::Empty
+        | ModificationResponse::Message(_) => None,
     };
     match lc_status {
         Some(LcStatus::Ready) => Ok(()),
-        other => Err(PlatformError::InvalidResponse {
+        other => Err(PlatformError::NotReady {
             message: format!(
                 "the Lifecycle Controller is not ready to accept provisioning requests: {other:?}"
             ),

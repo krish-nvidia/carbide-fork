@@ -83,7 +83,20 @@ pub trait Accounts<B: Bmc>: Send + Sync {
             .await
     }
 
-    async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
-        self.standard().apply_default_policy(cx).await
+    /// Applies the platform's account policy.
+    ///
+    /// `account_username` and `password` are the account the operation runs
+    /// as and its current password, for platforms whose policy also sets up
+    /// that account and needs its password to. A password other than the
+    /// current one changes the account's password.
+    async fn apply_default_policy(
+        &self,
+        cx: &OpCx<'_, B>,
+        account_username: &str,
+        password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.standard()
+            .apply_default_policy(cx, account_username, password)
+            .await
     }
 }

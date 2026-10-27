@@ -17,7 +17,9 @@ use crate::bios::support::{RedfishBiosExt as _, compare, expected, settings};
 use crate::boot_order::lenovo::{NETWORK, first_group, network_group_first};
 use crate::resources::RedfishResourcesExt as _;
 
-/// Lenovo XCC names the UEFI administrator password `UefiAdminPassword`.
+/// Lenovo XCC names the UEFI administrator password `UefiAdminPassword`, and
+/// clears it when both the old and new passwords are empty, so a clear needs
+/// no current password and works whatever the password was.
 pub(crate) struct XccBios;
 
 const UEFI_PASSWORD_NAME: &str = "UefiAdminPassword";
@@ -134,6 +136,14 @@ where
             .await
     }
 
+    async fn clear_uefi_password(
+        &self,
+        cx: &OpCx<'_, B>,
+        _current_password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        cx.change_bios_password(UEFI_PASSWORD_NAME, "", "").await
+    }
+
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         cx.stage_bios_attributes(&tpm_clear().attributes).await
     }
@@ -149,6 +159,40 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::test_support::{Fixture, body};
+
+    /// XCC 2 refuses a clear naming an old password it does not accept with
+    /// `ActionParameterValueFormatError`; XCC 2 and XCC 3 clear the password
+    /// when both are empty.
+    #[tokio::test]
+    async fn a_uefi_password_clear_names_no_old_password() {
+        const SYSTEM: &str = "/redfish/v1/Systems/1";
+        const BIOS: &str = "/redfish/v1/Systems/1/Bios";
+        let bmc = Fixture::new("Lenovo", "", "1", "1")
+            .document(
+                SYSTEM,
+                json!({"@odata.id": SYSTEM, "Id": "1", "Name": "System", "Bios": {"@odata.id": BIOS}}),
+            )
+            .document(
+                BIOS,
+                json!({"@odata.id": BIOS, "Id": "Bios", "Name": "Bios", "Attributes": {},
+                       "Actions": {"#Bios.ChangePassword": {
+                           "target": format!("{BIOS}/Actions/Bios.ChangePassword")}}}),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+        XccBios
+            .clear_uefi_password(&cx, "old-password")
+            .await
+            .expect("the clear is accepted");
+        let writes = bmc.writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            body(&writes[0]),
+            json!({"PasswordName": UEFI_PASSWORD_NAME, "OldPassword": "", "NewPassword": ""})
+        );
+    }
 
     #[test]
     fn virtualization_needs_either_cpu_vendors_attribute() {

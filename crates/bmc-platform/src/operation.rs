@@ -216,7 +216,9 @@ impl DriverOutcome {
 impl<T> From<ModificationResponse<T>> for DriverOutcome {
     fn from(response: ModificationResponse<T>) -> Self {
         match response {
-            ModificationResponse::Entity(_) | ModificationResponse::Empty => Self::complete(),
+            ModificationResponse::Entity(_)
+            | ModificationResponse::Empty
+            | ModificationResponse::Message(_) => Self::complete(),
             ModificationResponse::Task(task) => Self::accepted(OperationReference::RedfishTask {
                 uri: task.location.0,
                 retry_after_seconds: task.retry_after.map(|duration| duration.as_secs()),

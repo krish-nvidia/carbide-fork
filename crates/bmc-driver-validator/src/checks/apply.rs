@@ -25,21 +25,25 @@
 //! Power, lockdown, and account checks restore what they change.
 
 use std::collections::BTreeSet;
+use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
 use bmc_platform::{
-    Capability, ConsoleState, DriverOutcome, LockdownDesiredState, LockdownState, PlatformError,
+    Capability, ConsoleState, DriverOutcome, LockdownDesiredState, LockdownState, OpCx,
+    PlatformError,
 };
 use carbide_secrets::credentials::Credentials;
 use nv_redfish::account::ManagerAccountCreate;
 use nv_redfish::resource::{PowerState, ResetType};
 
 use super::context::CheckCx;
-use super::errors::failed;
+use super::errors::{describe, failed};
 use super::model::{Check, CheckId, Needs, Outcome, Step};
 use super::ops::{
-    self, Attempt, QUICK_POLL_INTERVAL, SETTLE_POLL_INTERVAL, SETTLE_TIMEOUT, how, poll, took,
+    self, Attempt, Effect, IMMEDIATE_TIMEOUT, QUICK_POLL_INTERVAL, SETTLE_POLL_INTERVAL,
+    SETTLE_TIMEOUT, how, poll, took,
 };
+use super::runner::{RETRY_INTERVAL, UNREACHABLE_TIMEOUT};
 use super::text::{boot_order_summary, differences};
 use crate::connect::Target;
 
@@ -47,11 +51,13 @@ pub(super) const BIOS: CheckId = CheckId::new("bios.apply");
 pub(super) const BOOT_ORDER: CheckId = CheckId::new("boot_order.configure");
 pub(super) const CONSOLE: CheckId = CheckId::new("console.setup");
 pub(super) const POWER_CYCLE: CheckId = CheckId::new("power.cycle");
+pub(super) const STORAGE_ERASE: CheckId = CheckId::new("storage.decommission_controller");
+const STORAGE_VOLUME: CheckId = CheckId::new("storage.create_volume");
 const ACCOUNTS_LIFECYCLE: CheckId = CheckId::new("accounts.lifecycle");
 const LOCKDOWN_TOGGLE: CheckId = CheckId::new("lockdown.toggle");
 
-/// How long a new or deleted account may take to affect logins.
-const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(60);
+/// The volume NICo's cleanup creates on the boot controller.
+const BOOT_VOLUME: &str = "VD_0";
 
 /// How long the BMC may take to list the boot interface's boot option after
 /// the BIOS settings that create it read back.
@@ -60,10 +66,6 @@ const BOOT_OPTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// How long settings may take to take effect after the first apply before
 /// they are applied again.
 const APPLY_AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
-
-/// How long the BIOS may take to report its attributes once the host
-/// restarts.
-const BIOS_REPORT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// How long the settings still differing after a partial apply must read
 /// the same before they are applied again.
@@ -75,9 +77,33 @@ pub(super) fn checks() -> Vec<Check> {
         boot_order(),
         console(),
         power_cycle(),
+        decommission_controller(),
+        create_volume(),
         accounts_lifecycle(),
         lockdown_toggle(),
     ]
+}
+
+/// Erases the boot controller's drives, as NICo's cleanup does first.
+pub(super) fn decommission_controller() -> Check {
+    Check::apply(
+        STORAGE_ERASE,
+        Capability::Storage,
+        run!(erase_boot_controller),
+    )
+    .once()
+    .needs(&[Needs::StorageErase])
+}
+
+/// Creates the boot volume NICo's cleanup creates after the erase.
+pub(super) fn create_volume() -> Check {
+    Check::apply(
+        STORAGE_VOLUME,
+        Capability::Storage,
+        run!(create_boot_volume),
+    )
+    .once()
+    .needs(&[Needs::StorageErase])
 }
 
 pub(super) fn bios() -> Check {
@@ -120,9 +146,9 @@ async fn bios_apply(cx: &CheckCx<'_>) -> Step {
     let profile = &cx.inputs().bios_profile;
     let boot_interface = cx.inputs().boot_interface();
     let boot_interface = boot_interface.as_ref();
-    await_bios_report(
+    restart_unless_bios_reported(
         |step| cx.trace(step),
-        async || bios.status(profile, boot_interface).await.map(drop),
+        bios.status(profile, boot_interface).await.map(drop),
         async || ops::restart_host(cx).await,
     )
     .await?;
@@ -156,30 +182,20 @@ async fn bios_apply(cx: &CheckCx<'_>) -> Step {
     .await
 }
 
-/// Restarts the host once when `read` finds the BIOS has not reported its
-/// attributes, then waits up to [`BIOS_REPORT_TIMEOUT`] for them: the BIOS
-/// reports them to the BMC only as the host starts, so a BMC restarted since
-/// then has none until the host restarts.
-async fn await_bios_report(
+/// Restarts the host when `status` says the BIOS has not reported its
+/// attributes: it reports them to the BMC only as the host starts, so a BMC
+/// restarted since then has none until the host restarts. The first read of
+/// the apply then waits for them.
+async fn restart_unless_bios_reported(
     trace: impl Fn(String),
-    read: impl AsyncFn() -> Result<(), PlatformError>,
+    status: Result<(), PlatformError>,
     restart: impl AsyncFnOnce() -> Result<(), Outcome>,
 ) -> Result<(), Outcome> {
-    let Err(PlatformError::NotReady { message }) = read().await else {
+    let Err(PlatformError::NotReady { message }) = status else {
         return Ok(());
     };
     trace(format!("{message}; restarting the host"));
-    restart().await?;
-    ops::poll_traced(
-        trace,
-        BIOS_REPORT_TIMEOUT,
-        SETTLE_POLL_INTERVAL,
-        async || match read().await {
-            Err(PlatformError::NotReady { message }) => Attempt::NotYet(message),
-            _ => Attempt::Done(()),
-        },
-    )
-    .await
+    restart().await
 }
 
 async fn boot_order_configure(cx: &CheckCx<'_>) -> Step {
@@ -261,17 +277,17 @@ async fn apply_until_in_effect(
     pending: impl AsyncFn() -> Result<Option<NotInEffect>, Outcome>,
     apply: impl AsyncFn() -> Result<DriverOutcome, Outcome>,
 ) -> Step {
-    let Some(before) = pending().await? else {
+    let trace = |step: String| cx.trace(step);
+    let Some(before) = when_answered(&trace, &pending).await? else {
         cx.trace("already in effect; applying again, which must start no work");
         return reapply_changes_nothing(cx, &apply, "already in effect").await;
     };
     cx.trace(format!("not in effect: {}", before.summary));
     let started = Instant::now();
-    let outcome = apply().await?;
+    let outcome = when_answered(&trace, &apply).await?;
     cx.trace(format!("apply: {}", how(&outcome)));
     ops::take_effect(cx, &outcome).await?;
     let mut applied = format!("applying ({}) and a host restart", how(&outcome));
-    let trace = |step: String| cx.trace(step);
     if let Some(rest) = wait_in_effect(&trace, &pending, Some(&before.settings)).await? {
         let took_effect = before
             .settings
@@ -284,7 +300,7 @@ async fn apply_until_in_effect(
             before.settings.len(),
             rest.summary
         ));
-        let again = apply().await?;
+        let again = when_answered(&trace, &apply).await?;
         cx.trace(format!("apply again: {}", how(&again)));
         ops::take_effect(cx, &again).await?;
         wait_in_effect(&trace, &pending, None).await?;
@@ -296,6 +312,28 @@ async fn apply_until_in_effect(
     cx.trace("in effect; applying again, which must start no work");
     let state = format!("in effect {} after {applied}", took(started));
     reapply_changes_nothing(cx, &apply, &state).await
+}
+
+/// Runs `request` until the BMC answers it, waiting as the runner does for
+/// an unreachable BMC while it cannot: it lists boot options or BIOS
+/// attributes again after a restart, or fails with a server error. Any other
+/// failure ends it at once. Applies stage the same settings each time, so
+/// sending one again is safe.
+async fn when_answered<T>(
+    trace: impl Fn(String),
+    request: &impl AsyncFn() -> Result<T, Outcome>,
+) -> Result<T, Outcome> {
+    ops::poll_traced(
+        trace,
+        UNREACHABLE_TIMEOUT,
+        RETRY_INTERVAL,
+        async || match request().await {
+            Ok(answer) => Attempt::Done(answer),
+            Err(Outcome::Unreachable(reason)) => Attempt::NotYet(reason),
+            Err(other) => Attempt::Failed(other),
+        },
+    )
+    .await
 }
 
 /// Whether some settings that differed `before` took effect while others
@@ -369,6 +407,114 @@ async fn reapply_changes_nothing(
     }
 }
 
+/// Erases the boot controller and waits until it lists no volume.
+async fn erase_boot_controller(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let storage = bmc.storage()?;
+    let controller = boot_controller(cx).await?;
+    let outcome = when_answered(|step| cx.trace(step), &async || {
+        storage
+            .decommission_controller(&controller)
+            .await
+            .map_err(failed("decommission_controller"))
+    })
+    .await?;
+    cx.trace(format!("decommission_controller: {}", how(&outcome)));
+    ops::read_back(
+        cx,
+        &outcome,
+        Effect::Immediate,
+        async || match volume_names(cx, &controller).await {
+            Ok(names) if names.is_empty() => Attempt::Done(()),
+            Ok(names) => Attempt::NotYet(format!("{controller} lists {}", names.join(", "))),
+            Err(error) => Attempt::NotYet(describe("reading volumes", &error)),
+        },
+    )
+    .await?;
+    Ok(format!(
+        "{controller} erased ({}); it lists no volume",
+        how(&outcome)
+    ))
+}
+
+/// Creates [`BOOT_VOLUME`] on the boot controller, restarts the host so the
+/// job runs, and waits until the controller lists it.
+async fn create_boot_volume(cx: &CheckCx<'_>) -> Step {
+    let bmc = cx.bmc();
+    let storage = bmc.storage()?;
+    let controller = boot_controller(cx).await?;
+    let outcome = when_answered(|step| cx.trace(step), &async || {
+        storage
+            .create_volume(&controller, BOOT_VOLUME)
+            .await
+            .map_err(failed("create_volume"))
+    })
+    .await?;
+    cx.trace(format!("create_volume: {}", how(&outcome)));
+    ops::read_back(
+        cx,
+        &outcome,
+        Effect::OnRestart,
+        async || match volume_names(cx, &controller).await {
+            Ok(names) if names.iter().any(|name| name == BOOT_VOLUME) => Attempt::Done(()),
+            Ok(names) if names.is_empty() => {
+                Attempt::NotYet(format!("{controller} lists no volume"))
+            }
+            Ok(names) => Attempt::NotYet(format!("{controller} lists {}", names.join(", "))),
+            Err(error) => Attempt::NotYet(describe("reading volumes", &error)),
+        },
+    )
+    .await?;
+    Ok(format!(
+        "{BOOT_VOLUME} created on {controller} ({}) and listed after a host restart",
+        how(&outcome)
+    ))
+}
+
+/// The boot controller the driver names; a check is skipped without one.
+async fn boot_controller(cx: &CheckCx<'_>) -> Result<String, Outcome> {
+    cx.bmc()
+        .storage()?
+        .boot_controller()
+        .await
+        .map_err(failed("boot_controller"))?
+        .ok_or_else(|| Outcome::Skipped("the driver names no boot controller".to_string()))
+}
+
+/// The names of the volumes on storage controller `controller`, read over a
+/// fresh connection rather than through the driver under test.
+async fn volume_names(cx: &CheckCx<'_>, controller: &str) -> Result<Vec<String>, PlatformError> {
+    let connection = cx.target().fresh_connection().await?;
+    let bmc = cx.bmc();
+    let op = OpCx::new(
+        connection.bmc.as_ref(),
+        connection.service_root.as_ref(),
+        bmc.endpoint().identity(),
+    );
+    let storage = op
+        .system()
+        .await?
+        .storage_controllers()
+        .await
+        .map_err(PlatformError::from_redfish)?
+        .unwrap_or_default()
+        .into_iter()
+        .find(|storage| storage.raw().odata_id.last_segment() == Some(controller))
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: format!("the system lists no storage controller {controller}"),
+        })?;
+    let Some(volumes) = storage.volumes() else {
+        return Ok(Vec::new());
+    };
+    Ok(volumes
+        .members()
+        .await
+        .map_err(PlatformError::from_redfish)?
+        .iter()
+        .map(|volume| volume.raw().name.clone())
+        .collect())
+}
+
 /// Cycles host power away from its current state and back.
 async fn cycle_power(cx: &CheckCx<'_>) -> Step {
     let bmc = cx.bmc();
@@ -381,15 +527,37 @@ async fn cycle_power(cx: &CheckCx<'_>) -> Step {
         PowerState::Off => (ResetType::On, ResetType::ForceOff),
         _ => (ResetType::ForceOff, ResetType::On),
     };
-    let away_result = ops::set_power(cx, &bmc, away).await;
-    let back_result = ops::set_power(cx, &bmc, back).await;
-    match ops::power_state(&bmc).await {
-        Ok(Some(state)) if state == original => {}
+    there_and_back(
+        cx,
+        "host power",
+        Some(original),
+        ops::set_power(cx, &bmc, away),
+        ops::set_power(cx, &bmc, back),
+        ops::power_state(&bmc),
+    )
+    .await
+}
+
+/// Changes a setting away from `original` and back, then records the change
+/// as not restored unless `read` finds `original` again. Ends with both
+/// changes' reports, or the first failure.
+async fn there_and_back<S: PartialEq + Debug>(
+    cx: &CheckCx<'_>,
+    setting: &str,
+    original: S,
+    away: impl Future<Output = Step>,
+    back: impl Future<Output = Step>,
+    read: impl Future<Output = Result<S, PlatformError>>,
+) -> Step {
+    let away = away.await;
+    let back = back.await;
+    match read.await {
+        Ok(current) if current == original => {}
         current => cx.not_restored(format!(
-            "host power was {original:?}; it now reads {current:?}"
+            "{setting} was {original:?}; it now reads {current:?}"
         )),
     }
-    Ok(format!("{}; {}", away_result?, back_result?))
+    Ok(format!("{}; {}", away?, back?))
 }
 
 /// Creates a temporary account, logs in with it, deletes it, and confirms
@@ -454,7 +622,7 @@ async fn verify_new_account(
     }
     poll(
         cx,
-        ACCOUNT_TIMEOUT,
+        IMMEDIATE_TIMEOUT,
         QUICK_POLL_INTERVAL,
         async || match temporary.log_in().await {
             Ok(()) => Attempt::Done(()),
@@ -480,7 +648,7 @@ async fn verify_account_gone(
     }
     poll(
         cx,
-        ACCOUNT_TIMEOUT,
+        IMMEDIATE_TIMEOUT,
         QUICK_POLL_INTERVAL,
         async || match temporary.log_in().await {
             Err(PlatformError::Auth(_)) => Attempt::Done(()),
@@ -517,16 +685,15 @@ async fn toggle_lockdown(cx: &CheckCx<'_>) -> Step {
             LockdownDesiredState::Disabled,
         ),
     };
-    let away_result = ops::set_lockdown(cx, away).await;
-    let back_result = ops::set_lockdown(cx, back).await;
-    match lockdown.status().await {
-        Ok(status) if status.aggregate == original => {}
-        current => cx.not_restored(format!(
-            "lockdown was {original:?}; it now reads {:?}",
-            current.map(|status| status.aggregate)
-        )),
-    }
-    Ok(format!("{}; {}", away_result?, back_result?))
+    there_and_back(
+        cx,
+        "lockdown",
+        original,
+        ops::set_lockdown(cx, away),
+        ops::set_lockdown(cx, back),
+        async { lockdown.status().await.map(|status| status.aggregate) },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -536,38 +703,26 @@ mod tests {
 
     use super::*;
 
-    /// The host restarts only when the BIOS has not reported its attributes,
-    /// and only once; the wait then ends when they appear or after
-    /// `BIOS_REPORT_TIMEOUT`. Any other reading leaves the apply to report it.
-    #[tokio::test(start_paused = true)]
-    async fn the_host_restarts_once_when_the_bios_has_not_reported() {
-        let not_ready = || {
-            Err(PlatformError::NotReady {
-                message: "no attributes".to_string(),
-            })
-        };
+    /// The host restarts only when the BIOS has not reported its attributes;
+    /// any other reading leaves the apply to report it.
+    #[tokio::test]
+    async fn the_host_restarts_only_when_the_bios_has_not_reported() {
         let cases = [
-            ("already reported", vec![Ok(())], 0, true),
+            ("already reported", Ok(()), 0),
             (
-                "reported after the restart",
-                vec![not_ready(), not_ready(), Ok(())],
+                "not reported",
+                Err(PlatformError::NotReady {
+                    message: "no attributes".to_string(),
+                }),
                 1,
-                true,
             ),
-            ("never reported", vec![], 1, false),
-            (
-                "another error",
-                vec![Err(PlatformError::Unsupported)],
-                0,
-                true,
-            ),
+            ("another error", Err(PlatformError::Unsupported), 0),
         ];
-        for (scenario, reads, restarts, passes) in cases {
-            let reads = RefCell::new(VecDeque::from(reads));
+        for (scenario, status, restarts) in cases {
             let restarted = Cell::new(0);
-            let result = await_bios_report(
+            let result = restart_unless_bios_reported(
                 |_| {},
-                async || reads.borrow_mut().pop_front().unwrap_or_else(not_ready),
+                status,
                 async || {
                     restarted.set(restarted.get() + 1);
                     Ok(())
@@ -575,7 +730,41 @@ mod tests {
             )
             .await;
             assert_eq!(restarted.get(), restarts, "{scenario}: restarts");
-            assert_eq!(result.is_ok(), passes, "{scenario}: {result:?}");
+            assert!(result.is_ok(), "{scenario}: {result:?}");
+        }
+    }
+
+    /// A request waits while the BMC cannot answer yet, and ends at once on
+    /// any other failure.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_waits_until_the_bmc_answers() {
+        let not_ready = || Err(Outcome::Unreachable("BootOrder lists Boot0008".to_string()));
+        let answered = || Ok(());
+        let cases = [
+            (
+                "ready after two reads",
+                vec![not_ready(), not_ready(), answered()],
+                true,
+                3,
+            ),
+            (
+                "a failure ends it",
+                vec![Err(Outcome::Fail("refused".to_string()))],
+                false,
+                1,
+            ),
+            ("never ready", vec![], false, 31),
+        ];
+        for (scenario, reads, passes, attempts) in cases {
+            let reads = RefCell::new(VecDeque::from(reads));
+            let made = Cell::new(0);
+            let pending = async || {
+                made.set(made.get() + 1);
+                reads.borrow_mut().pop_front().unwrap_or_else(not_ready)
+            };
+            let result = when_answered(|_| {}, &pending).await;
+            assert_eq!(result.is_ok(), passes, "{scenario}: {:?}", result.err());
+            assert_eq!(made.get(), attempts, "{scenario}: reads");
         }
     }
 

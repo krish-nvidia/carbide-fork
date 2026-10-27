@@ -31,7 +31,12 @@ impl<B: Bmc> Accounts<B> for DeltaPowerShelfAccounts {
             .await
     }
 
-    async fn apply_default_policy(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+    async fn apply_default_policy(
+        &self,
+        cx: &OpCx<'_, B>,
+        _account_username: &str,
+        _password: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
         cx.apply_account_policy(
             AccountServiceUpdate::builder()
                 .with_account_lockout_threshold(10)

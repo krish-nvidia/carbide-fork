@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use bmc_platform::{AuthError, IpmiOps, PlatformError, Quirk};
+use bmc_platform::{AuthError, IpmiOps, PlatformError};
 use carbide_redfish::nv_redfish::{
     Error as RedfishError, NvRedfishClientPool, NvRedfishConnection, RedfishBmc,
 };
@@ -142,21 +142,14 @@ impl ConnectionManager {
             .await
             .map_err(ConnectError::Credentials)?;
         let (address, credentials) = (endpoint.address(), lease.credentials().clone());
-        let stale_etags = endpoint
-            .selection()
-            .quirks
-            .contains(&Quirk::EtagUnchangedOnUpdate);
+        // Reads are not cached: BMCs such as Lenovo XCC 3 and AMI MegaRAC keep
+        // a resource's ETag when it changes, so a copy revalidated by ETag
+        // can be stale.
         observe(endpoint, None, "create_client", async {
-            if stale_etags {
-                self.pool
-                    .uncached_connection_with_bmc_credentials(address, credentials)
-                    .await
-            } else {
-                self.pool
-                    .connection_with_bmc_credentials(address, credentials)
-                    .await
-            }
-            .map_err(|error: RedfishError| PlatformError::from_redfish(error))
+            self.pool
+                .uncached_connection_with_bmc_credentials(address, credentials)
+                .await
+                .map_err(|error: RedfishError| PlatformError::from_redfish(error))
         })
         .await
         .map_err(ConnectError::Transport)

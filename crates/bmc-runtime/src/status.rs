@@ -125,7 +125,9 @@ fn task_poll(
 ) -> Result<TaskPoll, PlatformError> {
     match polled {
         Ok(ModificationResponse::Task(_)) => Ok(TaskPoll::Status(OperationStatus::Running)),
-        Ok(ModificationResponse::Empty) => Ok(TaskPoll::Status(OperationStatus::Completed)),
+        Ok(ModificationResponse::Empty | ModificationResponse::Message(_)) => {
+            Ok(TaskPoll::Status(OperationStatus::Completed))
+        }
         Ok(ModificationResponse::Entity(body)) => Ok(match serde_json::from_value::<Task>(body) {
             Ok(task) => TaskPoll::Task(Box::new(task)),
             Err(_) => TaskPoll::Status(OperationStatus::Completed),

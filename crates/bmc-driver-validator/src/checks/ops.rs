@@ -33,6 +33,7 @@ use nv_redfish::resource::{PowerState, ResetType};
 use super::context::CheckCx;
 use super::errors::{describe, failed};
 use super::model::{Outcome, Step};
+use super::runner::{RETRY_INTERVAL, UNREACHABLE_TIMEOUT};
 
 /// How long accepted work may stay queued or running before or after a reset.
 const JOB_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -46,19 +47,15 @@ const POWER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub(super) const SETTLE_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
-/// How long a change that needs no restart may take to read back.
-const IMMEDIATE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a change that needs no restart, such as a new account, may take
+/// to read back.
+pub(super) const IMMEDIATE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const QUICK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How long a BMC that accepted an AC power cycle and started no work may
-/// take to lose power; a BMC can accept the request well before it cuts it.
+/// How long a BMC may take to lose power after accepting an AC power cycle,
+/// or after the work the request started completes; a BMC can accept the
+/// request well before it cuts power.
 const AC_CYCLE_DOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-/// How long a BMC may refuse a lockdown change before taking it, as some do
-/// for minutes after earlier setup steps; the machine controller retries
-/// until it takes.
-const LOCKDOWN_REFUSAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const LOCKDOWN_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long a reset BMC may keep answering, and then take to answer again.
 const BMC_DOWN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
@@ -199,22 +196,16 @@ pub(super) async fn take_effect(cx: &CheckCx<'_>, outcome: &DriverOutcome) -> Re
 pub(super) async fn settle(cx: &CheckCx<'_>, outcome: &DriverOutcome) -> Result<bool, Outcome> {
     let mut awaiting_reset = false;
     for reference in outcome.references() {
-        let status = poll(cx, JOB_TIMEOUT, JOB_POLL_INTERVAL, async || {
-            match cx.bmc().operation_status(reference).await {
-                Ok(OperationStatus::Running) => {
-                    Attempt::NotYet(format!("{} is still running", reference.uri()))
-                }
-                Ok(status) => Attempt::Done(status),
-                Err(error) => Attempt::NotYet(describe("operation status", &error)),
-            }
-        })
+        let seen = poll_operation(
+            |step| cx.trace(step),
+            reference,
+            async || cx.bmc().operation_status(reference).await,
+            true,
+            async || false,
+        )
         .await?;
-        cx.trace(format!("{}: {status:?}", reference.uri()));
-        match status {
-            OperationStatus::AwaitingReset => awaiting_reset = true,
-            OperationStatus::Completed | OperationStatus::Running => {}
-            ended => return Err(ended_outcome(reference, ended)),
-        }
+        cx.trace(format!("{}: {seen:?}", reference.uri()));
+        awaiting_reset |= seen == Seen::AwaitingReset;
     }
     if awaiting_reset {
         cx.trace("work runs on the next host reset; restarting the host");
@@ -230,20 +221,56 @@ pub(super) async fn wait_for_operations(
     outcome: &DriverOutcome,
 ) -> Result<(), Outcome> {
     for reference in outcome.references() {
-        poll(cx, JOB_TIMEOUT, JOB_POLL_INTERVAL, async || {
-            match cx.bmc().operation_status(reference).await {
-                Ok(OperationStatus::Completed) => Attempt::Done(()),
-                Ok(status @ (OperationStatus::Running | OperationStatus::AwaitingReset)) => {
-                    Attempt::NotYet(format!("{} is {status:?}", reference.uri()))
-                }
-                Ok(ended) => Attempt::Failed(ended_outcome(reference, ended)),
-                Err(error) => Attempt::NotYet(describe("operation status", &error)),
-            }
-        })
+        poll_operation(
+            |step| cx.trace(step),
+            reference,
+            async || cx.bmc().operation_status(reference).await,
+            false,
+            async || false,
+        )
         .await?;
         cx.trace(format!("{}: Completed", reference.uri()));
     }
     Ok(())
+}
+
+/// How [`poll_operation`] last saw the work at a reference.
+#[derive(Debug, PartialEq, Eq)]
+enum Seen {
+    Completed,
+    /// It runs on the next host reset.
+    AwaitingReset,
+    /// A read failed and the BMC no longer answers.
+    BmcDown,
+}
+
+/// Polls `status` for the work at `reference` until it completes, or, with
+/// `reset_ends`, waits for the next host reset. Any other ending fails the
+/// poll. A failed read is retried unless `bmc_down` says the BMC stopped
+/// answering, which ends the poll.
+async fn poll_operation(
+    trace: impl Fn(String),
+    reference: &OperationReference,
+    status: impl AsyncFn() -> Result<OperationStatus, PlatformError>,
+    reset_ends: bool,
+    bmc_down: impl AsyncFn() -> bool,
+) -> Result<Seen, Outcome> {
+    poll_traced(
+        trace,
+        JOB_TIMEOUT,
+        JOB_POLL_INTERVAL,
+        async || match status().await {
+            Ok(OperationStatus::Completed) => Attempt::Done(Seen::Completed),
+            Ok(OperationStatus::AwaitingReset) if reset_ends => Attempt::Done(Seen::AwaitingReset),
+            Ok(state @ (OperationStatus::Running | OperationStatus::AwaitingReset)) => {
+                Attempt::NotYet(format!("{} is {state:?}", reference.uri()))
+            }
+            Ok(ended) => Attempt::Failed(ended_outcome(reference, ended)),
+            Err(_) if bmc_down().await => Attempt::Done(Seen::BmcDown),
+            Err(error) => Attempt::NotYet(describe("operation status", &error)),
+        },
+    )
+    .await
 }
 
 /// Restarts the host through the selected power driver, or powers it on
@@ -387,11 +414,10 @@ pub(super) async fn power_on(cx: &CheckCx<'_>) -> Result<(), Outcome> {
 /// failing after `timeout`.
 pub(super) async fn wait_for_bmc_down(cx: &CheckCx<'_>, timeout: Duration) -> Result<(), Outcome> {
     poll(cx, timeout, QUICK_POLL_INTERVAL, async || {
-        match cx.target().log_in().await {
-            Ok(()) | Err(PlatformError::Auth(_)) => {
-                Attempt::NotYet("the BMC still answers".to_string())
-            }
-            Err(_) => Attempt::Done(()),
+        if bmc_answers(cx).await {
+            Attempt::NotYet("the BMC still answers".to_string())
+        } else {
+            Attempt::Done(())
         }
     })
     .await?;
@@ -399,15 +425,52 @@ pub(super) async fn wait_for_bmc_down(cx: &CheckCx<'_>, timeout: Duration) -> Re
     Ok(())
 }
 
-/// How long the BMC may take to lose power after accepting an AC power cycle
-/// that produced `outcome`. A request that started work cuts power only once
-/// that work runs, which can wait for a host restart.
-pub(super) fn ac_cycle_down_timeout(outcome: &DriverOutcome) -> Duration {
-    if outcome.references().next().is_some() {
-        JOB_TIMEOUT
-    } else {
-        AC_CYCLE_DOWN_TIMEOUT
+/// Whether the BMC answers a login, refusing it included.
+async fn bmc_answers(cx: &CheckCx<'_>) -> bool {
+    matches!(
+        cx.target().log_in().await,
+        Ok(()) | Err(PlatformError::Auth(_))
+    )
+}
+
+/// Waits for the BMC to lose power after accepting an AC power cycle that
+/// produced `outcome`. Work the request started, such as a Dell BIOS job that
+/// runs during the next POST, cuts power only once it runs, so it is waited
+/// for first: a job that fails ends the wait, and the BMC going down while the
+/// job runs is the cycle itself.
+pub(super) async fn wait_for_ac_cycle_down(
+    cx: &CheckCx<'_>,
+    outcome: &DriverOutcome,
+) -> Result<(), Outcome> {
+    for reference in outcome.references() {
+        let went_down = work_or_bmc_down(
+            |step| cx.trace(step),
+            reference,
+            async || cx.bmc().operation_status(reference).await,
+            async || bmc_answers(cx).await,
+        )
+        .await?;
+        if went_down {
+            cx.trace("the BMC stopped answering");
+            return Ok(());
+        }
+        cx.trace(format!("{}: Completed", reference.uri()));
     }
+    wait_for_bmc_down(cx, AC_CYCLE_DOWN_TIMEOUT).await
+}
+
+/// Polls `status` for the work at `reference` until it completes, returning
+/// `false`, or until a read fails because the BMC stopped answering, as
+/// `answers` tells, returning `true`.
+async fn work_or_bmc_down(
+    trace: impl Fn(String),
+    reference: &OperationReference,
+    status: impl AsyncFn() -> Result<OperationStatus, PlatformError>,
+    answers: impl AsyncFn() -> bool,
+) -> Result<bool, Outcome> {
+    poll_operation(trace, reference, status, false, async || !answers().await)
+        .await
+        .map(|seen| seen == Seen::BmcDown)
 }
 
 /// Waits until the BMC logs in again after going down, then reconnects.
@@ -423,7 +486,10 @@ pub(super) async fn wait_for_bmc_up(cx: &CheckCx<'_>) -> Result<(), Outcome> {
 }
 
 /// Sets lockdown, settles, and converges on the driver's aggregate reading
-/// `desired`, as controllers decide; the halves are reported as read.
+/// `desired`, as controllers decide; the halves are reported as read. A BMC
+/// can refuse the change for minutes after earlier setup steps, so a refusal
+/// is asked again as long as an unreachable BMC is, as the machine
+/// controller retries until it takes.
 pub(super) async fn set_lockdown(cx: &CheckCx<'_>, desired: LockdownDesiredState) -> Step {
     let bmc = cx.bmc();
     let lockdown = bmc.lockdown()?;
@@ -447,8 +513,8 @@ pub(super) async fn set_lockdown(cx: &CheckCx<'_>, desired: LockdownDesiredState
     let refusals = Cell::new(0);
     let outcome = poll(
         cx,
-        LOCKDOWN_REFUSAL_TIMEOUT,
-        LOCKDOWN_RETRY_INTERVAL,
+        UNREACHABLE_TIMEOUT,
+        RETRY_INTERVAL,
         async || match lockdown.set(LockdownScope::All, desired).await {
             Ok(outcome) => Attempt::Done(outcome),
             Err(
@@ -523,4 +589,72 @@ fn ended_outcome(reference: &OperationReference, status: OperationStatus) -> Out
         }
         other => format!("{} is {other:?}", reference.uri()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    use nv_redfish::core::ODataId;
+
+    use super::*;
+
+    /// The work an AC power cycle started is followed until it completes, a
+    /// failed read with the BMC gone ends it as the cycle itself, and a failed
+    /// job ends it at once.
+    #[tokio::test(start_paused = true)]
+    async fn the_work_an_ac_cycle_started_is_waited_for() {
+        let reference = OperationReference::RedfishTask {
+            uri: ODataId::from("/redfish/v1/TaskService/Tasks/JID_1".to_string()),
+            retry_after_seconds: None,
+            task: None,
+        };
+        let unreachable = || Err(PlatformError::Unreachable);
+        let cases = [
+            (
+                "completes, the BMC still up",
+                vec![Ok(OperationStatus::Running), Ok(OperationStatus::Completed)],
+                true,
+                Some(false),
+            ),
+            (
+                "the BMC drops while it runs",
+                vec![Ok(OperationStatus::Running), unreachable()],
+                false,
+                Some(true),
+            ),
+            (
+                "a failed read with the BMC up keeps waiting",
+                vec![unreachable(), Ok(OperationStatus::Completed)],
+                true,
+                Some(false),
+            ),
+            (
+                "the job fails",
+                vec![Ok(OperationStatus::Failed {
+                    state: "Failed".to_string(),
+                    message: None,
+                })],
+                true,
+                None,
+            ),
+        ];
+        for (scenario, reads, bmc_answers, expected) in cases {
+            let reads = RefCell::new(VecDeque::from(reads));
+            let result = work_or_bmc_down(
+                |_| {},
+                &reference,
+                async || {
+                    reads
+                        .borrow_mut()
+                        .pop_front()
+                        .unwrap_or(Ok(OperationStatus::Running))
+                },
+                async || bmc_answers,
+            )
+            .await;
+            assert_eq!(result.ok(), expected, "{scenario}");
+        }
+    }
 }

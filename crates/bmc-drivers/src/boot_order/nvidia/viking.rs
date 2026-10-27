@@ -8,7 +8,7 @@ use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
 };
 use nv_redfish::computer_system::BootOption;
-use nv_redfish::core::{Bmc, ODataETag, ODataId, RedfishSettings};
+use nv_redfish::core::{Bmc, RedfishSettings};
 use nv_redfish::schema::computer_system::{
     BootSource, BootUpdate, ComputerSystem as ComputerSystemSchema,
 };
@@ -16,7 +16,7 @@ use nv_redfish::schema::computer_system::{
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, alias, boot_order, display_name, matching_first, persistent_device,
-    reference,
+    reference, system_etag,
 };
 use crate::resources::RedfishResourcesExt as _;
 
@@ -45,19 +45,6 @@ async fn http_option<B: Bmc>(
             .unwrap_or_default();
         path.contains(&mac) && path.contains("IPV4") && alias(option) == Some(BootSource::UefiHttp)
     }))
-}
-
-/// The `@odata.etag` of the system resource at `uri`.
-async fn system_etag<B: Bmc>(cx: &OpCx<'_, B>, uri: &ODataId) -> Result<ODataETag, PlatformError> {
-    cx.bmc()
-        .get::<ComputerSystemSchema>(uri)
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?
-        .odata_etag
-        .clone()
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("{uri} reports no @odata.etag"),
-        })
 }
 
 /// The boot order staged on the settings object the system advertises, or

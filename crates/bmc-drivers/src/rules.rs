@@ -130,8 +130,7 @@ fn built_ins() -> Vec<Rule> {
             LenovoAmiConsole,
         ])
         .standard([Capability::Power])
-        .unsupported([Capability::SecureBoot])
-        .quirks([Quirk::EtagUnchangedOnUpdate]),
+        .unsupported([Capability::SecureBoot]),
     );
 
     // Power shelves have no ServiceRoot vendor; their chassis manufacturer
@@ -399,6 +398,18 @@ fn built_ins() -> Vec<Rule> {
             ],
         )
         .quirks([Quirk::RedfishRestartCutsDpuPower]),
+    );
+
+    // XE9680's iDRAC fails the configuration job of a setup password clear.
+    rules.push(
+        Rule::new(
+            "dell-xe9680-uefi-password-clear-job-fails",
+            [
+                Match::vendor("Dell"),
+                Match::contains(IdentityField::SystemModel, "XE9680"),
+            ],
+        )
+        .quirks([Quirk::DellUefiPasswordClearJobFails]),
     );
 
     // ARS-121L-DNR loses BMC reachability when its host interface is disabled.

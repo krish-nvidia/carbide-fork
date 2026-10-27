@@ -14,6 +14,7 @@ use nv_redfish::computer_system::{BootOption, ComputerSystem, ComputerSystemUpda
 use nv_redfish::core::{Bmc, ModificationResponse, ODataETag, ODataId};
 use nv_redfish::schema::computer_system::{
     BootSource, BootSourceOverrideEnabled, BootSourceOverrideMode, BootUpdate,
+    ComputerSystem as ComputerSystemSchema,
 };
 use serde_json::Value;
 
@@ -37,6 +38,24 @@ pub(crate) fn alias<B: Bmc>(option: &BootOption<B>) -> Option<BootSource> {
 fn names_option<B: Bmc>(entry: &str, option: &BootOption<B>) -> bool {
     let entry = entry_reference(entry);
     reference(option) == entry || option.raw().id == entry
+}
+
+/// The `@odata.etag` of the system resource at `uri`, for a write that must
+/// name it: the system exploration selected comes from an expanded collection,
+/// which some BMCs serve without one.
+pub(crate) async fn system_etag<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    uri: &ODataId,
+) -> Result<ODataETag, PlatformError> {
+    cx.bmc()
+        .get::<ComputerSystemSchema>(uri)
+        .await
+        .map_err(|error| cx.map_bmc_error(error))?
+        .odata_etag
+        .clone()
+        .ok_or_else(|| PlatformError::InvalidResponse {
+            message: format!("{uri} reports no @odata.etag"),
+        })
 }
 
 /// The selected system's `Boot.BootOrder` as reported; empty when absent.
@@ -88,7 +107,9 @@ pub(crate) fn is_first(order: &[String], reference: &str) -> bool {
         .is_some_and(|entry| entry_reference(entry) == reference)
 }
 
-/// The boot option `entry` of a `BootOrder` names.
+/// The boot option `entry` of a `BootOrder` names. The BMC lists boot
+/// options again as the host starts, so for a while after a restart the
+/// order can name one it does not list yet; that is not ready.
 pub(crate) fn listed_option<'a, B: Bmc>(
     entry: &str,
     options: &'a [BootOption<B>],
@@ -96,8 +117,8 @@ pub(crate) fn listed_option<'a, B: Bmc>(
     options
         .iter()
         .find(|option| names_option(entry, option))
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("BootOrder lists {entry}, which is not a boot option"),
+        .ok_or_else(|| PlatformError::NotReady {
+            message: format!("BootOrder lists {entry}, which is not a boot option yet"),
         })
 }
 
@@ -330,7 +351,56 @@ impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::test_support::Fixture;
+
+    /// A `BootOrder` entry whose boot option the BMC does not list yet, as
+    /// after a restart, is not ready rather than an invalid response.
+    #[tokio::test]
+    async fn an_entry_without_its_boot_option_is_not_ready() {
+        const SYSTEM: &str = "/redfish/v1/Systems/System_0";
+        const BOOT_OPTIONS: &str = "/redfish/v1/Systems/System_0/BootOptions";
+        const OPTION: &str = "/redfish/v1/Systems/System_0/BootOptions/0002";
+        let bmc = Fixture::new("NVIDIA", "GB BMC", "System_0", "BMC_0")
+            .document(
+                SYSTEM,
+                json!({
+                    "@odata.id": SYSTEM, "Id": "System_0", "Name": "System_0",
+                    "Boot": {
+                        "BootOrder": ["Boot0002", "Boot0008"],
+                        "BootOptions": {"@odata.id": BOOT_OPTIONS},
+                    },
+                }),
+            )
+            .document(
+                BOOT_OPTIONS,
+                json!({
+                    "@odata.id": BOOT_OPTIONS,
+                    "@odata.type": "#BootOptionCollection.BootOptionCollection",
+                    "Name": "Boot Options",
+                    "Members": [{"@odata.id": OPTION}],
+                }),
+            )
+            .document(
+                OPTION,
+                json!({
+                    "@odata.id": OPTION, "Id": "0002", "Name": "Boot0002",
+                    "BootOptionReference": "Boot0002", "DisplayName": "ubuntu",
+                }),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+        let options = cx.boot_options().await.expect("boot options read");
+
+        assert!(listed_option("Boot0002", &options).is_ok());
+        assert!(matches!(
+            listed_option("Boot0008", &options),
+            Err(PlatformError::NotReady { .. })
+        ));
+    }
 
     #[test]
     fn only_a_bare_continuous_device_override_reorders_the_boot_order() {

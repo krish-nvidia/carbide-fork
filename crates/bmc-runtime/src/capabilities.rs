@@ -122,7 +122,7 @@ capability_operations!(accounts: Accounts {
     fn delete(&self, username: &str) -> DriverOutcome;
     fn change_password(&self, account_username: &str, password: &str) -> DriverOutcome;
     fn change_username(&self, old_username: &str, new_username: &str) -> DriverOutcome;
-    fn apply_default_policy(&self) -> DriverOutcome;
+    fn apply_default_policy(&self, account_username: &str, password: &str) -> DriverOutcome;
 });
 
 capability_operations!(attestation: Attestation {

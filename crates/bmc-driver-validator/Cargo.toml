@@ -48,6 +48,7 @@ nv-redfish = { features = [
     "bmc-http",
     "computer-systems",
     "secure-boot",
+    "storages",
 ], workspace = true }
 rand = { workspace = true }
 serde = { features = ["derive"], workspace = true }

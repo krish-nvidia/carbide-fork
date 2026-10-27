@@ -19,9 +19,11 @@
 //!
 //! A check is an id, the capability whose selected driver it exercises, and
 //! an async function that calls that driver through the connected BMC the
-//! way a controller does. [`reads`] and [`apply`] hold the checks a default
-//! or `--apply` run picks from; [`validate`] arranges them with its own
-//! steps into the `--validate` sequence. The runner keeps plan order:
+//! way a controller does. [`reads`] holds the checks a plain run reads with,
+//! and [`apply`] checks that change the BMC; [`validate`] arranges both with
+//! its own steps into the `--validate` sequence, and `--check` can name any
+//! of them.
+//! The runner keeps plan order:
 //! consecutive read checks run concurrently, every other check runs alone,
 //! and a check is skipped when one it follows did not pass.
 

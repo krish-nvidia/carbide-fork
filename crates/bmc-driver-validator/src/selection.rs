@@ -365,7 +365,7 @@ fn matcher(matcher: &IdentityMatcher) -> String {
 
 #[cfg(test)]
 mod tests {
-    use bmc_platform::ServiceRootIdentity;
+    use bmc_platform::{ServiceRootIdentity, SystemIdentity};
 
     use super::*;
 
@@ -384,15 +384,19 @@ mod tests {
     /// changed, and the quirks, so a failed reset check shows what moved.
     #[test]
     fn changes_name_each_moved_capability_and_the_quirks() {
-        let selection = Selection::resolve(&identity("Lenovo", &["Ami"]), &[]).unwrap();
-        assert_eq!(
-            selection.changes(&identity("Lenovo", &["Ami"])),
-            Ok(Vec::new())
-        );
+        let sr650_v4 = PlatformIdentity {
+            system: Some(SystemIdentity {
+                model: Some("ThinkSystem SR650 V4".to_string()),
+                ..SystemIdentity::default()
+            }),
+            ..identity("Lenovo", &[])
+        };
+        let selection = Selection::resolve(&sr650_v4, &[]).unwrap();
+        assert_eq!(selection.changes(&sr650_v4), Ok(Vec::new()));
         let changes = selection.changes(&identity("Contoso", &[])).unwrap();
         for expected in [
-            "bios: ami-megarac-bios (rule lenovo-ami) -> standard (default)",
-            "quirks: {EtagUnchangedOnUpdate} -> {}",
+            "bios: lenovo-xcc-bios (rule lenovo-xcc) -> standard (default)",
+            "quirks: {RedfishRestartCutsDpuPower} -> {}",
         ] {
             assert!(
                 changes.iter().any(|change| change == expected),

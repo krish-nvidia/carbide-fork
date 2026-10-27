@@ -10,9 +10,12 @@ use nv_redfish::oem::nvidia::AuxPowerResetType;
 use nv_redfish::resource::ResetType;
 
 use crate::power::standard::StandardPower;
+use crate::power::support::RedfishPowerExt as _;
 use crate::resources::RedfishResourcesExt as _;
 
-/// NVIDIA OpenBMC platforms cycle auxiliary power through the BMC chassis.
+/// NVIDIA OpenBMC platforms cycle auxiliary power through the BMC chassis,
+/// which GB200 accepts only while the host is off, so the host is forced off
+/// first.
 pub(crate) struct OpenBmcPower;
 
 /// The chassis whose OEM action cycles auxiliary power.
@@ -54,7 +57,10 @@ where
         reset_type: ResetType,
     ) -> Result<DriverOutcome, PlatformError> {
         match reset_type {
-            ResetType::FullPowerCycle => aux_power_cycle(cx).await,
+            ResetType::FullPowerCycle => {
+                cx.force_off_and_wait().await?;
+                aux_power_cycle(cx).await
+            }
             other => self.standard().set(cx, other).await,
         }
     }
@@ -83,5 +89,86 @@ where
         reset_type: ResetType,
     ) -> Result<DriverOutcome, PlatformError> {
         OpenBmcPower.set(cx, reset_type).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Method;
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::{Fixture, body, path};
+
+    const SYSTEM: &str = "/redfish/v1/Systems/System_0";
+    const RESET: &str = "/redfish/v1/Systems/System_0/Actions/ComputerSystem.Reset";
+    const CHASSIS: &str = "/redfish/v1/Chassis/BMC_0";
+    const AUX_POWER_RESET: &str =
+        "/redfish/v1/Chassis/BMC_0/Actions/Oem/NvidiaChassis.AuxPowerReset";
+
+    /// The auxiliary power cycle goes out only once the host reports off: an
+    /// off host gets it at once, and a host that never powers off gets only
+    /// the ForceOff.
+    #[tokio::test(start_paused = true)]
+    async fn an_ac_power_cycle_waits_for_the_host_to_be_off() {
+        for (scenario, power_state, posted) in [
+            (
+                "host already off",
+                "Off",
+                (AUX_POWER_RESET, json!({"ResetType": "AuxPowerCycle"})),
+            ),
+            (
+                "host stays on",
+                "On",
+                (RESET, json!({"ResetType": "ForceOff"})),
+            ),
+        ] {
+            let bmc = Fixture::new("NVIDIA", "GB BMC", "System_0", "BMC_0")
+                .document(
+                    SYSTEM,
+                    json!({
+                        "@odata.id": SYSTEM, "Id": "System_0", "Name": "System",
+                        "PowerState": power_state,
+                        "Actions": {"#ComputerSystem.Reset": {"target": RESET}},
+                    }),
+                )
+                .document(
+                    "/redfish/v1/Chassis",
+                    json!({
+                        "@odata.id": "/redfish/v1/Chassis",
+                        "@odata.type": "#ChassisCollection.ChassisCollection",
+                        "Name": "Chassis Collection",
+                        "Members": [{"@odata.id": CHASSIS}],
+                    }),
+                )
+                .document(
+                    CHASSIS,
+                    json!({
+                        "@odata.id": CHASSIS, "Id": "BMC_0", "Name": "BMC_0",
+                        "ChassisType": "Module",
+                        "Actions": {"Oem": {
+                            "#NvidiaChassis.AuxPowerReset": {"target": AUX_POWER_RESET},
+                        }},
+                    }),
+                )
+                .build()
+                .await;
+            let cx = bmc.cx().await;
+
+            let result = OpenBmcPower.set(&cx, ResetType::FullPowerCycle).await;
+            assert_eq!(
+                result.is_ok(),
+                power_state == "Off",
+                "{scenario}: {result:?}"
+            );
+            let writes = bmc.writes();
+            assert_eq!(writes.len(), 1, "{scenario}: {writes:?}");
+            assert_eq!(writes[0].method, Method::POST, "{scenario}");
+            assert_eq!(
+                (path(&writes[0]), body(&writes[0])),
+                (posted.0, posted.1),
+                "{scenario}"
+            );
+        }
     }
 }

@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-//! How driver and catalogue errors end a check: unsupported, unreachable or
-//! not ready (which the runner retries), or failed.
+//! How driver and catalogue errors end a check: unsupported, unreachable,
+//! not ready or a server error (which the runner retries), or failed.
 
 use bmc_drivers::CatalogError;
 use bmc_platform::PlatformError;
@@ -56,9 +56,14 @@ pub(super) fn describe(operation: &str, error: &PlatformError) -> String {
 fn ended(error: PlatformError, reason: String) -> Outcome {
     match error {
         PlatformError::Unsupported => Outcome::Unsupported(reason),
+        // A server error is the BMC failing to handle the request, which
+        // asking again can get past; 501 says it never will.
         PlatformError::Unreachable
         | PlatformError::NotReady { .. }
-        | PlatformError::Bmc { status: 503, .. } => Outcome::Unreachable(reason),
+        | PlatformError::Bmc {
+            status: 500 | 502 | 503 | 504,
+            ..
+        } => Outcome::Unreachable(reason),
         _ => Outcome::Fail(reason),
     }
 }
@@ -75,14 +80,32 @@ fn shortened(text: String) -> String {
 mod tests {
     use super::*;
 
-    /// A BMC that is not ready yet is retried like one that did not answer;
-    /// only an unsupported answer skips the check.
+    /// A BMC that is not ready yet or fails with a server error is retried
+    /// like one that did not answer; a request it rejects or will never
+    /// implement fails, and only an unsupported answer skips the check.
     #[test]
-    fn not_ready_is_retried_and_unsupported_is_not() {
+    fn errors_that_asking_again_can_clear_are_retried() {
+        let bmc = |status| PlatformError::Bmc {
+            status,
+            message_id: None,
+            message: "refused".to_string(),
+        };
         let not_ready = PlatformError::NotReady {
             message: "the BIOS has not reported its attributes".to_string(),
         };
-        assert!(matches!(Outcome::from(not_ready), Outcome::Unreachable(_)));
+        for (scenario, error, retried) in [
+            ("not ready", not_ready, true),
+            ("internal server error", bmc(500), true),
+            ("service unavailable", bmc(503), true),
+            ("rejected request", bmc(400), false),
+            ("not implemented", bmc(501), false),
+        ] {
+            assert_eq!(
+                matches!(Outcome::from(error), Outcome::Unreachable(_)),
+                retried,
+                "{scenario}"
+            );
+        }
         assert!(matches!(
             Outcome::from(PlatformError::Unsupported),
             Outcome::Unsupported(_)

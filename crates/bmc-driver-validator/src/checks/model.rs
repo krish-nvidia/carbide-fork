@@ -35,6 +35,8 @@ pub(crate) struct Inputs {
     pub(crate) ntp_servers: Vec<String>,
     pub(crate) uefi_password: Option<UefiPassword>,
     pub(crate) allow_ac_cycle: bool,
+    /// Whether the storage checks may erase the boot controller.
+    pub(crate) allow_storage_erase: bool,
     /// PEM of the platform key secure boot enrolls.
     pub(crate) platform_key: Option<String>,
     /// The host BMC that power-cycles a DPU's host.
@@ -60,6 +62,7 @@ pub(super) enum Needs {
     NtpServers,
     UefiPassword,
     AcCycle,
+    StorageErase,
     HostBmc,
     SuperNics,
 }
@@ -72,6 +75,7 @@ impl Needs {
             Self::NtpServers => "--ntp-server",
             Self::UefiPassword => "--uefi-password",
             Self::AcCycle => "--allow-ac-cycle",
+            Self::StorageErase => "--allow-storage-erase",
             Self::HostBmc => "--host-bmc",
             Self::SuperNics => "--super-nics",
         };
@@ -86,6 +90,7 @@ impl Inputs {
             Needs::NtpServers => !self.ntp_servers.is_empty(),
             Needs::UefiPassword => self.uefi_password.is_some(),
             Needs::AcCycle => self.allow_ac_cycle,
+            Needs::StorageErase => self.allow_storage_erase,
             Needs::HostBmc => self.host_bmc.is_some(),
             Needs::SuperNics => self.super_nics.is_some(),
         }
@@ -195,7 +200,7 @@ pub(crate) struct Check {
     pub(crate) kind: Kind,
     pub(super) needs: &'static [Needs],
     /// Checks that must not have failed for this one to run.
-    pub(super) after: &'static [CheckId],
+    pub(super) after: Vec<CheckId>,
     /// Whether the check may run again when it finds the BMC unreachable;
     /// not for one whose repeat would redo a change it may already have made.
     pub(super) rerun: bool,
@@ -210,7 +215,7 @@ impl Check {
             capability,
             kind: Kind::Read,
             needs: &[],
-            after: &[],
+            after: Vec::new(),
             rerun: true,
             timeout: Duration::from_secs(60),
             run,
@@ -235,8 +240,11 @@ impl Check {
         Self { needs, ..self }
     }
 
-    pub(super) fn after(self, after: &'static [CheckId]) -> Self {
-        Self { after, ..self }
+    pub(super) fn after(self, after: &[CheckId]) -> Self {
+        Self {
+            after: after.to_vec(),
+            ..self
+        }
     }
 
     /// Fails the check, rather than running it again, when it finds the BMC

@@ -58,7 +58,8 @@ pub enum Quirk {
     LenovoForceRestartHangs,
     /// The Viking host BIOS and BMC firmware are new enough to enable lockdown.
     VikingLockdownFirmware,
-    /// The BMC keeps a resource's ETag when the resource changes, so a
-    /// revalidated read answers 304 with stale content; reads are not cached.
-    EtagUnchangedOnUpdate,
+    /// iDRAC accepts a `Bios.ChangePassword` clear of the setup password and
+    /// then fails its configuration job, so the password is cleared through
+    /// a Server Configuration Profile import instead.
+    DellUefiPasswordClearJobFails,
 }

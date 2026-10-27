@@ -26,9 +26,9 @@ use super::context::{CheckCx, Ctx};
 use super::model::{Check, CheckId, Checked, Kind, Outcome};
 use super::plan::Planned;
 
-/// How long a check that finds the BMC unreachable is run again for.
-const UNREACHABLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const RETRY_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a check keeps trying while the BMC cannot answer, and how often.
+pub(super) const UNREACHABLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub(super) const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) struct CheckResult {
     pub(crate) id: CheckId,
