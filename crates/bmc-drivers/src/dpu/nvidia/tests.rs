@@ -358,8 +358,11 @@ async fn bluefield3_avoids_the_oem_resource_on_firmware_where_it_times_out() {
     );
 }
 
+/// The write uses the spelling the BIOS reports, over the firmware's; with
+/// neither reported it uses the firmware's and retries the other on
+/// rejection; and a BIOS that reports nothing yet is not ready, unwritten.
 #[tokio::test]
-async fn bluefield3_host_privilege_uses_the_firmware_spelling_and_retries_the_other() {
+async fn bluefield3_host_privilege_uses_the_reported_spelling() {
     let rejection = json!({"error": {"@Message.ExtendedInfo": [{
         "MessageId": "Base.1.15.PropertyUnknown",
         "Message": "The property HostPrivilegeLevel is not in the list of valid properties for the resource.",
@@ -369,27 +372,47 @@ async fn bluefield3_host_privilege_uses_the_firmware_spelling_and_retries_the_ot
     let no_quirks = BTreeSet::new();
     let spaced_firmware = BTreeSet::from([Quirk::BlueFieldSpacedBiosAttributeNames]);
 
-    for (scenario, quirks, rejects_unspaced, expected_bodies) in [
+    for (scenario, attributes, quirks, rejects_unspaced, expected_bodies) in [
         (
-            "unspaced firmware",
-            &no_quirks,
+            "unspaced reported on spaced firmware",
+            json!({"HostPrivilegeLevel": "Privileged", "NicMode": "DpuMode"}),
+            &spaced_firmware,
             false,
             vec![unspaced.clone()],
         ),
         (
-            "unspaced name rejected",
+            "spaced reported",
+            json!({"Host Privilege Level": "Privileged", "NicMode": "DpuMode"}),
+            &no_quirks,
+            false,
+            vec![spaced.clone()],
+        ),
+        (
+            "neither reported, unspaced name rejected",
+            json!({"NicMode": "DpuMode"}),
             &no_quirks,
             true,
             vec![unspaced.clone(), spaced.clone()],
         ),
         (
-            "spaced firmware",
+            "neither reported on spaced firmware",
+            json!({"NicMode": "DpuMode"}),
             &spaced_firmware,
             false,
             vec![spaced.clone()],
         ),
+        ("nothing reported", json!({}), &no_quirks, false, vec![]),
     ] {
-        let mut fixture = bluefield3("BF-24.07-14");
+        let mut fixture = bluefield3("BF-24.07-14").document(
+            BF3_BIOS,
+            json!({
+                "@odata.id": BF3_BIOS,
+                "@Redfish.Settings": {"SettingsObject": {"@odata.id": BF3_BIOS_SETTINGS}},
+                "Id": "BIOS",
+                "Name": "BIOS Configuration Current Settings",
+                "Attributes": attributes,
+            }),
+        );
         if rejects_unspaced {
             fixture = fixture.respond(
                 Method::PATCH,
@@ -404,7 +427,14 @@ async fn bluefield3_host_privilege_uses_the_firmware_spelling_and_retries_the_ot
         let result = BlueField3Dpu
             .set_host_privilege_level(&cx, HostPrivilegeLevel::Restricted)
             .await;
-        assert_eq!(result.is_ok(), !rejects_unspaced, "{scenario}");
+        if expected_bodies.is_empty() {
+            assert!(
+                matches!(result, Err(PlatformError::NotReady { .. })),
+                "{scenario}: {result:?}"
+            );
+        } else {
+            assert_eq!(result.is_ok(), !rejects_unspaced, "{scenario}: {result:?}");
+        }
         let writes = bmc.writes();
         assert!(
             writes.iter().all(|write| path(write) == BF3_BIOS_SETTINGS),

@@ -25,7 +25,7 @@ const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The selected system's power state as the BMC reports it now; the
 /// context's resolved system keeps the state it was fetched with.
-async fn current_power_state<B: Bmc>(
+pub(super) async fn current_power_state<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<Option<PowerState>, PlatformError> {
     let uri = cx.system().await?.raw().odata_id.clone();

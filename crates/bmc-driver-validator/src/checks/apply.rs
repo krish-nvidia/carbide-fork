@@ -146,9 +146,21 @@ async fn bios_apply(cx: &CheckCx<'_>) -> Step {
     let profile = &cx.inputs().bios_profile;
     let boot_interface = cx.inputs().boot_interface();
     let boot_interface = boot_interface.as_ref();
+    let status = bios
+        .status(profile, boot_interface)
+        .await
+        .and_then(|status| {
+            if ops::only_unreported_differ(&status) {
+                Err(PlatformError::NotReady {
+                    message: "the BIOS reports none of the attributes that differ".to_string(),
+                })
+            } else {
+                Ok(())
+            }
+        });
     restart_unless_bios_reported(
         |step| cx.trace(step),
-        bios.status(profile, boot_interface).await.map(drop),
+        status,
         async || ops::restart_host(cx).await,
     )
     .await?;

@@ -115,6 +115,9 @@ async fn reset_bios(cx: &CheckCx<'_>) -> Step {
             .status(&inputs.bios_profile, boot_interface.as_ref())
             .await
         {
+            Ok(status) if ops::only_unreported_differ(&status) => {
+                Attempt::NotYet("the BIOS reports none of the attributes that differ".to_string())
+            }
             Ok(status) if !status.is_applied => Attempt::Done(status.differences.len()),
             Ok(_) => {
                 Attempt::NotYet("the validator's BIOS settings are still in effect".to_string())

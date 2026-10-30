@@ -87,6 +87,38 @@ impl<B: Bmc> SuperNic<B> for VeraRubinSuperNic {
             .map(DriverOutcome::from)
             .map_err(|error| cx.map_redfish_error(error))
     }
+
+    async fn mac_address(
+        &self,
+        cx: &OpCx<'_, B>,
+        index: u8,
+    ) -> Result<Option<String>, PlatformError> {
+        let interface_id = host_interface_id(index);
+        let missing = |what: String| PlatformError::InvalidResponse {
+            message: format!("SuperNIC {index}: {what}"),
+        };
+        let interfaces = cx
+            .system()
+            .await?
+            .ethernet_interfaces()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?
+            .ok_or_else(|| missing("the system lists no Ethernet interfaces".to_string()))?
+            .members()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
+        let interface = interfaces
+            .iter()
+            .find(|interface| interface.raw().id == interface_id)
+            .ok_or_else(|| missing(format!("no Ethernet interface {interface_id}")))?;
+        Ok(interface.mac_address().map(|mac| mac.as_str().to_string()))
+    }
+}
+
+/// SuperNIC `index`'s host Ethernet interface on the system: NICs pair onto
+/// cages 1, 3, 5 and 7, one per MPO, as `NIC_0_C<cage>_<mpo>`.
+fn host_interface_id(index: u8) -> String {
+    format!("NIC_0_C{}_{}", (index / 2) * 2 + 1, index % 2 + 1)
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use nv_redfish::schema::computer_system::BootUpdate;
 use serde_json::Value;
 
 use super::NETWORK;
+use crate::bios::lenovo::ensure_bios_settings_unlocked;
 use crate::boot_order::lenovo::first_group;
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::RedfishBootOrderExt as _;
@@ -114,6 +115,7 @@ impl<B: Bmc> BootOrder<B> for Xcc3BootOrder {
                 Value::from(first.as_str()),
             );
         }
+        ensure_bios_settings_unlocked(cx).await?;
         cx.stage_bios_attributes(&swapped).await
     }
 }

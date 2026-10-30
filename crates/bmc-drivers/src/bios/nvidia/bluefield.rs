@@ -16,7 +16,7 @@ use crate::bios::standard::StandardBios;
 use crate::bios::support::{compare, with_profile};
 use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
-/// NVIDIA BlueField: the DPU BIOS exposes no `ResetBios` or `ChangePassword`
+/// NVIDIA BlueField-3: the DPU BIOS exposes no `ResetBios` or `ChangePassword`
 /// actions; both are write-only attributes on the pending settings.
 ///
 /// BMC 24.10 dropped the spaces from some attribute names, so expected values

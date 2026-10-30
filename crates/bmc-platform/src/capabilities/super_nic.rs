@@ -39,4 +39,12 @@ pub trait SuperNic<B: Bmc>: Send + Sync {
         index: u8,
         enabled: bool,
     ) -> Result<DriverOutcome, PlatformError>;
+
+    /// The MAC address of the NIC's host interface, as the BMC reports it;
+    /// `None` when the interface reports none.
+    async fn mac_address(
+        &self,
+        cx: &OpCx<'_, B>,
+        index: u8,
+    ) -> Result<Option<String>, PlatformError>;
 }

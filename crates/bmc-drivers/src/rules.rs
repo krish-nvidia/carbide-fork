@@ -208,6 +208,7 @@ fn built_ins() -> Vec<Rule> {
         Rule::new("nvidia-vera", [Match::product(&["VR NVL72"])])
             .drivers([
                 NvidiaVeraRubinBootOrder,
+                NvidiaVeraRubinBmcControl,
                 NvidiaOpenBmcPower,
                 NvidiaOpenBmcFirmware,
                 NvidiaOpenBmcAccounts,
@@ -252,7 +253,8 @@ fn built_ins() -> Vec<Rule> {
     );
 
     // BlueField-4 keeps its DPU mode and host privileges on the network
-    // adapter rather than the system and BIOS.
+    // adapter rather than the system and BIOS, and powers its Arm cores
+    // through the card chassis rather than the system.
     rules.push(
         Rule::new(
             "nvidia-bluefield4",
@@ -261,7 +263,11 @@ fn built_ins() -> Vec<Rule> {
                 Match::product(&["BlueField-4", "B4240V"]),
             ],
         )
-        .drivers([NvidiaBlueField4Dpu]),
+        .drivers([
+            NvidiaBlueField4Dpu,
+            NvidiaBlueField4Power,
+            NvidiaBlueField4Bios,
+        ]),
     );
 
     // ---- Model rules: exact system, chassis, or firmware evidence ----
@@ -314,6 +320,24 @@ fn built_ins() -> Vec<Rule> {
             )],
         )
         .drivers([NvidiaBlueField2Dpu]),
+    );
+
+    // Giga Computing servers run AMI firmware behind an AMI service root;
+    // only the system manufacturer tells them apart. Their BIOS spells its
+    // settings differently, and their lockdown is the host interface alone.
+    rules.push(
+        Rule::new(
+            "giga-computing-ami",
+            [
+                Match::vendor("AMI"),
+                Match::contains_any_case(IdentityField::SystemManufacturer, "Giga Computing"),
+            ],
+        )
+        .drivers([
+            GigaComputingAmiBios,
+            GigaComputingAmiConsole,
+            GigaComputingAmiLockdown,
+        ]),
     );
 
     // Lenovo GB300 trays run AMI firmware; the GB300 model is on the GPU

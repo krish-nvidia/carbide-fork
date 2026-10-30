@@ -193,6 +193,7 @@ drivers! {
         HpeIloPower = "hpe-ilo-power" => power::hpe::ilo::IloPower,
         LenovoXccPower = "lenovo-xcc-power" => power::lenovo::xcc::XccPower,
         LiteOnPowerShelfPower = "liteon-power-shelf-power" => power::liteon::power_shelf::LiteOnPowerShelfPower,
+        NvidiaBlueField4Power = "nvidia-bluefield4-power" => power::nvidia::bluefield4::BlueField4Power,
         NvidiaGh200Power = "nvidia-gh200-power" => power::nvidia::openbmc::Gh200Power,
         NvidiaOpenBmcPower = "nvidia-openbmc-power" => power::nvidia::openbmc::OpenBmcPower,
         SupermicroSmcPower = "supermicro-smc-power" => power::supermicro::smc::SmcPower,
@@ -201,16 +202,19 @@ drivers! {
         AmiMegaRacBmcControl = "ami-megarac-bmc-control" => bmc_control::ami::megarac::MegaRacBmcControl,
         DellIdracBmcControl = "dell-idrac-bmc-control" => bmc_control::dell::idrac::IdracBmcControl,
         HpeIloBmcControl = "hpe-ilo-bmc-control" => bmc_control::hpe::ilo::IloBmcControl,
+        NvidiaVeraRubinBmcControl = "nvidia-vera-rubin-bmc-control" => bmc_control::nvidia::vera_rubin::VeraRubinBmcControl,
         SupermicroSmcBmcControl = "supermicro-smc-bmc-control" => bmc_control::supermicro::smc::SmcBmcControl,
     }
     Bios as bios, with_bios: Bios = bios::standard::StandardBios {
         AmiMegaRacBios = "ami-megarac-bios" => bios::ami::megarac::MegaRacBios,
         DellIdracBios = "dell-idrac-bios" => bios::dell::idrac::IdracBios,
+        GigaComputingAmiBios = "giga-computing-ami-bios" => bios::giga_computing::ami::GigaComputingAmiBios,
         HpeIloBios = "hpe-ilo-bios" => bios::hpe::ilo::IloBios,
         LenovoGb300Bios = "lenovo-gb300-bios" => bios::lenovo::gb300::Gb300Bios,
         LenovoXccBios = "lenovo-xcc-bios" => bios::lenovo::xcc::XccBios,
         LiteOnPowerShelfBios = "liteon-power-shelf-bios" => bios::liteon::power_shelf::LiteOnPowerShelfBios,
         NvidiaBlueFieldBios = "nvidia-bluefield-bios" => bios::nvidia::bluefield::BlueFieldBios,
+        NvidiaBlueField4Bios = "nvidia-bluefield4-bios" => bios::nvidia::bluefield4::BlueField4Bios,
         NvidiaGbx00Bios = "nvidia-gbx00-bios" => bios::nvidia::gbx00::Gbx00Bios,
         NvidiaGh200Bios = "nvidia-gh200-bios" => bios::nvidia::gh200::Gh200Bios,
         NvidiaSwitchBios = "nvidia-switch-bios" => bios::nvidia::switch::SwitchBios,
@@ -239,6 +243,7 @@ drivers! {
     Lockdown as lockdown, with_lockdown: Lockdown {
         AmiMegaRacLockdown = "ami-megarac-lockdown" => lockdown::ami::megarac::MegaRacLockdown,
         DellIdracLockdown = "dell-idrac-lockdown" => lockdown::dell::idrac::IdracLockdown,
+        GigaComputingAmiLockdown = "giga-computing-ami-lockdown" => lockdown::giga_computing::ami::GigaComputingAmiLockdown,
         HpeIloLockdown = "hpe-ilo-lockdown" => lockdown::hpe::ilo::IloLockdown,
         LenovoAmiLockdown = "lenovo-ami-lockdown" => lockdown::lenovo::ami::LenovoAmiLockdown,
         LenovoGb300Lockdown = "lenovo-gb300-lockdown" => lockdown::lenovo::gb300::Gb300Lockdown,
@@ -281,6 +286,7 @@ drivers! {
     Console as console, with_console: Console {
         AmiMegaRacConsole = "ami-megarac-console" => console::ami::megarac::MegaRacConsole,
         DellIdracConsole = "dell-idrac-console" => console::dell::idrac::IdracConsole,
+        GigaComputingAmiConsole = "giga-computing-ami-console" => console::giga_computing::ami::GigaComputingAmiConsole,
         HpeIloConsole = "hpe-ilo-console" => console::hpe::ilo::IloConsole,
         LenovoAmiConsole = "lenovo-ami-console" => console::lenovo::ami::LenovoAmiConsole,
         LenovoGb300Console = "lenovo-gb300-console" => console::lenovo::gb300::Gb300Console,

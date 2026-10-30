@@ -23,7 +23,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use bmc_platform::{
-    DriverOutcome, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
+    BiosStatus, DriverOutcome, LockdownDesiredState, LockdownScope, LockdownState, LockdownStatus,
     OperationReference, OperationStatus, PlatformError,
 };
 use bmc_runtime::ConnectedBmc;
@@ -61,6 +61,13 @@ const AC_CYCLE_DOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const BMC_DOWN_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const BMC_UP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const BMC_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Whether every attribute `status` finds out of place is one the BIOS does
+/// not report, as when it has reported only part of its attributes since the
+/// BMC restarted; the rest return once the host starts again.
+pub(super) fn only_unreported_differ(status: &BiosStatus) -> bool {
+    !status.differences.is_empty() && status.differences.iter().all(|diff| diff.actual.is_none())
+}
 
 /// One attempt of a poll.
 pub(super) enum Attempt<T> {
@@ -339,29 +346,9 @@ pub(super) async fn reset_bmc(cx: &CheckCx<'_>) -> Step {
     let outcome = sent_or_dropped(cx, "reset", cx.bmc().bmc_control()?.reset()).await?;
     wait_for_bmc_down(cx, BMC_DOWN_TIMEOUT).await?;
     wait_for_bmc_up(cx).await?;
-    let down_and_up = took(started);
-    // A BMC can accept logins before it serves every resource discovery reads,
-    // and before its ServiceRoot reports the product the rules match on.
-    poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
-        let discovered = cx
-            .target()
-            .discover_settled(|reason| cx.trace(format!("waiting: {reason}")))
-            .await;
-        match discovered {
-            Ok((identity, _)) => match cx.selection().changes(&identity) {
-                Ok(changes) if changes.is_empty() => Attempt::Done(()),
-                Ok(changes) => Attempt::NotYet(format!(
-                    "rediscovery selects different drivers: {}",
-                    changes.join("; ")
-                )),
-                Err(reason) => Attempt::Failed(Outcome::Fail(reason)),
-            },
-            Err(reason) => Attempt::NotYet(format!("rediscovery fails: {reason}")),
-        }
-    })
-    .await?;
     Ok(format!(
-        "answered again {down_and_up} after the reset ({}); rediscovery selects the same drivers",
+        "back {} after the reset ({}); rediscovery selects the same drivers",
+        took(started),
         how(&outcome)
     ))
 }
@@ -473,12 +460,33 @@ async fn work_or_bmc_down(
         .map(|seen| seen == Seen::BmcDown)
 }
 
-/// Waits until the BMC logs in again after going down, then reconnects.
+/// Waits until the BMC logs in again after going down and rediscovery selects
+/// the drivers the run started with, then reconnects. A BMC can accept logins
+/// before its ServiceRoot reports the product the rules match on, and
+/// nv-redfish chooses its quirks from the ServiceRoot it connects with.
 pub(super) async fn wait_for_bmc_up(cx: &CheckCx<'_>) -> Result<(), Outcome> {
     poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
         match cx.target().log_in().await {
             Ok(()) => Attempt::Done(()),
             Err(error) => Attempt::NotYet(format!("logging in fails: {error}")),
+        }
+    })
+    .await?;
+    poll(cx, BMC_UP_TIMEOUT, BMC_POLL_INTERVAL, async || {
+        let discovered = cx
+            .target()
+            .discover_settled(|reason| cx.trace(format!("waiting: {reason}")))
+            .await;
+        match discovered {
+            Ok((identity, _)) => match cx.selection().changes(&identity) {
+                Ok(changes) if changes.is_empty() => Attempt::Done(()),
+                Ok(changes) => Attempt::NotYet(format!(
+                    "rediscovery selects different drivers: {}",
+                    changes.join("; ")
+                )),
+                Err(reason) => Attempt::Failed(Outcome::Fail(reason)),
+            },
+            Err(reason) => Attempt::NotYet(format!("rediscovery fails: {reason}")),
         }
     })
     .await?;
@@ -596,9 +604,37 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
+    use bmc_platform::BiosDiff;
     use nv_redfish::core::ODataId;
 
     use super::*;
+
+    /// A BIOS that reports none of the attributes that differ has not
+    /// reported yet; one that reports any of them, or where nothing differs,
+    /// has.
+    #[test]
+    fn only_unreported_attributes_differing_means_the_bios_has_not_reported() {
+        let diff = |actual: Option<&str>| BiosDiff {
+            key: "Attribute".to_string(),
+            expected: serde_json::json!("Expected"),
+            actual: actual.map(|value| serde_json::json!(value)),
+        };
+        let status = |differences: Vec<BiosDiff>| BiosStatus {
+            is_applied: differences.is_empty(),
+            differences,
+        };
+        for (scenario, differences, unreported) in [
+            ("nothing differs", vec![], false),
+            ("none reported", vec![diff(None), diff(None)], true),
+            ("one reported", vec![diff(None), diff(Some("Other"))], false),
+        ] {
+            assert_eq!(
+                only_unreported_differ(&status(differences)),
+                unreported,
+                "{scenario}"
+            );
+        }
+    }
 
     /// The work an AC power cycle started is followed until it completes, a
     /// failed read with the BMC gone ends it as the cycle itself, and a failed

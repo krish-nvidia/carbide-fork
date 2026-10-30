@@ -51,6 +51,7 @@ pub(super) fn setup() -> Vec<Check> {
     vec![
         Check::apply(BMC_RSHIM, Capability::Dpu, run!(bmc_rshim)).after(&[BMC_RESET]),
         Check::apply(NIC_MODE, Capability::Dpu, run!(nic_mode))
+            .once()
             .needs(&[Needs::HostBmc])
             .after(&[BMC_RESET]),
         Check::apply(HOST_PRIVILEGE, Capability::Dpu, run!(host_privilege)).after(&[NIC_MODE]),
@@ -81,17 +82,46 @@ async fn bmc_rshim(cx: &CheckCx<'_>) -> Step {
     Ok(format!("BMC rshim reads Enabled ({})", how(&outcome)))
 }
 
-/// Switches the DPU to DPU mode, which takes a host power cycle.
+/// Switches the DPU to NIC mode and back to DPU mode, so both directions are
+/// exercised and the DPU ends in DPU mode as NICo leaves it; a DPU found in
+/// NIC mode goes to DPU mode first. Each switch takes a host power cycle.
 async fn nic_mode(cx: &CheckCx<'_>) -> Step {
-    let bmc = cx.bmc();
-    let dpu = bmc.dpu()?;
-    let status = dpu.status().await.map_err(failed("status"))?;
-    if status.nic_mode == Some(NicMode::Dpu) {
-        return Ok("already in DPU mode".to_string());
-    }
+    let original = cx
+        .bmc()
+        .dpu()?
+        .status()
+        .await
+        .map_err(failed("status"))?
+        .nic_mode;
     let host = cx.inputs().required_host_bmc()?;
+    let modes: &[NicMode] = if original == Some(NicMode::Dpu) {
+        &[NicMode::Nic, NicMode::Dpu]
+    } else {
+        &[NicMode::Dpu, NicMode::Nic, NicMode::Dpu]
+    };
+    let mut switched = Vec::new();
+    for mode in modes {
+        match switch_nic_mode(cx, host, *mode).await {
+            Ok(step) => switched.push(step),
+            Err(outcome) => {
+                if original == Some(NicMode::Dpu) {
+                    cx.not_restored(format!(
+                        "nic mode was Dpu; switching to {mode:?} failed, so it may not be restored"
+                    ));
+                }
+                return Err(outcome);
+            }
+        }
+    }
+    Ok(switched.join("; "))
+}
+
+/// Sets `mode`, power-cycles the host through its BMC, and waits for the DPU
+/// to report `mode`.
+async fn switch_nic_mode(cx: &CheckCx<'_>, host: &Target, mode: NicMode) -> Step {
     let started = Instant::now();
-    let outcome = requested(cx, "set_nic_mode", dpu.set_nic_mode(NicMode::Dpu)).await?;
+    let bmc = cx.bmc();
+    let outcome = requested(cx, "set_nic_mode", bmc.dpu()?.set_nic_mode(mode)).await?;
     ops::settle(cx, &outcome).await?;
     let host = connect_host(host).await?;
     cx.trace("power-cycling the host through its BMC");
@@ -105,7 +135,7 @@ async fn nic_mode(cx: &CheckCx<'_>) -> Step {
         SETTLE_TIMEOUT,
         SETTLE_POLL_INTERVAL,
         async || match dpu.status().await {
-            Ok(status) if status.nic_mode == Some(NicMode::Dpu) => Attempt::Done(()),
+            Ok(status) if status.nic_mode == Some(mode) => Attempt::Done(()),
             Ok(status) => Attempt::NotYet(format!(
                 "the DPU reports nic mode {}",
                 reported(&status.nic_mode)
@@ -115,7 +145,7 @@ async fn nic_mode(cx: &CheckCx<'_>) -> Step {
     )
     .await?;
     Ok(format!(
-        "DPU mode {} after a host power cycle ({})",
+        "{mode:?} mode {} after a host power cycle ({})",
         took(started),
         how(&outcome)
     ))
@@ -138,12 +168,32 @@ async fn connect_host(host: &Target) -> Result<ConnectedBmc<RedfishBmc>, Outcome
 async fn host_privilege(cx: &CheckCx<'_>) -> Step {
     let bmc = cx.bmc();
     let dpu = bmc.dpu()?;
-    let outcome = requested(
-        cx,
-        "set_host_privilege_level",
-        dpu.set_host_privilege_level(HostPrivilegeLevel::Restricted),
-    )
-    .await?;
+    let set = async || {
+        dpu.set_host_privilege_level(HostPrivilegeLevel::Restricted)
+            .await
+    };
+    // The BIOS reports its attributes only as the DPU starts, so after a BMC
+    // restart the write waits for a DPU restart.
+    cx.trace("set_host_privilege_level …");
+    let outcome = match set().await {
+        Err(PlatformError::NotReady { message }) => {
+            cx.trace(format!("{message}; restarting the DPU"));
+            ops::restart_host(cx).await?;
+            poll(
+                cx,
+                SETTLE_TIMEOUT,
+                SETTLE_POLL_INTERVAL,
+                async || match set().await {
+                    Ok(outcome) => Attempt::Done(outcome),
+                    Err(PlatformError::NotReady { message }) => Attempt::NotYet(message),
+                    Err(error) => Attempt::Failed(failed("set_host_privilege_level")(error)),
+                },
+            )
+            .await?
+        }
+        result => result.map_err(failed("set_host_privilege_level"))?,
+    };
+    cx.trace(format!("set_host_privilege_level: {}", how(&outcome)));
     ops::read_back(cx, &outcome, Effect::OnRestart, async || {
         match dpu.status().await {
             Ok(status) if status.host_privilege == Some(HostPrivilegeLevel::Restricted) => {

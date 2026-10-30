@@ -3,4 +3,5 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+pub(crate) mod bluefield4;
 pub(crate) mod openbmc;

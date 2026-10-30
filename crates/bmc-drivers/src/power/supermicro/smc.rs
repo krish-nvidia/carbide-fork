@@ -10,7 +10,8 @@ use nv_redfish::resource::ResetType;
 
 use crate::power::standard::StandardPower;
 
-/// Supermicro power behavior: AC power is restored through the OEM system reset.
+/// Supermicro power behavior: AC power is restored through the OEM system
+/// reset, on systems that advertise it; SYS-221GE-FNB-NC24B does not.
 pub(crate) struct SmcPower;
 
 /// Restores AC power through the Supermicro OEM system reset.
@@ -38,8 +39,13 @@ where
         &StandardPower
     }
 
-    async fn ac_power_cycle_supported(&self, _cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
-        Ok(true)
+    async fn ac_power_cycle_supported(&self, cx: &OpCx<'_, B>) -> Result<bool, PlatformError> {
+        Ok(cx
+            .system()
+            .await?
+            .oem_supermicro_actions()
+            .map_err(|error| cx.map_redfish_error(error))?
+            .is_some())
     }
 
     async fn set(

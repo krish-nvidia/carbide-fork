@@ -219,8 +219,13 @@ pub(super) async fn bios_host_privilege_level<B: Bmc>(
     }))
 }
 
-/// Stages the host privilege level in BIOS under the spelling the firmware
-/// uses, retrying with the other spelling when the BMC rejects it.
+/// Stages the host privilege level in BIOS under the spelling the BIOS
+/// reports. When it reports neither, or cannot be read in NIC mode, the write
+/// uses the firmware's spelling and retries the other when the BMC rejects it.
+///
+/// The BMC refuses every attribute while the BIOS reports none, as after a
+/// BMC restart until the DPU boots, so that is
+/// [`PlatformError::NotReady`].
 pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
     cx: &OpCx<'_, B>,
     level: HostPrivilegeLevel,
@@ -231,6 +236,25 @@ pub(super) async fn set_bios_host_privilege_level<B: Bmc>(
     } else {
         (HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES)
     };
+    if !cx.has_quirk(Quirk::BlueFieldNicModeBiosError) {
+        let reported = match cx.current_bios_settings().await {
+            Ok(settings) if !settings.attributes.is_empty() => settings.attributes,
+            Ok(_) | Err(PlatformError::Unsupported) => {
+                return Err(PlatformError::NotReady {
+                    message: "the BIOS has not reported its attributes since the BMC \
+                              restarted; they return once the DPU starts again"
+                        .to_string(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(reported_key) = [key, other_key]
+            .into_iter()
+            .find(|name| reported.contains_key(*name))
+        {
+            return write_bios(cx, &attribute_map([(reported_key, json!(value))])).await;
+        }
+    }
     match write_bios(cx, &attribute_map([(key, json!(value))])).await {
         Err(PlatformError::Bmc { message, .. }) if message.contains(key) => {
             write_bios(cx, &attribute_map([(other_key, json!(value))])).await

@@ -322,6 +322,8 @@ fn narrower_identity_outranks_broader_rules() {
             identity: identity("Nvidia", Some("BlueField-4")),
             expect: vec![
                 (Dpu, driver(NvidiaBlueField4Dpu)),
+                (Power, driver(NvidiaBlueField4Power)),
+                (Bios, driver(NvidiaBlueField4Bios)),
                 (BootOrder, driver(NvidiaBlueFieldBootOrder)),
             ],
         },

@@ -218,4 +218,5 @@ capability_operations!(storage: Storage {
 capability_operations!(super_nic: SuperNic {
     fn east_west_control(&self, index: u8) -> Option<bool>;
     fn set_east_west_control(&self, index: u8, enabled: bool) -> DriverOutcome;
+    fn mac_address(&self, index: u8) -> Option<String>;
 });

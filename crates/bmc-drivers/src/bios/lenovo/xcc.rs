@@ -12,6 +12,7 @@ use nv_redfish::core::{ActionError, Bmc};
 use serde_json::{Value, json};
 
 use crate::bios::attributes::BiosAttribute;
+use crate::bios::lenovo::ensure_bios_settings_unlocked;
 use crate::bios::standard::StandardBios;
 use crate::bios::support::{RedfishBiosExt as _, compare, expected, settings};
 use crate::boot_order::lenovo::{NETWORK, first_group, network_group_first};
@@ -99,6 +100,7 @@ where
         profile: &BiosSettings,
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
+        ensure_bios_settings_unlocked(cx).await?;
         let current = cx.current_bios_settings().await?;
         let settings = cx
             .stage_bios_attributes(&expected_settings(&current, profile)?.attributes)
@@ -132,6 +134,7 @@ where
         current_password: &str,
         new_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
+        ensure_bios_settings_unlocked(cx).await?;
         cx.change_bios_password(UEFI_PASSWORD_NAME, current_password, new_password)
             .await
     }
@@ -141,10 +144,12 @@ where
         cx: &OpCx<'_, B>,
         _current_password: &str,
     ) -> Result<DriverOutcome, PlatformError> {
+        ensure_bios_settings_unlocked(cx).await?;
         cx.change_bios_password(UEFI_PASSWORD_NAME, "", "").await
     }
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        ensure_bios_settings_unlocked(cx).await?;
         cx.stage_bios_attributes(&tpm_clear().attributes).await
     }
 
@@ -192,6 +197,44 @@ mod tests {
             body(&writes[0]),
             json!({"PasswordName": UEFI_PASSWORD_NAME, "OldPassword": "", "NewPassword": ""})
         );
+    }
+
+    /// XCC 3's `SettingsLockdown` refuses UEFI password changes, so the driver
+    /// reports `LockedDown` without sending one; firmware that does not report
+    /// the control is never locked.
+    #[tokio::test]
+    async fn settings_lockdown_blocks_uefi_password_changes() {
+        const SYSTEM: &str = "/redfish/v1/Systems/1";
+        const BIOS: &str = "/redfish/v1/Systems/1/Bios";
+        for (scenario, settings_lockdown, locked) in [
+            ("locked", Some(true), true),
+            ("unlocked", Some(false), false),
+            ("firmware without the control", None, false),
+        ] {
+            let mut bios = json!({"@odata.id": BIOS, "Id": "Bios", "Name": "Bios", "Attributes": {},
+                "Actions": {"#Bios.ChangePassword": {
+                    "target": format!("{BIOS}/Actions/Bios.ChangePassword")}}});
+            if let Some(settings_lockdown) = settings_lockdown {
+                bios["Oem"] = json!({"Lenovo": {"SettingsLockdown": settings_lockdown}});
+            }
+            let bmc = Fixture::new("Lenovo", "", "1", "1")
+                .document(
+                    SYSTEM,
+                    json!({"@odata.id": SYSTEM, "Id": "1", "Name": "System", "Bios": {"@odata.id": BIOS}}),
+                )
+                .document(BIOS, bios)
+                .build()
+                .await;
+            let cx = bmc.cx().await;
+
+            let result = XccBios.clear_uefi_password(&cx, "old-password").await;
+            assert_eq!(
+                matches!(result, Err(PlatformError::LockedDown)),
+                locked,
+                "{scenario}: {result:?}"
+            );
+            assert_eq!(bmc.writes().len(), usize::from(!locked), "{scenario}");
+        }
     }
 
     #[test]
