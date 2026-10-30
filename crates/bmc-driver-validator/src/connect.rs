@@ -241,6 +241,7 @@ fn explore_config() -> bmc_explorer::Config<'static, RedfishBmc> {
         boot_interface_mac: None,
         error_classifier: &bmc_explorer::nv_redfish_error_class,
         retry_timeout: EXPLORE_RETRY,
+        explore_drive_firmware: false,
     }
 }
 

@@ -790,12 +790,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmc-driver-validator"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bmc-drivers",
+ "bmc-explorer",
+ "bmc-platform",
+ "bmc-runtime",
+ "carbide-ipmi",
+ "carbide-redfish",
+ "carbide-secrets",
+ "carbide-uuid",
+ "clap",
+ "colored",
+ "futures",
+ "libc",
+ "mac_address",
+ "nv-redfish",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "strum",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "bmc-drivers"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "blake3",
+ "bmc-mock",
+ "bmc-platform",
+ "carbide-test-support",
+ "carbide-utils",
+ "hex",
+ "nv-redfish",
+ "serde",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "url",
+]
+
+[[package]]
 name = "bmc-explorer"
 version = "0.1.0"
 dependencies = [
  "axum",
  "bmc-explorer",
  "bmc-mock",
+ "bmc-platform",
  "bmc-vendor",
  "carbide-api-model",
  "carbide-instrument",
@@ -835,6 +886,8 @@ dependencies = [
  "axum",
  "axum-extra",
  "axum-server",
+ "bmc-platform",
+ "bmc-vendor",
  "bytes",
  "carbide-axum-utils",
  "chrono",
@@ -875,6 +928,49 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "bmc-platform"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "carbide-test-support",
+ "mac_address",
+ "nv-redfish",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.18",
+ "tokio",
+ "version-compare 0.2.1",
+]
+
+[[package]]
+name = "bmc-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "bmc-drivers",
+ "bmc-mock",
+ "bmc-platform",
+ "carbide-instrument",
+ "carbide-ipmi",
+ "carbide-redfish",
+ "carbide-secrets",
+ "carbide-test-support",
+ "carbide-utils",
+ "carbide-uuid",
+ "mac_address",
+ "nv-redfish",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "url",
 ]
 

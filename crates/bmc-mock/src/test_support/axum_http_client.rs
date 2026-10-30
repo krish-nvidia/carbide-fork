@@ -466,7 +466,6 @@ impl HttpClient for AxumRouterHttpClient {
 #[cfg(test)]
 mod tests {
     use axum::routing::{patch, post};
-    use carbide_test_support::{Check, check_values};
     use serde_json::json;
 
     use super::*;

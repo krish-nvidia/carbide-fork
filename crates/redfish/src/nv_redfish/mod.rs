@@ -87,21 +87,6 @@ impl RedfishBmc {
         self.finish_with_sensitive_values(operation, result, &self.sensitive_values)
     }
 
-    /// [`Self::finish`] for a read that repairs the document: only a
-    /// transport failure carries a BMC body to redact and log.
-    fn finish_repaired<T>(
-        &self,
-        operation: &'static str,
-        result: Result<T, RepairError<BmcError>>,
-    ) -> Result<T, RepairError<BmcError>> {
-        match result {
-            Err(RepairError::Transport(error)) => self
-                .finish(operation, Err(error))
-                .map_err(RepairError::Transport),
-            result => result,
-        }
-    }
-
     fn finish_with_sensitive_values<T>(
         &self,
         operation: &'static str,

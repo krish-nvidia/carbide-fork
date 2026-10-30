@@ -21,8 +21,7 @@ use nv_redfish::bmc_http::{
     BmcCredentials, HttpClient, HttpPushUriUpdateRequest, MultipartUpdateRequest,
 };
 use nv_redfish::core::{
-    BoxTryStream, HttpPushUriUpdateRequest, ModificationResponse, ODataETag, Repair,
-    SessionCreateResponse, UploadReader,
+    BoxTryStream, ModificationResponse, ODataETag, Repair, SessionCreateResponse, UploadReader,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
