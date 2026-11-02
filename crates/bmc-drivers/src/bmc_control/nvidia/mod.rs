@@ -3,4 +3,5 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+pub(crate) mod gb200;
 pub(crate) mod vera_rubin;

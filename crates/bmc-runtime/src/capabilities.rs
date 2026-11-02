@@ -146,6 +146,7 @@ capability_operations!(bios: Bios {
     ) -> BiosStatus;
     fn reset(&self) -> DriverOutcome;
     fn clear_pending(&self) -> DriverOutcome;
+    fn clear_nvram(&self) -> DriverOutcome;
     fn change_uefi_password(&self, current_password: &str, new_password: &str) -> DriverOutcome;
     fn clear_uefi_password(&self, current_password: &str) -> DriverOutcome;
     fn clear_tpm(&self) -> DriverOutcome;

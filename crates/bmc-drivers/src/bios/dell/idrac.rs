@@ -52,6 +52,7 @@ const ATTRIBUTES: &[BiosAttribute] = &[
     FAIL_SAFE_BAUD,
     CON_TERM_TYPE,
     REDIR_AFTER_BOOT,
+    EXT_SERIAL_CONNECTOR,
     BiosAttribute::string("SriovGlobalEnable", "Enabled").required(),
     BiosAttribute::string("TpmSecurity", "On").required(),
     BiosAttribute::string("Tpm2Hierarchy", "Enabled").required(),
@@ -63,6 +64,10 @@ const ATTRIBUTES: &[BiosAttribute] = &[
 ];
 
 const INFINITE_BOOT: BiosAttribute = BiosAttribute::string("BootSeqRetry", "Enabled").required();
+
+/// The serial connector the console uses, on BIOSes that have the setting.
+pub(crate) const EXT_SERIAL_CONNECTOR: BiosAttribute =
+    BiosAttribute::string("ExtSerialConnector", "Serial1");
 
 const BOOT_MODE: &str = "BootMode";
 

@@ -17,7 +17,8 @@ use crate::bmc_control::support::RedfishBmcControlExt as _;
 
 /// AMI MegaRAC accepts at most two NTP servers, only restarts through
 /// `ForceRestart`, and keeps whatever its preserve-configuration flags name
-/// through a reset to factory defaults.
+/// through a reset to factory defaults, so those are cleared first where the
+/// BMC has them.
 pub(crate) struct MegaRacBmcControl;
 
 const MAX_NTP_SERVERS: usize = 2;
@@ -57,15 +58,11 @@ async fn clear_preserved_configuration<B: Bmc>(cx: &OpCx<'_, B>) -> Result<(), P
         .await
         .map_err(|error| cx.map_redfish_error(error))?
         .ok_or(PlatformError::Unsupported)?;
-    match service
+    service
         .update(&body)
         .await
-        .map(DriverOutcome::from)
-        .map_err(|error| cx.map_redfish_error(error))?
-    {
-        DriverOutcome::Complete => Ok(()),
-        DriverOutcome::Accepted { .. } => Err(PlatformError::Unsupported),
-    }
+        .map(drop)
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[async_trait]
@@ -85,7 +82,16 @@ where
         &self,
         cx: &OpCx<'_, B>,
     ) -> Result<DriverOutcome, PlatformError> {
-        clear_preserved_configuration(cx).await?;
+        match clear_preserved_configuration(cx).await {
+            Ok(())
+            | Err(
+                PlatformError::Unsupported
+                | PlatformError::Bmc {
+                    status: 400 | 405, ..
+                },
+            ) => {}
+            Err(error) => return Err(error),
+        }
         self.standard().reset_to_factory_defaults(cx).await
     }
 

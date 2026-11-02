@@ -103,6 +103,11 @@ where
         Err(PlatformError::Unsupported)
     }
 
+    /// Redfish has no standard NVRAM reset.
+    async fn clear_nvram(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        Err(PlatformError::Unsupported)
+    }
+
     /// Redfish has no standard infinite-boot setting, so there is nothing to
     /// report.
     async fn infinite_boot_enabled(

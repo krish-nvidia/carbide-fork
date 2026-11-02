@@ -202,6 +202,7 @@ drivers! {
         AmiMegaRacBmcControl = "ami-megarac-bmc-control" => bmc_control::ami::megarac::MegaRacBmcControl,
         DellIdracBmcControl = "dell-idrac-bmc-control" => bmc_control::dell::idrac::IdracBmcControl,
         HpeIloBmcControl = "hpe-ilo-bmc-control" => bmc_control::hpe::ilo::IloBmcControl,
+        NvidiaGb200BmcControl = "nvidia-gb200-bmc-control" => bmc_control::nvidia::gb200::Gb200BmcControl,
         NvidiaVeraRubinBmcControl = "nvidia-vera-rubin-bmc-control" => bmc_control::nvidia::vera_rubin::VeraRubinBmcControl,
         SupermicroSmcBmcControl = "supermicro-smc-bmc-control" => bmc_control::supermicro::smc::SmcBmcControl,
     }

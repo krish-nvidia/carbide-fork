@@ -14,8 +14,8 @@ use nv_redfish::core::{ActionError, Bmc};
 use serde_json::Value;
 
 use crate::bios::dell::idrac::{
-    CON_TERM_TYPE, FAIL_SAFE_BAUD, NEWER_SERIAL_COMM, NEWER_SERIAL_PORT_ADDRESS, OLDER_SERIAL_COMM,
-    OLDER_SERIAL_PORT_ADDRESS, REDIR_AFTER_BOOT,
+    CON_TERM_TYPE, EXT_SERIAL_CONNECTOR, FAIL_SAFE_BAUD, NEWER_SERIAL_COMM,
+    NEWER_SERIAL_PORT_ADDRESS, OLDER_SERIAL_COMM, OLDER_SERIAL_PORT_ADDRESS, REDIR_AFTER_BOOT,
 };
 use crate::console::support::{AttrExpectation, SSH_PORT, attr, attr_status, spec_error};
 use crate::dell;
@@ -30,8 +30,7 @@ use crate::resources::RedfishResourcesExt as _;
 pub(crate) struct IdracConsole;
 
 /// The serial BIOS settings BIOS setup stages, accepting either BIOS
-/// generation's values and the COM-specific redirection modes, plus the
-/// external serial connector BIOS setup leaves alone.
+/// generation's values and the COM-specific redirection modes.
 const BIOS_ATTRS: &[AttrExpectation] = &[
     attr(
         OLDER_SERIAL_COMM.name,
@@ -56,7 +55,11 @@ const BIOS_ATTRS: &[AttrExpectation] = &[
         ],
         &[],
     ),
-    attr("ExtSerialConnector", &["Serial1"], &[]),
+    attr(
+        EXT_SERIAL_CONNECTOR.name,
+        &[EXT_SERIAL_CONNECTOR.text()],
+        &[],
+    ),
     attr(FAIL_SAFE_BAUD.name, &[FAIL_SAFE_BAUD.text()], &[]),
     attr(CON_TERM_TYPE.name, &[CON_TERM_TYPE.text()], &[]),
 ];

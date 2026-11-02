@@ -43,6 +43,9 @@ fn tpm_clear() -> BiosSettings {
     settings([(TPM_OPERATION, json!("TPM Clear"))])
 }
 
+/// The BIOS attribute that resets NVRAM on the next boot.
+const NVRAM_RESET: &str = "RECV000";
+
 #[async_trait]
 impl<B: Bmc> Bios<B> for MegaRacBios
 where
@@ -85,6 +88,11 @@ where
 
     async fn clear_tpm(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         cx.stage_bios_attributes(&tpm_clear().attributes).await
+    }
+
+    async fn clear_nvram(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        cx.stage_bios_attributes(&settings([(NVRAM_RESET, json!("Enabled"))]).attributes)
+            .await
     }
 
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {

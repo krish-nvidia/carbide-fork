@@ -17,10 +17,12 @@ use crate::lockdown::support::{RedfishLockdownExt as _, Signal, signal, state_fr
 /// Giga Computing AMI lockdown, as on R263-ZG0.
 ///
 /// The host reaches the BMC without credentials over a host interface,
-/// through `AuthNone` or by bootstrapping credentials, so lockdown disables
-/// every interface and closes both, then reads them back: the BMC can accept
-/// a write it does not apply. KCS can be neither set nor read over Redfish
-/// here, so the host side reads unknown and lockdown leaves KCS as it is.
+/// through `AuthNone` or by bootstrapping credentials, so full lockdown
+/// disables every interface and closes both, then reads them back: the BMC
+/// can accept a write it does not apply. The BMC scope toggles only the
+/// interfaces, around configuration changes. KCS can be neither set nor read
+/// over Redfish here, so the host side reads unknown and lockdown leaves KCS
+/// as it is.
 pub(crate) struct GigaComputingAmiLockdown;
 
 /// The host interface controls lockdown sets; one the BMC does not report
@@ -117,13 +119,20 @@ impl<B: Bmc> Lockdown<B> for GigaComputingAmiLockdown {
         scope: LockdownScope,
         desired: LockdownDesiredState,
     ) -> Result<DriverOutcome, PlatformError> {
+        let locking = desired == LockdownDesiredState::Enabled;
         match scope {
-            LockdownScope::Bmc | LockdownScope::All => {}
+            LockdownScope::All => {}
+            LockdownScope::Bmc => {
+                let mut outcome = DriverOutcome::complete();
+                for interface in cx.host_interfaces().await? {
+                    outcome = outcome.merge(cx.set_host_interface(&interface, !locking).await?);
+                }
+                return Ok(outcome);
+            }
             LockdownScope::Host | LockdownScope::BmcSystemLockdown => {
                 return Err(PlatformError::Unsupported);
             }
         }
-        let locking = desired == LockdownDesiredState::Enabled;
         let mode = if locking {
             AuthenticationMode::RedfishSessionAuth
         } else {

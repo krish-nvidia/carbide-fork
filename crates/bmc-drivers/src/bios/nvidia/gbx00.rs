@@ -8,6 +8,7 @@ use bmc_platform::{
     Bios, BiosSettings, BiosStatus, BootInterfaceSelector, DriverOutcome, OpCx, PlatformError,
 };
 use nv_redfish::core::{ActionError, Bmc};
+use serde_json::json;
 
 use crate::bios::attributes::BiosAttribute;
 use crate::bios::standard::StandardBios;
@@ -21,14 +22,34 @@ pub(crate) struct Gbx00Bios;
 
 const UEFI_PASSWORD_NAME: &str = "AdminPassword";
 
-/// Option ROMs stay enabled so the DPU appears among the host's network
-/// devices and boot options.
 const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::string("TPM", "Enabled").required(),
     INFINITE_BOOT,
-    BiosAttribute::bool("Socket0Pcie6DisableOptionROM", false),
-    BiosAttribute::bool("Socket1Pcie6DisableOptionROM", false),
 ];
+
+/// Names part of every per-socket option ROM switch, as in
+/// `Socket0Pcie6DisableOptionROM`.
+const OPTION_ROM: &str = "Pcie6DisableOptionROM";
+
+/// `expected` with every option ROM `current` reports left enabled, so the
+/// DPU appears among the host's network devices and boot options; a profile
+/// value for one takes precedence.
+pub(crate) fn with_option_roms_enabled(
+    mut expected: BiosSettings,
+    current: &BiosSettings,
+) -> BiosSettings {
+    for key in current
+        .attributes
+        .keys()
+        .filter(|key| key.contains(OPTION_ROM))
+    {
+        expected
+            .attributes
+            .entry(key.clone())
+            .or_insert(json!(false));
+    }
+    expected
+}
 
 /// Disabling the embedded UEFI shell keeps the BIOS retrying boot instead of
 /// dropping into the shell.
@@ -51,8 +72,8 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = cx.reported_bios_settings().await?;
-        cx.stage_bios_attributes(&expected(ATTRIBUTES, &current, profile).attributes)
-            .await
+        let wanted = with_option_roms_enabled(expected(ATTRIBUTES, &current, profile), &current);
+        cx.stage_bios_attributes(&wanted.attributes).await
     }
 
     async fn status(
@@ -62,7 +83,8 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let current = cx.reported_bios_settings().await?;
-        Ok(compare(&current, &expected(ATTRIBUTES, &current, profile)))
+        let wanted = with_option_roms_enabled(expected(ATTRIBUTES, &current, profile), &current);
+        Ok(compare(&current, &wanted))
     }
 
     async fn change_uefi_password(

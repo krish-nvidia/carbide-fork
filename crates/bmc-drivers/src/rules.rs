@@ -322,6 +322,19 @@ fn built_ins() -> Vec<Rule> {
         .drivers([NvidiaBlueField2Dpu]),
     );
 
+    // GB200 trays from every vendor name GB200 in their system model, which
+    // is how the machine controller tells them apart from GB300.
+    rules.push(
+        Rule::new(
+            "nvidia-gb200",
+            [Match::contains_any_case(
+                IdentityField::SystemModel,
+                "GB200",
+            )],
+        )
+        .drivers([NvidiaGb200BmcControl]),
+    );
+
     // Giga Computing servers run AMI firmware behind an AMI service root;
     // only the system manufacturer tells them apart. Their BIOS spells its
     // settings differently, and their lockdown is the host interface alone.

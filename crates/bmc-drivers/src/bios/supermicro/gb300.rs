@@ -10,6 +10,7 @@ use bmc_platform::{
 use nv_redfish::core::{ActionError, Bmc};
 
 use crate::bios::attributes::BiosAttribute;
+use crate::bios::nvidia::gbx00::with_option_roms_enabled;
 use crate::bios::standard::StandardBios;
 use crate::bios::support::{RedfishBiosExt as _, compare, expected};
 use crate::resources::RedfishResourcesExt as _;
@@ -21,13 +22,8 @@ pub(crate) struct Gb300Bios;
 
 const UEFI_PASSWORD_NAME: &str = "AdminPassword";
 
-/// Option ROMs stay enabled so the DPU appears among the host's network
-/// devices and boot options.
-const ATTRIBUTES: &[BiosAttribute] = &[
-    BiosAttribute::string("SecurityDeviceSupport", "Enabled").required(),
-    BiosAttribute::bool("Socket0Pcie6DisableOptionROM", false),
-    BiosAttribute::bool("Socket1Pcie6DisableOptionROM", false),
-];
+const ATTRIBUTES: &[BiosAttribute] =
+    &[BiosAttribute::string("SecurityDeviceSupport", "Enabled").required()];
 
 #[async_trait]
 impl<B: Bmc> Bios<B> for Gb300Bios
@@ -45,8 +41,8 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<DriverOutcome, PlatformError> {
         let current = cx.current_bios_settings().await?;
-        cx.stage_bios_attributes(&expected(ATTRIBUTES, &current, profile).attributes)
-            .await
+        let wanted = with_option_roms_enabled(expected(ATTRIBUTES, &current, profile), &current);
+        cx.stage_bios_attributes(&wanted.attributes).await
     }
 
     async fn status(
@@ -56,7 +52,8 @@ where
         _boot_interface: Option<&BootInterfaceSelector>,
     ) -> Result<BiosStatus, PlatformError> {
         let current = cx.current_bios_settings().await?;
-        Ok(compare(&current, &expected(ATTRIBUTES, &current, profile)))
+        let wanted = with_option_roms_enabled(expected(ATTRIBUTES, &current, profile), &current);
+        Ok(compare(&current, &wanted))
     }
 
     async fn change_uefi_password(

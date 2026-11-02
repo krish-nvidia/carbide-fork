@@ -131,6 +131,12 @@ pub trait Bios<B: Bmc>: Send + Sync {
         self.standard().clear_tpm(cx).await
     }
 
+    /// Requests that the BIOS reset its NVRAM, which takes effect on the next
+    /// boot.
+    async fn clear_nvram(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        self.standard().clear_nvram(cx).await
+    }
+
     /// Whether the BIOS retries booting indefinitely; `None` when the platform
     /// has no such setting or the BIOS does not report it.
     async fn infinite_boot_enabled(&self, cx: &OpCx<'_, B>) -> Result<Option<bool>, PlatformError> {

@@ -112,6 +112,10 @@ where
         clear_nvram(cx).await
     }
 
+    async fn clear_nvram(&self, cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
+        clear_nvram(cx).await
+    }
+
     /// Viking firmware does not support reverting staged settings.
     async fn clear_pending(&self, _cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
         Ok(DriverOutcome::complete())
