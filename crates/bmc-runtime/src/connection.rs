@@ -18,15 +18,13 @@
 use std::sync::Arc;
 
 use bmc_platform::{AuthError, IpmiOps, PlatformError};
-use carbide_redfish::nv_redfish::{
-    Error as RedfishError, NvRedfishClientPool, NvRedfishConnection, RedfishBmc,
-};
+use carbide_redfish::nv_redfish::{NvRedfishClientPool, NvRedfishConnection, RedfishBmc};
 use thiserror::Error;
 
 use crate::observe::observe;
 use crate::{
-    BmcRef, ConnectError, ConnectedBmc, CredentialLease, CredentialRequest, CredentialRequestError,
-    RuntimeAuthMode, RuntimeCredentialProvider,
+    BmcRef, ConnectError, ConnectedBmc, CredentialRequest, CredentialRequestError, RuntimeAuthMode,
+    RuntimeCredentialProvider,
 };
 
 /// Constructs and refreshes concrete pooled Redfish connections on behalf of
@@ -136,12 +134,12 @@ impl ConnectionManager {
             endpoint.address(),
             self.auth_mode,
         );
-        let lease: CredentialLease = self
+        let lease = self
             .credentials
             .issue(&request)
             .await
             .map_err(ConnectError::Credentials)?;
-        let (address, credentials) = (endpoint.address(), lease.credentials().clone());
+        let (address, credentials) = (endpoint.address(), lease.into_credentials());
         // Reads are not cached: BMCs such as Lenovo XCC 3 and AMI MegaRAC keep
         // a resource's ETag when it changes, so a copy revalidated by ETag
         // can be stale.
@@ -149,7 +147,7 @@ impl ConnectionManager {
             self.pool
                 .uncached_connection_with_bmc_credentials(address, credentials)
                 .await
-                .map_err(|error: RedfishError| PlatformError::from_redfish(error))
+                .map_err(PlatformError::from_redfish)
         })
         .await
         .map_err(ConnectError::Transport)

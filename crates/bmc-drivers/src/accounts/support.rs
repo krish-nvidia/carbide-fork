@@ -5,12 +5,15 @@
 
 //! Shared Redfish account mechanics on a driver's operation context.
 
+use std::sync::Arc;
+
 use bmc_platform::{AuthError, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::account::{
     Account, AccountCollection, AccountService, AccountServiceConfig, AccountServiceUpdate,
-    ManagerAccountUpdate,
+    ManagerAccountCreate, ManagerAccountUpdate,
 };
 use nv_redfish::core::{Bmc, ODataId};
+use nv_redfish::schema::manager_account::ManagerAccount;
 use serde::de::IgnoredAny;
 
 /// The standard account collection, addressed directly when the BMC refuses
@@ -34,6 +37,26 @@ pub(super) trait RedfishAccountsExt<B: Bmc> {
         config: AccountServiceConfig,
         username: &str,
     ) -> Result<Account<B>, PlatformError>;
+
+    /// The accounts visible under `config`.
+    async fn list_accounts(
+        &self,
+        config: AccountServiceConfig,
+    ) -> Result<Vec<Arc<ManagerAccount>>, PlatformError>;
+
+    /// Creates an account in the collection discovered under `config`.
+    async fn create_account(
+        &self,
+        config: AccountServiceConfig,
+        request: ManagerAccountCreate,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// Deletes the account named `username` among those visible under `config`.
+    async fn delete_account(
+        &self,
+        config: AccountServiceConfig,
+        username: &str,
+    ) -> Result<DriverOutcome, PlatformError>;
 
     /// Sets a password using standard lookup, including disabled account slots.
     ///
@@ -82,6 +105,45 @@ impl<B: Bmc> RedfishAccountsExt<B> for OpCx<'_, B> {
             .ok_or_else(|| PlatformError::UserNotFound {
                 identifier: username.to_string(),
             })
+    }
+
+    async fn list_accounts(
+        &self,
+        config: AccountServiceConfig,
+    ) -> Result<Vec<Arc<ManagerAccount>>, PlatformError> {
+        let accounts = self
+            .account_collection(config)
+            .await?
+            .all_accounts_data()
+            .await
+            .map_err(|error| self.map_redfish_error(error))?;
+        Ok(accounts.into_iter().map(|account| account.raw()).collect())
+    }
+
+    async fn create_account(
+        &self,
+        config: AccountServiceConfig,
+        request: ManagerAccountCreate,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.account_collection(config)
+            .await?
+            .create_account(request)
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
+    }
+
+    async fn delete_account(
+        &self,
+        config: AccountServiceConfig,
+        username: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        self.account_by_username(config, username)
+            .await?
+            .delete()
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
     }
 
     async fn set_account_password(

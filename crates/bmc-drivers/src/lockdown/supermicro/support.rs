@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! The KCS, host-interface, and system-lockdown controls the Supermicro
-//! lockdown drivers share.
+//! The KCS, host-interface, and system-lockdown controls behind the
+//! Supermicro lockdown driver.
 
 use bmc_platform::{DriverOutcome, LockdownScope, OpCx, PlatformError, Quirk};
 use nv_redfish::core::Bmc;

@@ -393,8 +393,7 @@ impl Rules {
     ///
     /// Among matching rules that set a capability, the highest precedence
     /// wins; within it, the rule with the most matchers wins. Two rules
-    /// tied on both are ambiguous. The `If-Match` mode comes from the
-    /// highest-ranked matching rule that declares one.
+    /// tied on both are ambiguous.
     pub fn resolve(
         &self,
         identity: &PlatformIdentity,

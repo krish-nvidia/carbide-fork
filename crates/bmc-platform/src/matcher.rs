@@ -461,3 +461,6 @@ const fn field_precedence(field: &IdentityField) -> Option<Precedence> {
         | IdentityField::FirmwareInventory(_) => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

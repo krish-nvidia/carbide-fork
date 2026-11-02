@@ -120,7 +120,7 @@ mod tests {
 
     use super::*;
 
-    fn settings(attributes: Value) -> BiosSettings {
+    fn from_json(attributes: Value) -> BiosSettings {
         serde_json::from_value(json!({ "attributes": attributes })).expect("settings")
     }
 
@@ -137,7 +137,7 @@ mod tests {
             ("list not reported", json!({}), None),
         ];
         for (scenario, current, expected) in cases {
-            let settings = expected_settings(&settings(current), &BiosSettings::default());
+            let settings = expected_settings(&from_json(current), &BiosSettings::default());
             assert_eq!(
                 settings.attributes.get(OP_ROM_DISABLED_DEVICES),
                 expected.as_ref(),

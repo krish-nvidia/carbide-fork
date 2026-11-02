@@ -29,10 +29,8 @@ async fn adapter<B: Bmc>(
         message: format!("SuperNIC {index}: {what}"),
     };
     let chassis = cx
-        .all_chassis()
+        .chassis_by_id(&chassis_id)
         .await?
-        .into_iter()
-        .find(|chassis| chassis.raw().id == chassis_id)
         .ok_or_else(|| missing(&format!("no chassis {chassis_id}")))?;
     let adapter = chassis
         .network_adapters()

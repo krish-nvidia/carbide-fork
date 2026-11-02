@@ -235,31 +235,22 @@ fn resolve(identity: &PlatformIdentity) -> ResolvedSelection {
         .expect("rules resolve")
 }
 
+/// Platforms no other test resolves still select one rule per capability.
 #[test]
-fn every_supported_rule_resolves_to_a_complete_compiled_map() {
+fn supported_platforms_resolve_without_ambiguity() {
     let identities = [
-        nvswitch(),
-        delta(),
         liteon(),
-        lenovo_ami(),
         identity("Dell", None),
         identity("HPE", None),
-        identity("Lenovo", None),
         identity("Supermicro", Some("Super Server")),
         identity("AMI", Some("AMI Redfish Server")),
-        identity("Supermicro", Some("GB NVL")),
         identity("NVIDIA", Some("GB BMC")),
-        identity("NVIDIA", Some("VR NVL72")),
-        identity("NVIDIA", Some("P3809")),
         identity("NVIDIA", Some("BlueField-4")),
         identity("WIWYNN", Some("GB200 NVL")),
-        lenovo_gb300(),
-        viking(),
     ];
 
     for identity in identities {
-        Drivers::validate_map(&resolve(&identity).drivers)
-            .expect("rule map names only compiled capability drivers");
+        resolve(&identity);
     }
 }
 

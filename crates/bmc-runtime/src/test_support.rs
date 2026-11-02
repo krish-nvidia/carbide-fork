@@ -24,24 +24,34 @@ use mac_address::MacAddress;
 
 use crate::BmcRef;
 
+/// A selection of `drivers` with `quirks` under the empty rule set.
+pub(crate) fn selection(drivers: DriverMap, quirks: BTreeSet<Quirk>) -> ResolvedSelection {
+    ResolvedSelection {
+        drivers,
+        matched_rules: Vec::new(),
+        quirks,
+        hash: Rules::new(Vec::new())
+            .expect("empty rules are valid")
+            .hash(),
+    }
+}
+
+/// The per-device root credential key of the BMC with `mac_address`.
+pub(crate) const fn root_credential_key(mac_address: MacAddress) -> CredentialKey {
+    CredentialKey::BmcCredentials {
+        credential_type: BmcCredentialType::BmcRoot {
+            bmc_mac_address: mac_address,
+        },
+    }
+}
+
 /// A BMC at `192.0.2.10:443` selecting standard drivers with `quirks`.
 pub(crate) fn endpoint(quirks: BTreeSet<Quirk>) -> BmcRef {
     BmcRef::new(
         "192.0.2.10:443".parse().expect("valid socket address"),
-        CredentialKey::BmcCredentials {
-            credential_type: BmcCredentialType::BmcRoot {
-                bmc_mac_address: MacAddress::new([2, 0, 0, 0, 0, 1]),
-            },
-        },
+        root_credential_key(MacAddress::new([2, 0, 0, 0, 0, 1])),
         PlatformIdentity::default(),
-        ResolvedSelection {
-            drivers: DriverMap::filled(CapabilitySelection::Standard),
-            matched_rules: Vec::new(),
-            quirks,
-            hash: Rules::new(Vec::new())
-                .expect("empty rules are valid")
-                .hash(),
-        },
+        selection(DriverMap::filled(CapabilitySelection::Standard), quirks),
     )
     .expect("root credential key is valid")
 }

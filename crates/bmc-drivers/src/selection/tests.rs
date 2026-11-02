@@ -4,11 +4,10 @@
  */
 
 use bmc_platform::{
-    Capability, ChassisIdentity, FirmwareInventoryIdentity, FirmwareVersionRange,
-    FirmwareVersionRangeError, IdentityField, IdentityMatcher, ManagerIdentity, MatchPattern,
-    Precedence, ServiceRootIdentity, SystemIdentity,
+    Capability, ChassisIdentity, FirmwareInventoryIdentity, FirmwareVersionRange, IdentityField,
+    IdentityMatcher, ManagerIdentity, MatchPattern, Precedence, ServiceRootIdentity,
+    SystemIdentity,
 };
-use carbide_test_support::value_scenarios;
 
 use super::*;
 
@@ -80,78 +79,6 @@ fn defaults() -> DriverMap {
 }
 
 #[test]
-fn match_patterns_cover_every_comparison_mode() {
-    value_scenarios!(run = |pattern: MatchPattern| pattern.matches("NVIDIA GB300");
-        "matching patterns" {
-            MatchPattern::Exact("NVIDIA GB300".to_string()) => true,
-            MatchPattern::ExactAsciiCaseInsensitive("nvidia gb300".to_string()) => true,
-            MatchPattern::Prefix("NVIDIA".to_string()) => true,
-            MatchPattern::Contains("GB300".to_string()) => true,
-            MatchPattern::ContainsAsciiCaseInsensitive("nvidia gb".to_string()) => true,
-        }
-        "non-matching patterns" {
-            MatchPattern::Exact("NVIDIA".to_string()) => false,
-            MatchPattern::ExactAsciiCaseInsensitive("nvidia gb200".to_string()) => false,
-            MatchPattern::Prefix("GB300".to_string()) => false,
-            MatchPattern::Contains("GB200".to_string()) => false,
-        }
-    );
-}
-
-#[test]
-fn matchers_read_scalar_and_repeated_identity_fields() {
-    let cases = [
-        (
-            IdentityField::ServiceRootVendor,
-            MatchPattern::Exact("NVIDIA".to_string()),
-            true,
-        ),
-        (
-            IdentityField::ManagerModel,
-            MatchPattern::Exact("OpenBMC".to_string()),
-            true,
-        ),
-        (
-            IdentityField::SystemPartNumber,
-            MatchPattern::Prefix("900-".to_string()),
-            true,
-        ),
-        (
-            IdentityField::ChassisModel,
-            MatchPattern::Contains("GB300".to_string()),
-            true,
-        ),
-        (
-            IdentityField::ChassisPartNumber,
-            MatchPattern::Exact("missing".to_string()),
-            false,
-        ),
-        (
-            IdentityField::FirmwareInventory("HostBIOS_0".to_string()),
-            MatchPattern::VersionAtLeast("1.01.03".to_string()),
-            true,
-        ),
-        (
-            IdentityField::FirmwareInventory("HostBIOS_0".to_string()),
-            MatchPattern::VersionAtLeast("23.11.09".to_string()),
-            false,
-        ),
-        (
-            IdentityField::FirmwareInventory("HGX_FW_BMC_0".to_string()),
-            MatchPattern::VersionAtLeast("1.0".to_string()),
-            false,
-        ),
-    ];
-    let identity = identity();
-    for (field, pattern, expected) in cases {
-        assert_eq!(
-            IdentityMatcher::new(field, pattern).matches(&identity),
-            expected
-        );
-    }
-}
-
-#[test]
 fn one_of_matches_any_exact_candidate_and_canonicalizes_order() {
     let one_of = |values: &[&str]| {
         IdentityMatcher::new(
@@ -166,28 +93,6 @@ fn one_of_matches_any_exact_candidate_and_canonicalizes_order() {
     let right = Rules::new(vec![rule("models", [one_of(&["GB300", "GB200"])])])
         .expect("reordered one-of values are valid");
     assert_eq!(left.hash(), right.hash());
-}
-
-#[test]
-fn firmware_ranges_are_validated_and_inclusive() {
-    let range = FirmwareVersionRange::new("1.2.3".to_string(), "2.0".to_string())
-        .expect("ordered versions are valid");
-    value_scenarios!(run = |version| range.contains(version);
-        "inside inclusive range" {
-            "1.2.3" => true,
-            "1.5" => true,
-            "2.0" => true,
-        }
-        "outside or invalid" {
-            "1.2.2" => false,
-            "2.0.1" => false,
-            "" => false,
-        }
-    );
-    assert_eq!(
-        FirmwareVersionRange::new("2.0".to_string(), "1.0".to_string()),
-        Err(FirmwareVersionRangeError::Reversed)
-    );
 }
 
 #[test]
@@ -291,33 +196,68 @@ fn rule_validation_rejects_malformed_declarations() {
 }
 
 #[test]
-fn precedence_order_matches_selection_design() {
-    assert!(
-        Precedence::StandardDefault < Precedence::VendorManufacturer
-            && Precedence::VendorManufacturer < Precedence::BmcProductManager
-            && Precedence::BmcProductManager < Precedence::ExactSystemIdentity
-            && Precedence::ExactSystemIdentity < Precedence::DeploymentOverride
+fn highest_ranked_rule_selects_the_capability() {
+    let oem = IdentityMatcher::new(
+        IdentityField::ServiceRootOemKey,
+        MatchPattern::Exact("Nvidia".to_string()),
     );
+    let overrides = r#"
+        [[rules]]
+        id = "site"
+        matchers = [{ field = "system_model", pattern = { kind = "contains", value = "GB300" } }]
+        selections = { power = "unsupported" }
+    "#;
+    let cases = [
+        (
+            "higher precedence wins",
+            Rules::new(vec![
+                rule("specific", [vendor("NVIDIA")]),
+                Rule::new("fallback", []).unsupported([Capability::Power]),
+            ]),
+            "specific",
+            CapabilitySelection::Standard,
+        ),
+        (
+            "more matchers win within one precedence",
+            Rules::new(vec![
+                Rule::new("specific", [vendor("NVIDIA"), oem]).unsupported([Capability::Power]),
+                rule("broad", [vendor("NVIDIA")]),
+            ]),
+            "specific",
+            CapabilitySelection::Unsupported,
+        ),
+        (
+            "TOML overrides outrank built-ins",
+            Rules::with_overrides(vec![rule("vendor", [vendor("NVIDIA")])], overrides),
+            "site",
+            CapabilitySelection::Unsupported,
+        ),
+    ];
+    for (scenario, rules, winner, selection) in cases {
+        let resolved = rules
+            .expect(scenario)
+            .resolve(&identity(), &defaults())
+            .expect(scenario);
+        assert_eq!(
+            resolved.rule_for(Capability::Power),
+            Some(winner),
+            "{scenario}"
+        );
+        assert_eq!(
+            resolved.drivers.get(Capability::Power),
+            &selection,
+            "{scenario}"
+        );
+    }
 }
 
 #[test]
-fn higher_precedence_rule_wins_independent_of_input_order() {
-    let rules = Rules::new(vec![
-        rule("specific", [vendor("NVIDIA")]),
-        Rule::new("fallback", []).unsupported([Capability::Power]),
-    ])
-    .expect("rules are valid");
-
-    let resolved = rules
-        .resolve(&identity(), &defaults())
-        .expect("one rule wins");
-    assert_eq!(resolved.rule_for(Capability::Power), Some("specific"));
-    assert_eq!(
-        resolved.drivers.get(Capability::Power),
-        &CapabilitySelection::Standard
-    );
+fn malformed_overrides_are_rejected() {
+    assert!(matches!(
+        Rules::with_overrides(vec![rule("vendor", [vendor("NVIDIA")])], "rules = 1"),
+        Err(RuleError::InvalidOverrides(_))
+    ));
 }
-
 #[test]
 fn capabilities_resolve_independently_across_rules() {
     let rules = Rules::new(vec![
@@ -345,54 +285,6 @@ fn capabilities_resolve_independently_across_rules() {
         resolved.drivers.get(Capability::Bios),
         &CapabilitySelection::Standard
     );
-}
-
-#[test]
-fn more_matchers_win_within_one_precedence() {
-    let oem = IdentityMatcher::new(
-        IdentityField::ServiceRootOemKey,
-        MatchPattern::Exact("Nvidia".to_string()),
-    );
-    let rules = Rules::new(vec![
-        Rule::new("specific", [vendor("NVIDIA"), oem]).unsupported([Capability::Power]),
-        rule("broad", [vendor("NVIDIA")]),
-    ])
-    .expect("rules are valid");
-
-    let resolved = rules
-        .resolve(&identity(), &defaults())
-        .expect("specific rule wins");
-    assert_eq!(resolved.rule_for(Capability::Power), Some("specific"));
-    assert_eq!(
-        resolved.drivers.get(Capability::Power),
-        &CapabilitySelection::Unsupported
-    );
-}
-
-#[test]
-fn toml_overrides_outrank_built_ins() {
-    let built_in = vec![rule("vendor", [vendor("NVIDIA")])];
-    let overrides = r#"
-        [[rules]]
-        id = "site"
-        matchers = [{ field = "system_model", pattern = { kind = "contains", value = "GB300" } }]
-        selections = { power = "unsupported" }
-    "#;
-
-    let resolved = Rules::with_overrides(built_in.clone(), overrides)
-        .expect("override document is valid")
-        .resolve(&identity(), &defaults())
-        .expect("override resolves");
-    assert_eq!(resolved.rule_for(Capability::Power), Some("site"));
-    assert_eq!(
-        resolved.drivers.get(Capability::Power),
-        &CapabilitySelection::Unsupported
-    );
-
-    assert!(matches!(
-        Rules::with_overrides(built_in, "rules = 1"),
-        Err(RuleError::InvalidOverrides(_))
-    ));
 }
 
 #[test]

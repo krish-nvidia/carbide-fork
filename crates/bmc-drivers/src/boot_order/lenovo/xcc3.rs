@@ -14,9 +14,8 @@ use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 use serde_json::Value;
 
-use super::NETWORK;
 use crate::bios::lenovo::ensure_bios_settings_unlocked;
-use crate::boot_order::lenovo::first_group;
+use crate::boot_order::lenovo::{NETWORK, first_group};
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::RedfishBootOrderExt as _;
 use crate::resources::{RedfishResourcesExt as _, bios_attributes};

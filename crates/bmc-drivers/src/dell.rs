@@ -31,7 +31,7 @@ use serde_json::Value;
 use crate::resources::{RedfishResourcesExt as _, bios_update, dynamic_properties};
 
 /// The iDRAC attribute that blocks configuration changes while enabled.
-const SYSTEM_LOCKDOWN: &str = "Lockdown.1.SystemLockdown";
+pub(crate) const SYSTEM_LOCKDOWN: &str = "Lockdown.1.SystemLockdown";
 
 /// The Dell resources the selected Manager advertises.
 async fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, PlatformError> {
@@ -43,7 +43,9 @@ async fn dell_manager<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellManager<B>, Platfo
 }
 
 /// The selected Manager's iDRAC attributes.
-async fn manager_attributes<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DellAttributes<B>, PlatformError> {
+pub(crate) async fn manager_attributes<B: Bmc>(
+    cx: &OpCx<'_, B>,
+) -> Result<DellAttributes<B>, PlatformError> {
     cx.manager()
         .await?
         .oem_dell_attributes()
@@ -283,20 +285,12 @@ pub(crate) async fn nic<B: Bmc>(
     selector: &BootInterfaceSelector,
 ) -> Result<serde_json::Map<String, Value>, PlatformError> {
     let system_id = cx.system().await?.raw().id.clone();
-    let chassis = cx
-        .service_root()
-        .chassis()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .ok_or(PlatformError::Unsupported)?
-        .members()
-        .await
-        .map_err(|error| cx.map_redfish_error(error))?
-        .into_iter()
-        .find(|chassis| chassis.raw().id == system_id)
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("no Chassis {system_id}"),
-        })?;
+    let chassis =
+        cx.chassis_by_id(&system_id)
+            .await?
+            .ok_or_else(|| PlatformError::InvalidResponse {
+                message: format!("no Chassis {system_id}"),
+            })?;
     let adapters = chassis
         .network_adapters()
         .await

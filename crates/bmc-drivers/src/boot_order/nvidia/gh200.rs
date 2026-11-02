@@ -10,8 +10,7 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use super::{boots, http_option_name};
-use crate::boot_order::nvidia::{device_options_first, settings_override};
+use crate::boot_order::nvidia::{boots, device_options_first, http_option_name, settings_override};
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, boot_order, display_name, is_first, persistent_device, reference,

@@ -132,6 +132,7 @@ impl<B: Bmc> RedfishLockdownExt<B> for OpCx<'_, B> {
 
 #[cfg(test)]
 mod tests {
+    use carbide_test_support::value_scenarios;
     use serde_json::json;
 
     use super::*;
@@ -176,24 +177,24 @@ mod tests {
     }
 
     #[test]
-    fn signal_and_component_aggregation_preserves_partial() {
-        assert_eq!(state_from_signals(&[]), LockdownState::Unknown);
-        assert_eq!(
-            state_from_signals(&[(false, false), (false, false)]),
-            LockdownState::Unknown
+    fn signals_aggregate_into_one_state() {
+        value_scenarios!(run = |signals: Vec<(bool, bool)>| state_from_signals(&signals);
+            "nothing reported" {
+                vec![] => LockdownState::Unknown,
+                vec![(false, false), (false, false)] => LockdownState::Unknown,
+            }
+            "all agree" {
+                vec![(true, false), (true, false)] => LockdownState::Enabled,
+                vec![(false, true), (false, true)] => LockdownState::Disabled,
+            }
+            "mixed" {
+                vec![(true, false), (false, true)] => LockdownState::Partial,
+            }
         );
-        assert_eq!(
-            state_from_signals(&[(true, false), (true, false)]),
-            LockdownState::Enabled
-        );
-        assert_eq!(
-            state_from_signals(&[(false, true), (false, true)]),
-            LockdownState::Disabled
-        );
-        assert_eq!(
-            state_from_signals(&[(true, false), (false, true)]),
-            LockdownState::Partial
-        );
+    }
+
+    #[test]
+    fn host_and_bmc_states_that_differ_aggregate_to_partial() {
         assert_eq!(
             status(
                 LockdownState::Enabled,

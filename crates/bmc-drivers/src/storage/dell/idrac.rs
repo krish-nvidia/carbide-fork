@@ -3,8 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//! Storage capability drivers.
-
 use async_trait::async_trait;
 use bmc_platform::{DriverOutcome, OpCx, PlatformError, Storage};
 use nv_redfish::core::{ActionError, Bmc, Reference};

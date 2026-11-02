@@ -77,7 +77,7 @@ pub struct LockdownStatus {
 /// [`PlatformError::Unsupported`] means the platform has no such control:
 /// from [`Self::status`], no lockdown at all; from [`Self::set`], nothing for
 /// that [`LockdownScope`]. Callers skip the step rather than fail. Platforms
-/// with no lockdown have no driver, so every call answers `Unsupported`.
+/// with no lockdown select no driver, so callers never reach this trait.
 #[async_trait]
 pub trait Lockdown<B: Bmc>: Send + Sync {
     async fn status(&self, cx: &OpCx<'_, B>) -> Result<LockdownStatus, PlatformError>;

@@ -77,13 +77,7 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
     }
 
     async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError> {
-        let accounts = cx
-            .account_collection(slot_config(cx).await?)
-            .await?
-            .all_accounts_data()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?;
-        Ok(accounts.into_iter().map(|account| account.raw()).collect())
+        cx.list_accounts(slot_config(cx).await?).await
     }
 
     async fn create(
@@ -91,12 +85,7 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
         cx: &OpCx<'_, B>,
         request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        cx.account_collection(slot_config(cx).await?)
-            .await?
-            .create_account(request)
-            .await
-            .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error))
+        cx.create_account(slot_config(cx).await?, request).await
     }
 
     async fn delete(
@@ -104,12 +93,7 @@ impl<B: Bmc> Accounts<B> for IdracAccounts {
         cx: &OpCx<'_, B>,
         username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        cx.account_by_username(slot_config(cx).await?, username)
-            .await?
-            .delete()
-            .await
-            .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error))
+        cx.delete_account(slot_config(cx).await?, username).await
     }
 
     async fn apply_default_policy(

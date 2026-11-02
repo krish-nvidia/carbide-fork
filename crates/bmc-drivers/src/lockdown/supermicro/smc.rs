@@ -11,10 +11,9 @@ use bmc_platform::{
 use nv_redfish::core::Bmc;
 use nv_redfish::oem::supermicro::kcs_interface::Privilege;
 
-use super::support::{kcs_signal, sys_lockdown_scope};
 use crate::lockdown::supermicro::support::{
-    host_interface_enabled, kcs_privilege, set_host_interfaces, set_kcs_privilege,
-    set_sys_lockdown, sys_lockdown,
+    host_interface_enabled, kcs_privilege, kcs_signal, set_host_interfaces, set_kcs_privilege,
+    set_sys_lockdown, sys_lockdown, sys_lockdown_scope,
 };
 use crate::lockdown::support::{reported, signal, state_from_signals, status};
 

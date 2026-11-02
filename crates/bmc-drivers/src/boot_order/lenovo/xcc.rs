@@ -11,9 +11,8 @@ use nv_redfish::core::Bmc;
 use nv_redfish::oem::lenovo::boot_manager::{BootOrderKind, LenovoBootManagerCollection};
 use nv_redfish::schema::computer_system::BootUpdate;
 
-use super::NETWORK;
 use crate::boot_order::lenovo::{
-    boot_settings, first_group, network_group_first, oem_boot_order, set_next,
+    NETWORK, boot_settings, first_group, network_group_first, oem_boot_order, set_next,
 };
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::RedfishBootOrderExt as _;

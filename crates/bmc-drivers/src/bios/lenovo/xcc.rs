@@ -25,9 +25,10 @@ pub(crate) struct XccBios;
 
 const UEFI_PASSWORD_NAME: &str = "UefiAdminPassword";
 
-/// Virtualization is checked by [`require_virtualization_attribute`] since
-/// each CPU vendor reports only its own attribute. Serial console attributes
-/// belong to the console capability.
+/// Both CPU vendors' virtualization attributes are optional, since each CPU
+/// reports only its own; [`require_virtualization_attribute`] fails when
+/// neither is reported. Serial console attributes belong to the console
+/// capability.
 const ATTRIBUTES: &[BiosAttribute] = &[
     BiosAttribute::string("Processors_IntelVirtualizationTechnology", "Enabled"),
     BiosAttribute::string("Processors_SVMMode", "Enabled"),
@@ -102,10 +103,10 @@ where
     ) -> Result<DriverOutcome, PlatformError> {
         ensure_bios_settings_unlocked(cx).await?;
         let current = cx.current_bios_settings().await?;
-        let settings = cx
+        let staged = cx
             .stage_bios_attributes(&expected_settings(&current, profile)?.attributes)
             .await?;
-        Ok(settings.merge(network_group_first(cx).await?))
+        Ok(staged.merge(network_group_first(cx).await?))
     }
 
     async fn status(

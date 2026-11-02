@@ -81,18 +81,28 @@ pub(super) fn host_rshim_state(oem: &NvidiaComputerSystem<impl Bmc>) -> Option<R
     }
 }
 
-/// Reads `NicMode` from the BIOS attributes, reading NIC mode out of the 500
-/// that firmware with [`Quirk::BlueFieldNicModeBiosError`] answers with.
-pub(super) async fn bios_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> Result<NicMode, PlatformError> {
+/// The BIOS resource; `None` when firmware with
+/// [`Quirk::BlueFieldNicModeBiosError`] answers the read with the 500 it
+/// returns in NIC mode.
+async fn bios_unless_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Option<Bios<B>>, PlatformError> {
     match cx.bios().await {
-        Ok(bios) => reported_nic_mode(&bios),
+        Ok(bios) => Ok(Some(bios)),
         Err(error)
             if cx.has_quirk(Quirk::BlueFieldNicModeBiosError)
                 && bios_error_reports_nic_mode(&error) =>
         {
-            Ok(NicMode::Nic)
+            Ok(None)
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Reads `NicMode` from the BIOS attributes, reading NIC mode out of the 500
+/// that firmware with [`Quirk::BlueFieldNicModeBiosError`] answers with.
+pub(super) async fn bios_nic_mode<B: Bmc>(cx: &OpCx<'_, B>) -> Result<NicMode, PlatformError> {
+    match bios_unless_nic_mode(cx).await? {
+        Some(bios) => reported_nic_mode(&bios),
+        None => Ok(NicMode::Nic),
     }
 }
 
@@ -193,15 +203,8 @@ fn host_privilege_value(level: HostPrivilegeLevel) -> &'static str {
 pub(super) async fn bios_host_privilege_level<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<Option<HostPrivilegeLevel>, PlatformError> {
-    let bios = match cx.bios().await {
-        Ok(bios) => bios,
-        Err(error)
-            if cx.has_quirk(Quirk::BlueFieldNicModeBiosError)
-                && bios_error_reports_nic_mode(&error) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
+    let Some(bios) = bios_unless_nic_mode(cx).await? else {
+        return Ok(None);
     };
     let value = [HOST_PRIVILEGE_LEVEL, HOST_PRIVILEGE_LEVEL_WITH_SPACES]
         .into_iter()

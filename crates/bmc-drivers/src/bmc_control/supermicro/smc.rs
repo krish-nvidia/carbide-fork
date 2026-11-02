@@ -11,7 +11,7 @@ use nv_redfish::oem::supermicro::ResetOption;
 use crate::bmc_control::standard::StandardBmcControl;
 
 /// How many NTP servers the BMC keeps; it rejects a longer `NTPServers`.
-const NTP_SLOTS: usize = 2;
+const MAX_NTP_SERVERS: usize = 2;
 
 /// Supermicro restores manager defaults through the OEM `SmcManagerConfig.Reset` action.
 pub(crate) struct SmcBmcControl;
@@ -40,14 +40,14 @@ where
             .map_err(|error| cx.map_redfish_error(error))
     }
 
-    /// Writes the first [`NTP_SLOTS`] servers.
+    /// Writes the first [`MAX_NTP_SERVERS`] servers.
     async fn set_ntp_servers(
         &self,
         cx: &OpCx<'_, B>,
         servers: &[String],
     ) -> Result<DriverOutcome, PlatformError> {
-        StandardBmcControl
-            .set_ntp_servers(cx, &servers[..servers.len().min(NTP_SLOTS)])
+        self.standard()
+            .set_ntp_servers(cx, &servers[..servers.len().min(MAX_NTP_SERVERS)])
             .await
     }
 }

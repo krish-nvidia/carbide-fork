@@ -257,28 +257,10 @@ mod tests {
     use carbide_secrets::credentials::{BmcCredentialType, CredentialKey};
 
     use super::*;
+    use crate::test_support::{root_credential_key, selection};
 
     fn unsupported_driver_map() -> DriverMap {
         DriverMap::filled(CapabilitySelection::Unsupported)
-    }
-
-    fn selection(drivers: DriverMap) -> ResolvedSelection {
-        ResolvedSelection {
-            drivers,
-            matched_rules: Vec::new(),
-            quirks: BTreeSet::new(),
-            hash: Rules::new(Vec::new())
-                .expect("empty rules are valid")
-                .hash(),
-        }
-    }
-
-    fn credential_key(mac_address: MacAddress) -> CredentialKey {
-        CredentialKey::BmcCredentials {
-            credential_type: BmcCredentialType::BmcRoot {
-                bmc_mac_address: mac_address,
-            },
-        }
     }
 
     #[test]
@@ -287,9 +269,9 @@ mod tests {
         let driver_map = unsupported_driver_map();
         let reference = BmcRef::new(
             "192.0.2.10:8443".parse().expect("valid socket address"),
-            credential_key(mac_address),
+            root_credential_key(mac_address),
             PlatformIdentity::default(),
-            selection(driver_map.clone()),
+            selection(driver_map.clone(), BTreeSet::new()),
         )
         .expect("root credential key is valid");
 
@@ -307,7 +289,7 @@ mod tests {
         assert!(!encoded.to_ascii_lowercase().contains("token"));
 
         let site_wide = encoded.replace(
-            &serde_json::to_string(&credential_key(mac_address)).expect("key serializes"),
+            &serde_json::to_string(&root_credential_key(mac_address)).expect("key serializes"),
             &serde_json::to_string(&CredentialKey::BmcCredentials {
                 credential_type: BmcCredentialType::SiteWideRoot,
             })
@@ -329,9 +311,9 @@ mod tests {
         };
         let endpoint = BmcRef::from_access_info(
             &access,
-            credential_key(mac_address),
+            root_credential_key(mac_address),
             PlatformIdentity::default(),
-            selection(unsupported_driver_map()),
+            selection(unsupported_driver_map(), BTreeSet::new()),
         )
         .expect("IP endpoint converts");
 
@@ -351,9 +333,9 @@ mod tests {
                     port: None,
                     mac_address: MacAddress::new([2, 0, 0, 0, 0, 2]),
                 },
-                credential_key(MacAddress::new([2, 0, 0, 0, 0, 2])),
+                root_credential_key(MacAddress::new([2, 0, 0, 0, 0, 2])),
                 PlatformIdentity::default(),
-                selection(unsupported_driver_map()),
+                selection(unsupported_driver_map(), BTreeSet::new()),
             ),
             Err(BmcRefError::InvalidIpAddress(host)) if host == "bmc.example.test"
         ));
@@ -369,7 +351,7 @@ mod tests {
                     credential_type: BmcCredentialType::SiteWideRoot,
                 },
                 PlatformIdentity::default(),
-                selection(unsupported_driver_map()),
+                selection(unsupported_driver_map(), BTreeSet::new()),
             ),
             Err(BmcRefError::UnsupportedCredentialKey)
         ));
@@ -382,9 +364,9 @@ mod tests {
         assert!(matches!(
             BmcRef::from_access_info(
                 &access,
-                credential_key(MacAddress::new([2, 0, 0, 0, 0, 3])),
+                root_credential_key(MacAddress::new([2, 0, 0, 0, 0, 3])),
                 PlatformIdentity::default(),
-                selection(unsupported_driver_map()),
+                selection(unsupported_driver_map(), BTreeSet::new()),
             ),
             Err(BmcRefError::MacAddressMismatch)
         ));

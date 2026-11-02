@@ -88,7 +88,7 @@ async fn lock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformErr
         ("ServerBoot.1.FirstBootDevice", json!(boot_device)),
         ("ServerBoot.1.BootOnce", json!("Disabled")),
     ]);
-    let lockdown_attributes = attribute_map([("Lockdown.1.SystemLockdown", json!("Enabled"))]);
+    let lockdown_attributes = attribute_map([(dell::SYSTEM_LOCKDOWN, json!("Enabled"))]);
     let on_reset = Some(ManagerApplyTime::OnReset);
     let restrictions =
         dell::patch_manager_attributes(cx, &restriction_attributes, on_reset).await?;
@@ -102,7 +102,7 @@ async fn set_system_lockdown<B: Bmc>(
     enabled: bool,
 ) -> Result<DriverOutcome, PlatformError> {
     let attributes = attribute_map([(
-        "Lockdown.1.SystemLockdown",
+        dell::SYSTEM_LOCKDOWN,
         json!(if enabled { "Enabled" } else { "Disabled" }),
     )]);
     dell::patch_manager_attributes(cx, &attributes, None).await
@@ -111,7 +111,7 @@ async fn set_system_lockdown<B: Bmc>(
 async fn unlock_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<DriverOutcome, PlatformError> {
     let boot_device = first_boot_device(cx).await?;
     let attributes = attribute_map([
-        ("Lockdown.1.SystemLockdown", json!("Disabled")),
+        (dell::SYSTEM_LOCKDOWN, json!("Disabled")),
         ("Racadm.1.Enable", json!("Enabled")),
         ("ServerBoot.1.FirstBootDevice", json!(boot_device)),
         ("ServerBoot.1.BootOnce", json!("Disabled")),
@@ -138,15 +138,9 @@ where
             uefi_restricted,
         ]);
 
-        let attrs = cx
-            .manager()
-            .await?
-            .oem_dell_attributes()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?
-            .ok_or(PlatformError::Unsupported)?;
+        let attrs = dell::manager_attributes(cx).await?;
         let system_lockdown = attrs
-            .attribute("Lockdown.1.SystemLockdown")
+            .attribute(dell::SYSTEM_LOCKDOWN)
             .and_then(|value| value.str_value().map(str::to_owned));
         let racadm = attrs
             .attribute("Racadm.1.Enable")
@@ -252,7 +246,7 @@ mod tests {
                     "@odata.id": ATTRIBUTES,
                     "Id": "iDRAC.Embedded.1",
                     "Name": "Manager Attributes",
-                    "Attributes": {"Lockdown.1.SystemLockdown": "Disabled"},
+                    "Attributes": {dell::SYSTEM_LOCKDOWN: "Disabled"},
                 }),
             )
             .build()
@@ -270,7 +264,7 @@ mod tests {
             assert_eq!(path(&writes[0]), ATTRIBUTES, "{value}");
             assert_eq!(
                 body(&writes[0]),
-                json!({"Attributes": {"Lockdown.1.SystemLockdown": value}}),
+                json!({"Attributes": {dell::SYSTEM_LOCKDOWN: value}}),
                 "{value}"
             );
         }

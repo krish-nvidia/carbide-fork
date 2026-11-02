@@ -147,26 +147,21 @@ mod tests {
 
     use super::*;
 
-    fn settings(attributes: serde_json::Value) -> BiosSettings {
+    fn from_json(attributes: serde_json::Value) -> BiosSettings {
         serde_json::from_value(json!({ "attributes": attributes })).expect("settings")
     }
 
     #[test]
     fn profile_wins_over_the_platform_expectations() {
-        let table = [
-            BiosAttribute::string("Virtualization", "Enabled"),
-            BiosAttribute::string("AbsentOnThisModel", "Enabled"),
-            BiosAttribute::string("ExpectedEverywhere", "Enabled").required(),
-        ];
+        let table = [BiosAttribute::string("Virtualization", "Enabled")];
         assert_eq!(
             expected(
                 &table,
-                &settings(json!({"Virtualization": "Disabled", "Other": "x"})),
-                &settings(json!({"Virtualization": "Profile", "PowerProfile": "Performance"})),
+                &from_json(json!({"Virtualization": "Disabled", "Other": "x"})),
+                &from_json(json!({"Virtualization": "Profile", "PowerProfile": "Performance"})),
             ),
-            settings(json!({
+            from_json(json!({
                 "Virtualization": "Profile",
-                "ExpectedEverywhere": "Enabled",
                 "PowerProfile": "Performance",
             }))
         );

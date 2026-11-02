@@ -25,13 +25,7 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
     }
 
     async fn list(&self, cx: &OpCx<'_, B>) -> Result<Vec<Arc<ManagerAccount>>, PlatformError> {
-        let accounts = cx
-            .account_collection(AccountServiceConfig::standard())
-            .await?
-            .all_accounts_data()
-            .await
-            .map_err(|error| cx.map_redfish_error(error))?;
-        Ok(accounts.into_iter().map(|account| account.raw()).collect())
+        cx.list_accounts(AccountServiceConfig::standard()).await
     }
 
     async fn create(
@@ -39,12 +33,8 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         cx: &OpCx<'_, B>,
         request: ManagerAccountCreate,
     ) -> Result<DriverOutcome, PlatformError> {
-        cx.account_collection(AccountServiceConfig::standard())
-            .await?
-            .create_account(request)
+        cx.create_account(AccountServiceConfig::standard(), request)
             .await
-            .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn delete(
@@ -52,12 +42,8 @@ impl<B: Bmc> Accounts<B> for StandardAccounts {
         cx: &OpCx<'_, B>,
         username: &str,
     ) -> Result<DriverOutcome, PlatformError> {
-        cx.account_by_username(AccountServiceConfig::standard(), username)
-            .await?
-            .delete()
+        cx.delete_account(AccountServiceConfig::standard(), username)
             .await
-            .map(DriverOutcome::from)
-            .map_err(|error| cx.map_redfish_error(error))
     }
 
     async fn change_password(

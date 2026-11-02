@@ -99,7 +99,6 @@ pub enum CredentialRequestError {
 ///
 /// The lease deliberately exposes no secret-bearing `Debug`, `Display`, or
 /// serde representation.
-#[derive(Clone)]
 pub struct CredentialLease {
     credentials: BmcCredentials,
 }
@@ -110,9 +109,9 @@ impl CredentialLease {
         Self { credentials }
     }
 
-    /// Borrows the credentials for constructing or refreshing a transport.
-    pub const fn credentials(&self) -> &BmcCredentials {
-        &self.credentials
+    /// Hands over the credentials for constructing or refreshing a transport.
+    pub fn into_credentials(self) -> BmcCredentials {
+        self.credentials
     }
 }
 

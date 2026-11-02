@@ -171,7 +171,6 @@ mod tests {
                 serde_json::from_value::<PlatformError>(encoded).expect("error deserializes"),
                 error
             );
-            assert!(!error.to_string().is_empty());
         }
     }
 

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+//! Storage capability drivers.
+
 pub(crate) mod dell;
 
 mod support;

@@ -30,8 +30,9 @@ use tracing::Instrument;
 
 use crate::BmcRef;
 
-/// The `backend` label operations record under: the one libredfish calls
-/// use, so BMC dashboards keep a single series set across the migration.
+/// The `backend` label operations record under. It matches the label
+/// `carbide-redfish` records libredfish calls under, so both backends share
+/// one series set.
 const BACKEND: &str = "redfish";
 
 #[derive(Event)]

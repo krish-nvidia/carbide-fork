@@ -21,8 +21,9 @@ use crate::lockdown::support::{
 /// Lenovo AMI lockdown driver.
 ///
 /// The OEM `ConfigBMC` object switches host control and BIOS protection
-/// together, so `All` is the only full scope; the BMC-side lock is the host
-/// interface.
+/// together, so `All` is the only full scope. The BMC scope toggles the host
+/// interface, which status does not read; status reports the `ConfigBMC`
+/// controls for both host and BMC.
 pub(crate) struct LenovoAmiLockdown;
 
 async fn config_bmc<B: Bmc>(cx: &OpCx<'_, B>) -> Result<ConfigBmc<B>, PlatformError> {

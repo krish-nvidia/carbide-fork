@@ -53,7 +53,7 @@ fn nvidia_chassis() -> Match {
 fn built_ins() -> Vec<Rule> {
     let mut rules = Vec::new();
 
-    // ---- Vendor rules: ServiceRoot vendor or chassis manufacturer ----
+    // ---- Vendor rules: ServiceRoot vendor, system or chassis manufacturer ----
 
     rules.push(Rule::new("dell", [Match::vendor("Dell")]).drivers([
         DellIdracPower,
@@ -112,9 +112,7 @@ fn built_ins() -> Vec<Rule> {
     // root; the extra OEM-key matcher outranks the plain XCC vendor
     // rule. The AMI firmware takes AMI accounts and standard resets, not
     // XCC's, and has no XCC AC power cycle. Its SecureBoot resource reports
-    // a null SecureBootEnable and no current-boot state. A finished task's
-    // monitor is gone, so its status comes from the task itself, and ETags
-    // survive changes, so reads are not cached.
+    // a null SecureBootEnable and no current-boot state.
     rules.push(
         Rule::new(
             "lenovo-ami",
@@ -182,7 +180,25 @@ fn built_ins() -> Vec<Rule> {
             .unsupported([Capability::Lockdown]),
     );
 
-    // ---- Product rules: ServiceRoot product ----
+    // Giga Computing servers run AMI firmware behind an AMI service root;
+    // only the system manufacturer tells them apart. Their BIOS spells its
+    // settings differently, and their lockdown is the host interface alone.
+    rules.push(
+        Rule::new(
+            "giga-computing-ami",
+            [
+                Match::vendor("AMI"),
+                Match::contains_any_case(IdentityField::SystemManufacturer, "Giga Computing"),
+            ],
+        )
+        .drivers([
+            GigaComputingAmiBios,
+            GigaComputingAmiConsole,
+            GigaComputingAmiLockdown,
+        ]),
+    );
+
+    // ---- Product rules: ServiceRoot product or Manager model ----
 
     // Supermicro's GB NVL trays also match the Supermicro vendor rule,
     // whose OEM factory reset and console do not apply to OpenBMC.
@@ -254,7 +270,8 @@ fn built_ins() -> Vec<Rule> {
 
     // BlueField-4 keeps its DPU mode and host privileges on the network
     // adapter rather than the system and BIOS, and powers its Arm cores
-    // through the card chassis rather than the system.
+    // through the card chassis rather than the system. The vendor matcher
+    // outranks the `bluefield` rule, which shares the product precedence.
     rules.push(
         Rule::new(
             "nvidia-bluefield4",
@@ -268,6 +285,19 @@ fn built_ins() -> Vec<Rule> {
             NvidiaBlueField4Power,
             NvidiaBlueField4Bios,
         ]),
+    );
+
+    // XCC 3 has no OEM boot settings; it orders network adapters through BIOS
+    // attributes.
+    rules.push(
+        Rule::new(
+            "lenovo-xcc3",
+            [
+                Match::vendor("Lenovo"),
+                Match::exact(IdentityField::ManagerModel, "Lenovo XClarity Controller 3"),
+            ],
+        )
+        .drivers([LenovoXcc3BootOrder]),
     );
 
     // ---- Model rules: exact system, chassis, or firmware evidence ----
@@ -297,19 +327,6 @@ fn built_ins() -> Vec<Rule> {
         ]),
     );
 
-    // XCC 3 has no OEM boot settings; it orders network adapters through BIOS
-    // attributes.
-    rules.push(
-        Rule::new(
-            "lenovo-xcc3",
-            [
-                Match::vendor("Lenovo"),
-                Match::exact(IdentityField::ManagerModel, "Lenovo XClarity Controller 3"),
-            ],
-        )
-        .drivers([LenovoXcc3BootOrder]),
-    );
-
     // BlueField-2 identifies itself only through its card chassis model.
     rules.push(
         Rule::new(
@@ -333,24 +350,6 @@ fn built_ins() -> Vec<Rule> {
             )],
         )
         .drivers([NvidiaGb200BmcControl]),
-    );
-
-    // Giga Computing servers run AMI firmware behind an AMI service root;
-    // only the system manufacturer tells them apart. Their BIOS spells its
-    // settings differently, and their lockdown is the host interface alone.
-    rules.push(
-        Rule::new(
-            "giga-computing-ami",
-            [
-                Match::vendor("AMI"),
-                Match::contains_any_case(IdentityField::SystemManufacturer, "Giga Computing"),
-            ],
-        )
-        .drivers([
-            GigaComputingAmiBios,
-            GigaComputingAmiConsole,
-            GigaComputingAmiLockdown,
-        ]),
     );
 
     // Lenovo GB300 trays run AMI firmware; the GB300 model is on the GPU
