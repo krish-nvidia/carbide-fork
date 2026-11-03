@@ -23,7 +23,6 @@ use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, boot_order, listed_option, one_time_device, persistent_device,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// The name of the network device group's boot option.
 pub(crate) const NETWORK: &str = "Network";
@@ -31,8 +30,8 @@ pub(crate) const NETWORK: &str = "Network";
 const HARD_DISK: &str = "HardDisk";
 
 /// Puts the device group named `name` first in the system boot order, staged
-/// on the `Pending` settings object; the other groups keep their collection
-/// order.
+/// on the advertised settings object (`Pending`); the other groups keep their
+/// collection order.
 async fn set_group_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     name: &str,
@@ -48,8 +47,7 @@ async fn set_group_first<B: Bmc>(
         .chain(options.iter().filter(|option| option.raw().name != name))
         .map(|option| option.raw().id.clone())
         .collect();
-    cx.write_boot_order(&cx.system_uri(Some("Pending")).await?, order)
-        .await
+    cx.stage_boot_order(order).await
 }
 
 /// Puts `Network` first in the OEM general boot order, for firmware that
@@ -85,8 +83,7 @@ async fn set_override<B: Bmc>(
         one_time_device(setting),
         Some(BootSource::Pxe | BootSource::Hdd)
     ) {
-        let system = cx.system_uri(None).await?;
-        return cx.write_boot_override(&system, setting, false, None).await;
+        return cx.set_system_boot_override(setting, false).await;
     }
     match persistent_device(setting) {
         Some(BootSource::Pxe) => set_group_first(cx, NETWORK).await,

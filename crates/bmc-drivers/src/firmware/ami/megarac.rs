@@ -15,17 +15,16 @@ use nv_redfish::oem::ami::update_service::{
 use nv_redfish::update_service::{MultipartUpdateParameters, UpdateService, UpdateServiceUpdate};
 
 use crate::firmware::standard::StandardFirmware;
-use crate::firmware::support::RedfishFirmwareExt as _;
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 
 /// AMI MegaRAC firmware behavior for Lenovo HS350x-class BMCs.
 ///
 /// The BMC accepts only its BIOS or BMC images, targeting their firmware
 /// inventory entries with `OemParameters` naming the image, uploads through
-/// `upload` when `MultipartUpload` is not advertised, and a BMC image wipes
-/// configuration unless preservation is requested first.
+/// the `UpdateService/upload` URI nv-redfish supplies when none is
+/// advertised, and a BMC image wipes configuration unless preservation is
+/// requested first.
 pub(crate) struct MegaRacFirmware;
-
-const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/upload";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Image {
@@ -118,8 +117,9 @@ impl<B: Bmc> Firmware<B> for MegaRacFirmware {
             let service = cx.update_service().await?;
             preserve_bmc_configuration(cx, &service).await?;
         }
-        let uri = cx.firmware_upload_uri(MULTIPART_UPLOAD).await?;
-        cx.multipart_upload(upload, &parameters, vec![oem_parameters(image)?], &uri)
+        let service = cx.update_service().await?;
+        require_multipart_push(&service)?;
+        cx.multipart_upload(&service, upload, &parameters, vec![oem_parameters(image)?])
             .await
     }
 }

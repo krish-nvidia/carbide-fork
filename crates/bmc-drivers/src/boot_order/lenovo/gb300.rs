@@ -16,7 +16,6 @@ use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, alias, boot_order, is_first, reference,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// Lenovo GB300 boot behavior: AMI's, and the GB300 firmware also boots
 /// through any other enabled network option, so boot order setup enables only
@@ -87,10 +86,7 @@ impl<B: Bmc> BootOrder<B> for Gb300BootOrder {
         let target = megarac::http_option(&options, &mac)
             .ok_or_else(|| megarac::missing_http_option(&mac))?;
         let order = boot_order(cx.system().await?);
-        let sd = cx.system_uri(Some("SD")).await?;
-        let mut outcome = cx
-            .put_boot_option_first(&sd, order, reference(target))
-            .await?;
+        let mut outcome = cx.stage_boot_option_first(order, reference(target)).await?;
         for (option, enabled) in wanted_enablement(&options, target) {
             if option.enabled() == Some(enabled) {
                 continue;

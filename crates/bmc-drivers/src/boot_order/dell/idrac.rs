@@ -172,9 +172,18 @@ where
             return Ok(DriverOutcome::complete());
         }
         dell::clear_job_queue(cx).await?;
-        let settings = cx.system_uri(Some("Settings")).await?;
+        let system = cx.system().await?;
+        let settings = system
+            .settings()
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
         let update = boot_order_update(ordered[position].raw().id.clone());
-        let response = cx.patch_system(&settings, &update, None).await?;
+        let response = settings
+            .as_ref()
+            .unwrap_or(system)
+            .update(&update)
+            .await
+            .map_err(|error| cx.map_redfish_error(error))?;
         dell::job_outcome(cx, response).await
     }
 }

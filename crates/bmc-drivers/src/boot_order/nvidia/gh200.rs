@@ -15,12 +15,12 @@ use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, boot_order, display_name, is_first, persistent_device, reference,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA GH200 boot behavior.
 ///
-/// Overrides and the boot order go through the system's `Settings` object.
-/// The DPU's HTTP option is matched by its whole name, in any case.
+/// Overrides and the boot order go through the system's advertised settings
+/// object (`Settings`). The DPU's HTTP option is matched by its whole name,
+/// in any case.
 pub(crate) struct Gh200BootOrder;
 
 /// The boot order, the reference of the selected interface's HTTP option, and
@@ -77,7 +77,6 @@ impl<B: Bmc> BootOrder<B> for Gh200BootOrder {
     ) -> Result<DriverOutcome, PlatformError> {
         let (order, target, name) = http_option(cx, selector).await?;
         let target = target.ok_or(PlatformError::MissingBootOption { description: name })?;
-        let settings = cx.system_uri(Some("Settings")).await?;
-        cx.put_boot_option_first(&settings, order, &target).await
+        cx.stage_boot_option_first(order, &target).await
     }
 }

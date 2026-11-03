@@ -65,6 +65,17 @@ impl<'a, B: Bmc> OpCx<'a, B> {
         }
     }
 
+    /// A context for the same BMC that holds nothing yet, so the next
+    /// [`Self::system`] or [`Self::manager`] reads the BMC again: for a driver
+    /// that waits, within one operation, for the BMC to report a change.
+    pub fn fresh(&self) -> Self {
+        Self {
+            system: OnceCell::new(),
+            manager: OnceCell::new(),
+            ..*self
+        }
+    }
+
     /// Attaches IPMI operations for drivers that need them.
     pub fn with_ipmi(mut self, ipmi: &'a dyn IpmiOps) -> Self {
         self.ipmi = Some(ipmi);

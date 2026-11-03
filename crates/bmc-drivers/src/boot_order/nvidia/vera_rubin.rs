@@ -22,10 +22,10 @@ use crate::boot_order::support::{
 
 /// NVIDIA Vera Rubin tray boot behavior.
 ///
-/// Overrides and the boot order go through the system's `Settings` object,
-/// whose boot order entries may read `Boot0001: <name>`. The firmware can
-/// list duplicate HTTP options such as `UEFI HTTPv4 (MAC:…) 2`, so the DPU's
-/// option is matched by its whole name.
+/// Overrides and the boot order go through the system's advertised settings
+/// object (`Settings`), whose boot order entries may read `Boot0001: <name>`.
+/// The firmware can list duplicate HTTP options such as
+/// `UEFI HTTPv4 (MAC:…) 2`, so the DPU's option is matched by its whole name.
 pub(crate) struct VeraRubinBootOrder;
 
 /// Writes the boot order with `option`'s entry moved to the front; fails when

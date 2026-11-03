@@ -11,7 +11,6 @@ use bmc_platform::{DriverOutcome, OpCx, PlatformError, Power};
 use nv_redfish::chassis::PowerSupply;
 use nv_redfish::core::{ActionError, Bmc};
 use nv_redfish::resource::{PowerState, ResetType};
-use nv_redfish::schema::computer_system::ComputerSystem;
 use tokio::time::Instant;
 
 use crate::power::standard::StandardPower;
@@ -28,13 +27,7 @@ const POWER_OFF_TIMEOUT: Duration = Duration::from_secs(120);
 pub(super) async fn current_power_state<B: Bmc>(
     cx: &OpCx<'_, B>,
 ) -> Result<Option<PowerState>, PlatformError> {
-    let uri = cx.system().await?.raw().odata_id.clone();
-    let system = cx
-        .bmc()
-        .get::<ComputerSystem>(&uri)
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?;
-    Ok(system.power_state.flatten())
+    Ok(cx.fresh().system().await?.power_state())
 }
 
 /// Aggregates per-supply states into one shelf state; `None` when there are no

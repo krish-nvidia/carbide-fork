@@ -16,9 +16,9 @@ use crate::boot_order::support::{display_name, persistent_device};
 
 /// NVIDIA BlueField boot behavior.
 ///
-/// Overrides and the boot order go through the system's `Settings` object,
-/// and an override without a mode boots UEFI. The DPU boots itself, so there
-/// is no host interface to put first.
+/// Overrides and the boot order go through the system's advertised settings
+/// object (`Settings`), and an override without a mode boots UEFI. The DPU
+/// boots itself, so there is no host interface to put first.
 pub(crate) struct BlueFieldBootOrder;
 
 /// The display name prefix of the DPU's disk boot option.
@@ -80,6 +80,9 @@ mod tests {
                 json!({
                     "@odata.id": "/redfish/v1/Systems/Bluefield",
                     "@odata.etag": "\"system-1\"",
+                    "@Redfish.Settings": {"SettingsObject": {
+                        "@odata.id": "/redfish/v1/Systems/Bluefield/Settings",
+                    }},
                     "Id": "Bluefield",
                     "Name": "Bluefield",
                 }),

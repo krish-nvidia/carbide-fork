@@ -140,12 +140,9 @@ impl ConnectionManager {
             .await
             .map_err(ConnectError::Credentials)?;
         let (address, credentials) = (endpoint.address(), lease.into_credentials());
-        // Reads are not cached: BMCs such as Lenovo XCC 3 and AMI MegaRAC keep
-        // a resource's ETag when it changes, so a copy revalidated by ETag
-        // can be stale.
         observe(endpoint, None, "create_client", async {
             self.pool
-                .uncached_connection_with_bmc_credentials(address, credentials)
+                .connection_with_bmc_credentials(address, credentials)
                 .await
                 .map_err(PlatformError::from_redfish)
         })

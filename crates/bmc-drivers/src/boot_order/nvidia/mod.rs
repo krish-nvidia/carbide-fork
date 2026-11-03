@@ -18,7 +18,6 @@ use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, boot_order, display_name, matching_first,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// The display name prefix of NVIDIA UEFI HTTP boot options.
 const HTTP: &str = "UEFI HTTPv4";
@@ -46,28 +45,25 @@ fn boots<B: Bmc>(option: &BootOption<B>, device: BootSource) -> bool {
     }
 }
 
-/// Writes the override fields of `setting` to the system's `Settings` object.
+/// Stages the override fields of `setting` on the system's settings object.
 async fn settings_override<B: Bmc>(
     cx: &OpCx<'_, B>,
     setting: &BootUpdate,
     uefi_by_default: bool,
 ) -> Result<DriverOutcome, PlatformError> {
-    let settings = cx.system_uri(Some("Settings")).await?;
-    cx.write_boot_override(&settings, setting, uefi_by_default, None)
-        .await
+    cx.stage_boot_override(setting, uefi_by_default).await
 }
 
-/// Writes `order` as the boot order of the system's `Settings` object.
+/// Stages `order` as the boot order of the system's settings object.
 async fn write_settings_boot_order<B: Bmc>(
     cx: &OpCx<'_, B>,
     order: Vec<String>,
 ) -> Result<DriverOutcome, PlatformError> {
-    cx.write_boot_order(&cx.system_uri(Some("Settings")).await?, order)
-        .await
+    cx.stage_boot_order(order).await
 }
 
 /// Moves every option accepted by `boots` ahead of the rest of the boot
-/// order, staged on the `Settings` object.
+/// order, staged on the advertised settings object.
 async fn device_options_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     boots: impl Fn(&BootOption<B>) -> bool,

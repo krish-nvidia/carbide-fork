@@ -11,7 +11,7 @@ use nv_redfish::update_service::{
 };
 
 use crate::firmware::standard::StandardFirmware;
-use crate::firmware::support::{RedfishFirmwareExt as _, advertised_multipart_uri};
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 
 /// Lenovo XCC: the image picks its own target, and the update is forced and
 /// applies at once.
@@ -29,7 +29,7 @@ impl<B: Bmc> Firmware<B> for XccFirmware {
         upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let service = cx.update_service().await?;
-        let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
+        require_multipart_push(&service)?;
         let parameters = MultipartUpdateParametersWithApplyTime {
             parameters: MultipartUpdateParameters::builder()
                 .with_targets(Vec::new())
@@ -37,7 +37,7 @@ impl<B: Bmc> Firmware<B> for XccFirmware {
                 .build(),
             operation_apply_time: Some(OperationApplyTime::Immediate),
         };
-        cx.multipart_upload(upload, &parameters, Vec::new(), &uri)
+        cx.multipart_upload(&service, upload, &parameters, Vec::new())
             .await
     }
 }

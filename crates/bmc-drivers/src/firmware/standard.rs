@@ -14,7 +14,7 @@ use nv_redfish::schema::software_inventory::SoftwareInventory;
 use nv_redfish::schema::update_service::UpdateServiceSimpleUpdateAction;
 use nv_redfish::update_service::MultipartUpdateParameters;
 
-use crate::firmware::support::{RedfishFirmwareExt as _, advertised_multipart_uri};
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 
 /// Standard Redfish inventory, SimpleUpdate, and multipart upload.
 pub(crate) struct StandardFirmware;
@@ -50,12 +50,12 @@ impl<B: Bmc> Firmware<B> for StandardFirmware {
         upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let service = cx.update_service().await?;
-        let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
+        require_multipart_push(&service)?;
         cx.multipart_upload(
+            &service,
             upload,
             &MultipartUpdateParameters::default(),
             Vec::new(),
-            &uri,
         )
         .await
     }

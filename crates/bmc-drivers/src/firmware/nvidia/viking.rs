@@ -11,13 +11,12 @@ use nv_redfish::core::Bmc;
 use nv_redfish::update_service::MultipartUpdateParameters;
 
 use crate::firmware::standard::StandardFirmware;
-use crate::firmware::support::RedfishFirmwareExt as _;
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 
-/// NVIDIA DGX Viking: its AMI firmware uploads through `upload` rather than
-/// `MultipartUpload`, targeting the firmware inventory entry of the component.
+/// NVIDIA DGX Viking: uploads target the firmware inventory entry of the
+/// component, through the `UpdateService/upload` URI nv-redfish supplies for
+/// this firmware, which does not advertise one.
 pub(crate) struct VikingFirmware;
-
-const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/upload";
 
 /// The firmware inventory entry `component` updates; `None` leaves the target
 /// to the image.
@@ -54,8 +53,9 @@ impl<B: Bmc> Firmware<B> for VikingFirmware {
             parameters =
                 parameters.with_targets(cx.firmware_inventory_targets(&[id.as_str()]).await?);
         }
-        let uri = cx.firmware_upload_uri(MULTIPART_UPLOAD).await?;
-        cx.multipart_upload(upload, &parameters.build(), Vec::new(), &uri)
+        let service = cx.update_service().await?;
+        require_multipart_push(&service)?;
+        cx.multipart_upload(&service, upload, &parameters.build(), Vec::new())
             .await
     }
 }

@@ -16,12 +16,11 @@ use crate::boot_order::support::{
     RedfishBootOrderExt as _, alias, boot_order, display_name, is_first, persistent_device,
     reference,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// AMI MegaRAC boot behavior.
 ///
-/// The override goes to the live system and the boot order to its `SD`
-/// settings object, both with `If-Match: *`; an override without a mode boots
+/// The override goes to the live system and the boot order to its advertised
+/// settings object (`SD`), both with `If-Match: *`; an override without a mode boots
 /// UEFI. A persistent device boots first by its boot option's `Alias`.
 pub(crate) struct MegaRacBootOrder;
 
@@ -44,16 +43,14 @@ pub(crate) fn missing_http_option(mac: &str) -> PlatformError {
     }
 }
 
-/// Moves `target` first in the `SD` boot order unless `order` already starts
-/// with it.
+/// Moves `target` first in the staged boot order unless `order` already
+/// starts with it.
 async fn put_first<B: Bmc>(
     cx: &OpCx<'_, B>,
     order: Vec<String>,
     target: &BootOption<B>,
 ) -> Result<DriverOutcome, PlatformError> {
-    let sd = cx.system_uri(Some("SD")).await?;
-    cx.put_boot_option_first(&sd, order, reference(target))
-        .await
+    cx.stage_boot_option_first(order, reference(target)).await
 }
 
 #[async_trait]
@@ -86,10 +83,7 @@ impl<B: Bmc> BootOrder<B> for MegaRacBootOrder {
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
         let Some(device) = persistent_device(override_setting) else {
-            let system = cx.system_uri(None).await?;
-            return cx
-                .write_boot_override(&system, override_setting, true, None)
-                .await;
+            return cx.set_system_boot_override(override_setting, true).await;
         };
         let options = cx.boot_options().await?;
         let target = options

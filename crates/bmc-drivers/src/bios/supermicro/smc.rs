@@ -22,10 +22,10 @@ use crate::resources::{RedfishResourcesExt as _, bios_attributes, bios_update};
 /// written to the current BIOS resource.
 pub(crate) struct SmcBios;
 
-/// Expected values by attribute-name prefix.
+/// Expected values by attribute-name prefix. `Re_tryBoot` is left as the
+/// host has it: some BIOS versions offer only `Disabled` and `Enabled`.
 const ATTRIBUTES: &[(&str, AttributeValue)] = &[
     ("QuietBoot", Bool(false)),
-    ("Re_tryBoot", Text("EFI Boot")),
     ("CSMSupport", Text("Disabled")),
     ("SecureBootEnable", Bool(false)),
     ("TXTSupport", Text("Enabled")),

@@ -20,10 +20,6 @@ use crate::resources::RedfishResourcesExt as _;
 
 /// Firmware discovery and upload mechanics shared by firmware drivers.
 pub(super) trait RedfishFirmwareExt<B: Bmc> {
-    /// The advertised `MultipartHttpPushUri`, or `fallback` for firmware that
-    /// implements multipart push without advertising it.
-    async fn firmware_upload_uri(&self, fallback: &str) -> Result<String, PlatformError>;
-
     /// The `@odata.id` of each firmware inventory entry in `ids`, for update
     /// targets; `Unsupported` when the BMC lists one of them under no such id.
     async fn firmware_inventory_targets(&self, ids: &[&str]) -> Result<Vec<String>, PlatformError>;
@@ -34,25 +30,21 @@ pub(super) trait RedfishFirmwareExt<B: Bmc> {
     /// The service root's update service.
     async fn update_service(&self) -> Result<UpdateService<B>, PlatformError>;
 
-    /// Uploads `upload` to `uri` with `parameters` and any OEM parts; a 404 means
-    /// the BMC does not implement multipart push.
+    /// Uploads `upload` with `parameters` and any OEM parts to the
+    /// `MultipartHttpPushUri` `service` advertises; a 404 means the BMC does
+    /// not implement multipart push.
     async fn multipart_upload<V>(
         &self,
+        service: &UpdateService<B>,
         upload: FirmwareUpload,
         parameters: &V,
         oem_parts: Vec<OemMultipartPart>,
-        uri: &str,
     ) -> Result<DriverOutcome, PlatformError>
     where
         V: Serialize + Send + Sync;
 }
 
 impl<B: Bmc> RedfishFirmwareExt<B> for OpCx<'_, B> {
-    async fn firmware_upload_uri(&self, fallback: &str) -> Result<String, PlatformError> {
-        let service = self.update_service().await?;
-        Ok(advertised_multipart_uri(&service).unwrap_or_else(|| fallback.to_string()))
-    }
-
     async fn firmware_inventory_targets(&self, ids: &[&str]) -> Result<Vec<String>, PlatformError> {
         let inventories = self
             .update_service()
@@ -90,10 +82,10 @@ impl<B: Bmc> RedfishFirmwareExt<B> for OpCx<'_, B> {
 
     async fn multipart_upload<V>(
         &self,
+        service: &UpdateService<B>,
         upload: FirmwareUpload,
         parameters: &V,
         oem_parts: Vec<OemMultipartPart>,
-        uri: &str,
     ) -> Result<DriverOutcome, PlatformError>
     where
         V: Serialize + Send + Sync,
@@ -105,24 +97,29 @@ impl<B: Bmc> RedfishFirmwareExt<B> for OpCx<'_, B> {
                 oem_parts,
                 upload_timeout: upload.timeout,
             };
-        self.bmc()
-            .multipart_update::<_, _, UploadResponse>(uri, request)
+        service
+            .multipart_update::<_, _, UploadResponse>(request)
             .await
             .map(upload_outcome)
-            .map_err(|error| match self.map_bmc_error(error) {
+            .map_err(|error| match self.map_redfish_error(error) {
                 PlatformError::Bmc { status: 404, .. } => PlatformError::Unsupported,
                 other => other,
             })
     }
 }
 
-/// The non-empty `MultipartHttpPushUri` the update service advertises, if any.
-pub(super) fn advertised_multipart_uri<B: Bmc>(service: &UpdateService<B>) -> Option<String> {
+/// `Unsupported` unless the update service advertises a non-empty
+/// `MultipartHttpPushUri`.
+pub(super) fn require_multipart_push<B: Bmc>(
+    service: &UpdateService<B>,
+) -> Result<(), PlatformError> {
     service
         .raw()
         .multipart_http_push_uri
-        .clone()
+        .as_deref()
         .filter(|uri| !uri.trim().is_empty())
+        .map(drop)
+        .ok_or(PlatformError::Unsupported)
 }
 
 /// The message announcing the task an upload started.

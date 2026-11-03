@@ -13,14 +13,12 @@ use nv_redfish::update_service::{
 use serde_json::json;
 
 use crate::firmware::standard::StandardFirmware;
-use crate::firmware::support::RedfishFirmwareExt as _;
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 
-/// Dell iDRAC: older iDRAC firmware does not advertise its `MultipartUpload`
-/// endpoint; the image picks its own target and applies at once or on the
-/// next reset as the caller asks.
+/// Dell iDRAC: the image picks its own target and applies at once or on the
+/// next reset as the caller asks. Older iDRAC firmware that does not advertise
+/// `MultipartHttpPushUri` has no multipart upload.
 pub(crate) struct IdracFirmware;
-
-const MULTIPART_UPLOAD: &str = "/redfish/v1/UpdateService/MultipartUpload";
 
 fn update_parameters(apply_immediately: bool) -> MultipartUpdateParametersWithApplyTime {
     MultipartUpdateParametersWithApplyTime {
@@ -50,8 +48,9 @@ impl<B: Bmc> Firmware<B> for IdracFirmware {
         upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let parameters = update_parameters(upload.apply_immediately);
-        let uri = cx.firmware_upload_uri(MULTIPART_UPLOAD).await?;
-        cx.multipart_upload(upload, &parameters, Vec::new(), &uri)
+        let service = cx.update_service().await?;
+        require_multipart_push(&service)?;
+        cx.multipart_upload(&service, upload, &parameters, Vec::new())
             .await
     }
 }

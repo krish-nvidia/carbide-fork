@@ -7,24 +7,21 @@ use async_trait::async_trait;
 use bmc_platform::{
     BootInterfaceSelector, BootOrder, BootOrderStatus, DriverOutcome, OpCx, PlatformError,
 };
-use nv_redfish::computer_system::BootOption;
-use nv_redfish::core::{Bmc, RedfishSettings};
-use nv_redfish::schema::computer_system::{
-    BootSource, BootUpdate, ComputerSystem as ComputerSystemSchema,
-};
+use nv_redfish::computer_system::{BootOption, ComputerSystemUpdate};
+use nv_redfish::core::{Bmc, EntityTypeRef as _};
+use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 
 use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
-    RedfishBootOrderExt as _, alias, boot_order, display_name, matching_first, persistent_device,
-    reference, system_etag,
+    RedfishBootOrderExt as _, alias, boot_order, boot_override, display_name, matching_first,
+    persistent_device, reference,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// NVIDIA DGX Viking boot behavior.
 ///
-/// Overrides and the boot order go through the system's `SD` settings
-/// object: an override with `If-Match` set to that object's ETag, the boot
-/// order with `If-Match: *`. An override without a mode boots UEFI. The
+/// Overrides and the boot order go through the system's advertised settings
+/// object (`SD`): an override with `If-Match` set to that object's ETag, the
+/// boot order with `If-Match: *`. An override without a mode boots UEFI. The
 /// DPU's HTTP option is the UEFI HTTP option whose device path names its MAC.
 pub(crate) struct VikingBootOrder;
 
@@ -51,14 +48,15 @@ async fn http_option<B: Bmc>(
 /// the system's own when it advertises none.
 async fn staged_boot_order<B: Bmc>(cx: &OpCx<'_, B>) -> Result<Vec<String>, PlatformError> {
     let system = cx.system().await?;
-    let Some(settings) = system.raw().settings_object() else {
+    let Some(settings) = system
+        .settings()
+        .await
+        .map_err(|error| cx.map_redfish_error(error))?
+    else {
         return Ok(boot_order(system));
     };
-    Ok(cx
-        .bmc()
-        .get::<ComputerSystemSchema>(settings.id())
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?
+    Ok(settings
+        .raw()
         .boot
         .as_ref()
         .and_then(|boot| boot.boot_order.clone().flatten())
@@ -98,12 +96,25 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let sd = cx.system_uri(Some("SD")).await?;
         let Some(device) = persistent_device(override_setting) else {
-            let etag = system_etag(cx, &sd).await?;
+            // The override needs the settings object's own ETag, which
+            // nv-redfish's typed writes replace with `*` on AMI firmware.
+            let system = cx.system().await?;
+            let settings = system
+                .settings()
+                .await
+                .map_err(|error| cx.map_redfish_error(error))?;
+            let raw = settings.as_ref().unwrap_or(system).raw();
             return cx
-                .write_boot_override(&sd, override_setting, true, Some(&etag))
-                .await;
+                .patch_system(
+                    &raw.odata_id,
+                    &ComputerSystemUpdate::builder()
+                        .with_boot(boot_override(override_setting, true)?)
+                        .build(),
+                    raw.etag(),
+                )
+                .await
+                .map(DriverOutcome::from);
         };
         let order = boot_order(cx.system().await?);
         let options = cx.boot_options().await?;
@@ -111,7 +122,7 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
             .into_iter()
             .map(|option| format!("Boot{}", option.raw().id))
             .collect();
-        cx.write_boot_order(&sd, ordered).await
+        cx.stage_boot_order(ordered).await
     }
 
     async fn configure(
@@ -135,7 +146,6 @@ impl<B: Bmc> BootOrder<B> for VikingBootOrder {
             })?;
         order.remove(position);
         order.insert(0, target);
-        cx.write_boot_order(&cx.system_uri(Some("SD")).await?, order)
-            .await
+        cx.stage_boot_order(order).await
     }
 }

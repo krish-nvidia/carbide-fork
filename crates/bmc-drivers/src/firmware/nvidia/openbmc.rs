@@ -11,7 +11,7 @@ use nv_redfish::core::Bmc;
 use nv_redfish::update_service::MultipartUpdateParameters;
 
 use crate::firmware::standard::StandardFirmware;
-use crate::firmware::support::{RedfishFirmwareExt as _, advertised_multipart_uri};
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 
 /// NVIDIA OpenBMC compute trays (GB200/GB300, Vera Rubin): the HGX component
 /// is the update target, and `ForceUpdate` keeps the BMC from skipping images
@@ -49,12 +49,12 @@ impl<B: Bmc> Firmware<B> for OpenBmcFirmware {
         upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let service = cx.update_service().await?;
-        let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
+        require_multipart_push(&service)?;
         let mut parameters = MultipartUpdateParameters::builder().with_force_update(true);
         if let Some(targets) = targets(cx, upload.component).await? {
             parameters = parameters.with_targets(targets);
         }
-        cx.multipart_upload(upload, &parameters.build(), Vec::new(), &uri)
+        cx.multipart_upload(&service, upload, &parameters.build(), Vec::new())
             .await
     }
 }

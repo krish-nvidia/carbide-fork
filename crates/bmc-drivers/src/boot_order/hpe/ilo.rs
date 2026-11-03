@@ -14,9 +14,7 @@ use nv_redfish::schema::computer_system::{BootSource, BootUpdate};
 use serde_json::json;
 
 use crate::boot_order::standard::StandardBootOrder;
-use crate::boot_order::support::{
-    RedfishBootOrderExt as _, boot_order, display_name, reference, system_etag,
-};
+use crate::boot_order::support::{RedfishBootOrderExt as _, boot_order, display_name, reference};
 use crate::resources::{RedfishResourcesExt as _, attribute_map};
 
 /// HPE iLO boot behavior.
@@ -84,16 +82,16 @@ impl<B: Bmc> BootOrder<B> for IloBootOrder {
                 description: format!("BootOrder entry {http_option}"),
             })?;
         order.swap(0, position);
-        // iLO answers `If-Match: *` with 412.
-        let system = cx.system_uri(None).await?;
-        let etag = system_etag(cx, &system).await?;
         let update = ComputerSystemUpdate::builder()
             .with_boot(BootUpdate::builder().with_boot_order(order).build())
             .build();
         match cx
-            .patch_system(&system, &update, Some(&etag))
+            .system()
+            .await?
+            .update(&update)
             .await
             .map(DriverOutcome::from)
+            .map_err(|error| cx.map_redfish_error(error))
         {
             Err(PlatformError::Bmc {
                 message_id,

@@ -8,8 +8,9 @@ use bmc_platform::{
     BmcControl, DriverOutcome, ManagerSettings, ManagerSettingsDiff, ManagerSettingsStatus, OpCx,
     PlatformError,
 };
+use nv_redfish::chassis::ChassisUpdate;
 use nv_redfish::core::{ActionError, Bmc};
-use nv_redfish::oem::oem_value;
+use nv_redfish::oem::nvidia::{NvidiaChassisUpdate, NvidiaChassisUpdateExt as _};
 use nv_redfish::resource::PowerState;
 use serde_json::{Value, json};
 
@@ -54,15 +55,21 @@ where
             .chassis_by_id(SMM_CHASSIS_ID)
             .await?
             .ok_or(PlatformError::Unsupported)?;
-        cx.bmc()
-            .update::<_, Value>(
-                &chassis.raw().odata_id,
-                None,
-                &json!({"Oem": {"Nvidia": {HOST_MANAGEMENT_NETWORK_ACCESS: false}}}),
+        let update = ChassisUpdate::builder()
+            .build()
+            .with_oem_nvidia(
+                NvidiaChassisUpdate::builder()
+                    .with_host_management_network_access(false)
+                    .build(),
             )
+            .map_err(|error| PlatformError::InvalidResponse {
+                message: format!("failed to build the NVIDIA chassis update: {error}"),
+            })?;
+        chassis
+            .update(&update)
             .await
             .map(DriverOutcome::from)
-            .map_err(|error| cx.map_bmc_error(error))
+            .map_err(|error| cx.map_redfish_error(error))
     }
 
     /// A missing value counts as a difference: access is applied only when
@@ -76,12 +83,10 @@ where
             .await?
             .ok_or(PlatformError::Unsupported)?;
         let actual = chassis
-            .raw()
-            .oem
-            .as_ref()
-            .and_then(|oem| oem_value(oem, "Nvidia"))
-            .and_then(|nvidia| nvidia.get(HOST_MANAGEMENT_NETWORK_ACCESS))
-            .cloned();
+            .oem_nvidia()
+            .map_err(|error| cx.map_redfish_error(error))?
+            .and_then(|nvidia| nvidia.host_management_network_access())
+            .map(Value::Bool);
         let differences: Vec<ManagerSettingsDiff> = (actual != Some(json!(false)))
             .then(|| ManagerSettingsDiff {
                 key: HOST_MANAGEMENT_NETWORK_ACCESS.to_string(),
@@ -94,5 +99,75 @@ where
             is_applied: differences.is_empty(),
             differences,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::{Fixture, body, path};
+
+    const SYSTEM: &str = "/redfish/v1/Systems/System_0";
+    const SMM: &str = "/redfish/v1/Chassis/SMM_0";
+
+    /// Applying disables access on the SMM chassis's NVIDIA extension, and
+    /// status reports the access the SMM holds.
+    #[tokio::test]
+    async fn host_management_network_access_is_disabled_on_the_smm_chassis() {
+        let bmc = Fixture::new("NVIDIA", "VR NVL72", "System_0", "BMC_0")
+            .document(
+                SYSTEM,
+                json!({"@odata.id": SYSTEM, "Id": "System_0", "Name": "System_0",
+                       "PowerState": "On"}),
+            )
+            .document(
+                "/redfish/v1/Chassis",
+                json!({"@odata.id": "/redfish/v1/Chassis",
+                       "@odata.type": "#ChassisCollection.ChassisCollection",
+                       "Name": "Chassis Collection", "Members": [{"@odata.id": SMM}]}),
+            )
+            .document(
+                SMM,
+                json!({"@odata.id": SMM, "@odata.type": "#Chassis.v1_23_0.Chassis",
+                "Id": "SMM_0", "Name": "SMM_0", "ChassisType": "Module",
+                "Oem": {"Nvidia": {
+                    "@odata.type": "#NvidiaChassis.v1_14_0.NvidiaChassis",
+                    "HostManagementNetworkAccess": true,
+                }}}),
+            )
+            .build()
+            .await;
+        let cx = bmc.cx().await;
+
+        VeraRubinBmcControl
+            .apply_settings(&cx, &ManagerSettings::default())
+            .await
+            .expect("apply succeeds");
+        let writes: Vec<_> = bmc
+            .writes()
+            .iter()
+            .map(|request| (path(request).to_string(), body(request)))
+            .collect();
+        assert_eq!(
+            writes,
+            [(
+                SMM.to_string(),
+                json!({"Oem": {"Nvidia": {"HostManagementNetworkAccess": false}}}),
+            )]
+        );
+
+        assert_eq!(
+            VeraRubinBmcControl.settings_status(&cx).await,
+            Ok(ManagerSettingsStatus {
+                is_applied: false,
+                differences: vec![ManagerSettingsDiff {
+                    key: HOST_MANAGEMENT_NETWORK_ACCESS.to_string(),
+                    expected: json!(false),
+                    actual: Some(json!(true)),
+                }],
+            })
+        );
     }
 }

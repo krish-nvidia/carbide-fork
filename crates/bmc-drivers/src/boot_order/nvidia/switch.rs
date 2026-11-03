@@ -16,8 +16,8 @@ use crate::boot_order::support::persistent_device;
 
 /// NVIDIA NVSwitch tray boot behavior.
 ///
-/// Overrides and the boot order go through the system's `Settings` object.
-/// A switch tray has no host interface to put first.
+/// Overrides and the boot order go through the system's advertised settings
+/// object (`Settings`). A switch tray has no host interface to put first.
 pub(crate) struct SwitchBootOrder;
 
 #[async_trait]

@@ -20,9 +20,8 @@ use crate::hw::BiosAttr;
 // Real attribute names examples:
 // "IPv4HTTPSupport_009F", "DeviceSelect_0034", "DeviceSelect_003D", "SR_IOVSupport_002B"
 // This constant defines prefixes till last underscore.
-pub const EXPECTED_BIOS_ATTRS_PREFIXES: [BiosAttr; 15] = [
+pub const EXPECTED_BIOS_ATTRS_PREFIXES: [BiosAttr; 14] = [
     BiosAttr::new_bool("QuietBoot", false),
-    BiosAttr::new_str("Re_tryBoot", "EFI Boot"),
     BiosAttr::new_str("CSMSupport", "Disabled"),
     BiosAttr::new_bool("SecureBootEnable", false),
     // Trusted Computing / Provision Support / TXT Support

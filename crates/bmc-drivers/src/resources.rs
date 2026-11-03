@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use bmc_platform::{BiosSettings, DriverOutcome, OpCx, PlatformError};
 use nv_redfish::chassis::Chassis;
 use nv_redfish::computer_system::{AttributesUpdate, Bios, BiosUpdate};
-use nv_redfish::core::{Bmc, DynamicProperties, EdmPrimitiveType, ModificationResponse, ODataId};
+use nv_redfish::core::{Bmc, DynamicProperties, EdmPrimitiveType, ModificationResponse};
 use nv_redfish::schema::bios::Bios as BiosSchema;
 use serde_json::Value;
 
@@ -99,10 +99,6 @@ pub(crate) fn dynamic_properties(
 
 /// Standard Redfish resources and BIOS attribute mechanics shared across capabilities.
 pub(crate) trait RedfishResourcesExt<B: Bmc> {
-    /// The selected system's resource, or the resource at `suffix` beneath it,
-    /// such as its `Settings`, `SD` or `Pending` object.
-    async fn system_uri(&self, suffix: Option<&str>) -> Result<ODataId, PlatformError>;
-
     /// Every chassis the BMC lists; `Unsupported` when it has no chassis collection.
     async fn all_chassis(&self) -> Result<Vec<Chassis<B>>, PlatformError>;
 
@@ -138,14 +134,6 @@ pub(crate) trait RedfishResourcesExt<B: Bmc> {
 }
 
 impl<B: Bmc> RedfishResourcesExt<B> for OpCx<'_, B> {
-    async fn system_uri(&self, suffix: Option<&str>) -> Result<ODataId, PlatformError> {
-        let system = self.system().await?.raw().odata_id.to_string();
-        Ok(ODataId::from(match suffix {
-            Some(suffix) => format!("{system}/{suffix}"),
-            None => system,
-        }))
-    }
-
     async fn all_chassis(&self) -> Result<Vec<Chassis<B>>, PlatformError> {
         self.service_root()
             .chassis()

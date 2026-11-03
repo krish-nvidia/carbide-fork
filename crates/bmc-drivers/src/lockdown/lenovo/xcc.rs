@@ -28,12 +28,12 @@ const HOST_INTERFACE_ID: &str = "ToHost";
 /// Lenovo XClarity Controller lockdown driver.
 ///
 /// Host lockdown disables KCS, firmware rollback, and the host-facing
-/// Ethernet interface, dedicates the front-panel USB port to the server, and
-/// makes UEFI variables read-only. BMC lockdown prohibits firmware updates
-/// and BIOS settings changes. XCC 3 firmware from 2.97 reports these last
-/// three controls, and each is used only when reported, so earlier firmware
-/// has no BMC-side lock. `UEFIVariablesRO` takes effect at the next host
-/// boot; status reports its configured value.
+/// Ethernet interface, and dedicates the front-panel USB port to the server.
+/// BMC lockdown prohibits firmware updates and BIOS settings changes. XCC 3
+/// firmware from 2.97 reports these last two controls, and each is used only
+/// when reported, so earlier firmware has no BMC-side lock. `UEFIVariablesRO`
+/// is left as the BMC has it: read-only UEFI variables stop a tenant OS
+/// installer from registering its boot entry.
 pub(crate) struct XccLockdown;
 
 async fn host_interface<B: Bmc>(
@@ -140,12 +140,7 @@ async fn set_host<B: Bmc>(cx: &OpCx<'_, B>, enabled: bool) -> Result<DriverOutco
         .map_err(|error| cx.map_redfish_error(error))?;
 
     let front_panel = set_front_panel(cx, enabled).await?;
-    let uefi_variables = set_uefi_variables(cx, enabled).await?;
-    Ok(kcs
-        .merge(rollback)
-        .merge(to_host)
-        .merge(front_panel)
-        .merge(uefi_variables))
+    Ok(kcs.merge(rollback).merge(to_host).merge(front_panel))
 }
 
 /// Dedicates the front-panel USB port to the server, or shares it.
@@ -186,27 +181,6 @@ async fn set_front_panel<B: Bmc>(
         .await
         .map(DriverOutcome::from)
         .map_err(|error| cx.map_redfish_error(error))
-}
-
-/// Makes UEFI variables read-only, or writable, where the firmware reports
-/// `UEFIVariablesRO`.
-async fn set_uefi_variables<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    enabled: bool,
-) -> Result<DriverOutcome, PlatformError> {
-    let Some((bios, lenovo)) = lenovo_bios(cx).await? else {
-        return Ok(DriverOutcome::complete());
-    };
-    if lenovo
-        .uefi_variables_ro()
-        .is_none_or(|current| current == enabled)
-    {
-        return Ok(DriverOutcome::complete());
-    }
-    let update = LenovoBiosUpdate::builder()
-        .with_uefi_variables_ro(enabled)
-        .build();
-    update_bios(cx, &bios, update).await
 }
 
 /// Prohibits, or allows, firmware updates and BIOS settings changes.
@@ -307,11 +281,8 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
         let settings = lenovo_bios
             .as_ref()
             .and_then(|lenovo| lenovo.settings_lockdown());
-        let uefi_variables = lenovo_bios
-            .as_ref()
-            .and_then(|lenovo| lenovo.uefi_variables_ro());
 
-        let mut host = vec![
+        let host = vec![
             signal(kcs, KcsState::Disabled, KcsState::Enabled),
             signal(
                 rollback,
@@ -324,7 +295,6 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
                 fp_mode == Some(FpMode::Shared) && switching == Some(PortSwitchingTo::Server),
             ),
         ];
-        host.extend(uefi_variables.map(locked));
         let bmc: Vec<Signal> = [firmware, settings]
             .into_iter()
             .flatten()
@@ -334,15 +304,14 @@ impl<B: Bmc> Lockdown<B> for XccLockdown {
             aggregate: state_from_signals(&[host.as_slice(), bmc.as_slice()].concat()),
             message: format!(
                 "kcs={}, firmware_rollback={}, to_host={}, front_panel={}/{}, \
-                 fw_lockdown={}, settings_lockdown={}, uefi_variables_ro={}",
+                 fw_lockdown={}, settings_lockdown={}",
                 reported(&kcs),
                 reported(&rollback),
                 reported(&to_host),
                 reported(&fp_mode),
                 reported(&switching),
                 reported(&firmware),
-                reported(&settings),
-                reported(&uefi_variables)
+                reported(&settings)
             ),
             host: state_from_signals(&host),
             bmc: state_from_signals(&bmc),
@@ -470,8 +439,9 @@ mod tests {
     }
 
     /// Each scope writes only its controls, skips controls the firmware does
-    /// not report, and keeps firmware updates locked while the other locks
-    /// change. Legacy writes are checked by resource; new controls also by body.
+    /// not report, keeps firmware updates locked while the other locks change,
+    /// and never writes `UEFIVariablesRO`. Legacy writes are checked by
+    /// resource; new controls also by body.
     #[tokio::test]
     async fn set_writes_each_scope_in_lock_order() {
         let current = |locked| Controls {
@@ -482,7 +452,6 @@ mod tests {
             legacy_locked: false,
             xcc3: None,
         };
-        let uefi_variables = |locked| Some(json!({"Oem": {"Lenovo": {"UEFIVariablesRO": locked}}}));
         let settings = |locked| Some(json!({"Oem": {"Lenovo": {"SettingsLockdown": locked}}}));
         let firmware = |locked| Some(json!({"FWLockdown": locked}));
         let legacy = [
@@ -499,11 +468,7 @@ mod tests {
                 LockdownDesiredState::Enabled,
                 Ok([
                     legacy.to_vec(),
-                    vec![
-                        (BIOS, uefi_variables(true)),
-                        (BIOS, settings(true)),
-                        (SECURITY, firmware(true)),
-                    ],
+                    vec![(BIOS, settings(true)), (SECURITY, firmware(true))],
                 ]
                 .concat()),
             ),
@@ -515,12 +480,11 @@ mod tests {
                 Ok([
                     vec![(SECURITY, firmware(false)), (BIOS, settings(false))],
                     legacy.to_vec(),
-                    vec![(BIOS, uefi_variables(false))],
                 ]
                 .concat()),
             ),
             (
-                "BMC unlock keeps UEFI variables read-only",
+                "BMC unlock",
                 current(true),
                 LockdownScope::Bmc,
                 LockdownDesiredState::Disabled,
@@ -570,8 +534,9 @@ mod tests {
         }
     }
 
-    /// Status covers every control the firmware reports: the XCC 3 controls
-    /// split between host and BMC, and are left out where unreported.
+    /// Status covers every lockdown control the firmware reports: the XCC 3
+    /// controls count for the BMC and are left out where unreported, and
+    /// `UEFIVariablesRO` never counts.
     #[tokio::test]
     async fn status_aggregates_the_reported_controls() {
         for (scenario, controls, expected) in [
@@ -580,6 +545,18 @@ mod tests {
                 Controls {
                     legacy_locked: true,
                     xcc3: Some((true, true, true)),
+                },
+                (
+                    LockdownState::Enabled,
+                    LockdownState::Enabled,
+                    LockdownState::Enabled,
+                ),
+            ),
+            (
+                "locked with UEFI variables writable",
+                Controls {
+                    legacy_locked: true,
+                    xcc3: Some((true, true, false)),
                 },
                 (
                     LockdownState::Enabled,

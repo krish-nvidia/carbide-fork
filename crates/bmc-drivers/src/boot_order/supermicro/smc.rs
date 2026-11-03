@@ -17,7 +17,6 @@ use crate::boot_order::standard::StandardBootOrder;
 use crate::boot_order::support::{
     RedfishBootOrderExt as _, boot_order, display_name, is_first, persistent_device, reference,
 };
-use crate::resources::RedfishResourcesExt as _;
 
 /// Supermicro boot behavior.
 ///
@@ -124,8 +123,7 @@ async fn standard_adapter_first<B: Bmc>(
         .ok_or_else(|| PlatformError::MissingBootOption {
             description: format!("HTTP IPv4 Mellanox or Nvidia adapter boot option for {mac}"),
         })?;
-    let system = cx.system_uri(None).await?;
-    cx.put_boot_option_first(&system, order, target)
+    cx.put_system_boot_option_first(order, target)
         .await
         .map(Some)
 }
@@ -256,11 +254,8 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
         cx: &OpCx<'_, B>,
         override_setting: &BootUpdate,
     ) -> Result<DriverOutcome, PlatformError> {
-        let system = cx.system_uri(None).await?;
         let Some(device) = persistent_device(override_setting) else {
-            return cx
-                .write_boot_override(&system, override_setting, true, None)
-                .await;
+            return cx.set_system_boot_override(override_setting, true).await;
         };
         match fixed_device_first(cx, device).await {
             Err(PlatformError::Unsupported | PlatformError::Bmc { status: 404, .. }) => {
@@ -268,8 +263,7 @@ impl<B: Bmc> BootOrder<B> for SmcBootOrder {
                     .with_boot_source_override_target(device)
                     .with_boot_source_override_enabled(BootSourceOverrideEnabled::Continuous)
                     .build();
-                cx.write_boot_override(&system, &continuous, true, None)
-                    .await
+                cx.set_system_boot_override(&continuous, true).await
             }
             result => result,
         }

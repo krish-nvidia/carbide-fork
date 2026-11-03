@@ -15,7 +15,7 @@ use nv_redfish::update_service::{
 use serde_json::{Value, json};
 
 use crate::firmware::standard::StandardFirmware;
-use crate::firmware::support::{RedfishFirmwareExt as _, advertised_multipart_uri};
+use crate::firmware::support::{RedfishFirmwareExt as _, require_multipart_push};
 use crate::resources::RedfishResourcesExt as _;
 
 /// Supermicro: the component's resource is the update target, BIOS and BMC
@@ -72,7 +72,7 @@ impl<B: Bmc> Firmware<B> for SmcFirmware {
         upload: FirmwareUpload,
     ) -> Result<DriverOutcome, PlatformError> {
         let service = cx.update_service().await?;
-        let uri = advertised_multipart_uri(&service).ok_or(PlatformError::Unsupported)?;
+        require_multipart_push(&service)?;
         let (target, oem) = target(cx, upload.component).await?;
         let mut parameters = MultipartUpdateParameters::builder().with_targets(vec![target]);
         if let Some(oem) = oem {
@@ -84,7 +84,7 @@ impl<B: Bmc> Firmware<B> for SmcFirmware {
             parameters: parameters.build(),
             operation_apply_time: Some(OperationApplyTime::Immediate),
         };
-        cx.multipart_upload(upload, &parameters, Vec::new(), &uri)
+        cx.multipart_upload(&service, upload, &parameters, Vec::new())
             .await
     }
 }

@@ -10,11 +10,12 @@
 //! the pieces they have in common.
 
 use bmc_platform::{BootInterfaceSelector, DriverOutcome, OpCx, PlatformError};
-use nv_redfish::computer_system::{BootOption, ComputerSystem, ComputerSystemUpdate};
+use nv_redfish::computer_system::{
+    BootOption, BootOptionReference, ComputerSystem, ComputerSystemUpdate,
+};
 use nv_redfish::core::{Bmc, ModificationResponse, ODataETag, ODataId};
 use nv_redfish::schema::computer_system::{
     BootSource, BootSourceOverrideEnabled, BootSourceOverrideMode, BootUpdate,
-    ComputerSystem as ComputerSystemSchema,
 };
 use serde_json::Value;
 
@@ -38,24 +39,6 @@ pub(crate) fn alias<B: Bmc>(option: &BootOption<B>) -> Option<BootSource> {
 fn names_option<B: Bmc>(entry: &str, option: &BootOption<B>) -> bool {
     let entry = entry_reference(entry);
     reference(option) == entry || option.raw().id == entry
-}
-
-/// The `@odata.etag` of the system resource at `uri`, for a write that must
-/// name it: the system exploration selected comes from an expanded collection,
-/// which some BMCs serve without one.
-pub(crate) async fn system_etag<B: Bmc>(
-    cx: &OpCx<'_, B>,
-    uri: &ODataId,
-) -> Result<ODataETag, PlatformError> {
-    cx.bmc()
-        .get::<ComputerSystemSchema>(uri)
-        .await
-        .map_err(|error| cx.map_bmc_error(error))?
-        .odata_etag
-        .clone()
-        .ok_or_else(|| PlatformError::InvalidResponse {
-            message: format!("{uri} reports no @odata.etag"),
-        })
 }
 
 /// The selected system's `Boot.BootOrder` as reported; empty when absent.
@@ -184,11 +167,10 @@ pub(super) trait RedfishBootOrderExt<B: Bmc> {
     /// The selected system's boot options, in collection order.
     async fn boot_options(&self) -> Result<Vec<BootOption<B>>, PlatformError>;
 
-    /// Writes `order` with the entry naming `reference` first to the system
-    /// resource at `uri`, unless `order` already starts with it.
-    async fn put_boot_option_first(
+    /// Writes `order` with the entry naming `reference` first as the system's
+    /// own boot order, unless `order` already starts with it.
+    async fn put_system_boot_option_first(
         &self,
-        uri: &ODataId,
         order: Vec<String>,
         reference: &str,
     ) -> Result<DriverOutcome, PlatformError>;
@@ -209,22 +191,33 @@ pub(super) trait RedfishBootOrderExt<B: Bmc> {
         etag: Option<&ODataETag>,
     ) -> Result<ModificationResponse<Value>, PlatformError>;
 
-    /// Writes `order` as the `Boot.BootOrder` of the system resource at `uri`.
-    async fn write_boot_order(
+    /// Writes the override fields of `setting`, as [`boot_override`] builds
+    /// them, to the system itself.
+    async fn set_system_boot_override(
         &self,
-        uri: &ODataId,
-        order: Vec<String>,
-    ) -> Result<DriverOutcome, PlatformError>;
-
-    /// Writes the override fields of `setting` to the system resource at `uri`:
-    /// target, enablement, the mode (UEFI when `uefi_by_default` and the caller
-    /// left it unset), and the HTTP boot URI.
-    async fn write_boot_override(
-        &self,
-        uri: &ODataId,
         setting: &BootUpdate,
         uefi_by_default: bool,
-        etag: Option<&ODataETag>,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// Stages `order` as the boot order on the settings object the system
+    /// advertises, or on the system itself when it advertises none.
+    async fn stage_boot_order(&self, order: Vec<String>) -> Result<DriverOutcome, PlatformError>;
+
+    /// [`Self::stage_boot_order`] with the entry naming `reference` first,
+    /// unless `order` already starts with it.
+    async fn stage_boot_option_first(
+        &self,
+        order: Vec<String>,
+        reference: &str,
+    ) -> Result<DriverOutcome, PlatformError>;
+
+    /// Stages the override fields of `setting`, as [`boot_override`] builds
+    /// them, on the settings object the system advertises, or on the system
+    /// itself when it advertises none.
+    async fn stage_boot_override(
+        &self,
+        setting: &BootUpdate,
+        uefi_by_default: bool,
     ) -> Result<DriverOutcome, PlatformError>;
 }
 
@@ -241,17 +234,18 @@ impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
             .map_err(|error| self.map_redfish_error(error))
     }
 
-    async fn put_boot_option_first(
+    async fn put_system_boot_option_first(
         &self,
-        uri: &ODataId,
         order: Vec<String>,
         reference: &str,
     ) -> Result<DriverOutcome, PlatformError> {
         if is_first(&order, reference) {
             return Ok(DriverOutcome::complete());
         }
-        self.write_boot_order(uri, with_first(order, reference))
-            .await
+        let boot = BootUpdate::builder()
+            .with_boot_order(with_first(order, reference))
+            .build();
+        update_system_boot(self, boot).await
     }
 
     async fn boot_interface_mac(
@@ -298,55 +292,95 @@ impl<B: Bmc> RedfishBootOrderExt<B> for OpCx<'_, B> {
             .map_err(|error| self.map_bmc_error(error))
     }
 
-    async fn write_boot_order(
+    async fn set_system_boot_override(
         &self,
-        uri: &ODataId,
-        order: Vec<String>,
-    ) -> Result<DriverOutcome, PlatformError> {
-        let boot = BootUpdate::builder().with_boot_order(order).build();
-        self.patch_system(
-            uri,
-            &ComputerSystemUpdate::builder().with_boot(boot).build(),
-            None,
-        )
-        .await
-        .map(DriverOutcome::from)
-    }
-
-    async fn write_boot_override(
-        &self,
-        uri: &ODataId,
         setting: &BootUpdate,
         uefi_by_default: bool,
-        etag: Option<&ODataETag>,
     ) -> Result<DriverOutcome, PlatformError> {
-        let mode = match setting.boot_source_override_mode {
-            None if uefi_by_default => Some(BootSourceOverrideMode::Uefi),
-            mode => mode,
-        };
-        let boot = BootUpdate {
-            boot_source_override_target: Some(
-                setting
-                    .boot_source_override_target
+        update_system_boot(self, boot_override(setting, uefi_by_default)?).await
+    }
+
+    async fn stage_boot_order(&self, order: Vec<String>) -> Result<DriverOutcome, PlatformError> {
+        self.system()
+            .await?
+            .set_boot_order(order.into_iter().map(BootOptionReference::new).collect())
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
+    }
+
+    async fn stage_boot_option_first(
+        &self,
+        order: Vec<String>,
+        reference: &str,
+    ) -> Result<DriverOutcome, PlatformError> {
+        if is_first(&order, reference) {
+            return Ok(DriverOutcome::complete());
+        }
+        self.stage_boot_order(with_first(order, reference)).await
+    }
+
+    async fn stage_boot_override(
+        &self,
+        setting: &BootUpdate,
+        uefi_by_default: bool,
+    ) -> Result<DriverOutcome, PlatformError> {
+        let boot = boot_override(setting, uefi_by_default)?;
+        self.system()
+            .await?
+            .set_boot_source_override(
+                boot.boot_source_override_target
                     .ok_or(PlatformError::Unsupported)?,
-            ),
-            boot_source_override_enabled: Some(
-                setting
-                    .boot_source_override_enabled
+                boot.boot_source_override_enabled
                     .ok_or(PlatformError::Unsupported)?,
-            ),
-            boot_source_override_mode: mode,
-            http_boot_uri: setting.http_boot_uri.clone(),
-            ..BootUpdate::default()
-        };
-        self.patch_system(
-            uri,
-            &ComputerSystemUpdate::builder().with_boot(boot).build(),
-            etag,
-        )
+                boot.boot_source_override_mode,
+                boot.http_boot_uri,
+            )
+            .await
+            .map(DriverOutcome::from)
+            .map_err(|error| self.map_redfish_error(error))
+    }
+}
+
+/// The override fields of `setting`: target, enablement, the mode (UEFI when
+/// `uefi_by_default` and the caller left it unset), and the HTTP boot URI;
+/// `Unsupported` without a target or enablement.
+pub(crate) fn boot_override(
+    setting: &BootUpdate,
+    uefi_by_default: bool,
+) -> Result<BootUpdate, PlatformError> {
+    let mode = match setting.boot_source_override_mode {
+        None if uefi_by_default => Some(BootSourceOverrideMode::Uefi),
+        mode => mode,
+    };
+    Ok(BootUpdate {
+        boot_source_override_target: Some(
+            setting
+                .boot_source_override_target
+                .ok_or(PlatformError::Unsupported)?,
+        ),
+        boot_source_override_enabled: Some(
+            setting
+                .boot_source_override_enabled
+                .ok_or(PlatformError::Unsupported)?,
+        ),
+        boot_source_override_mode: mode,
+        http_boot_uri: setting.http_boot_uri.clone(),
+        ..BootUpdate::default()
+    })
+}
+
+/// Writes `boot` to the selected system itself.
+async fn update_system_boot<B: Bmc>(
+    cx: &OpCx<'_, B>,
+    boot: BootUpdate,
+) -> Result<DriverOutcome, PlatformError> {
+    cx.system()
+        .await?
+        .update(&ComputerSystemUpdate::builder().with_boot(boot).build())
         .await
         .map(DriverOutcome::from)
-    }
+        .map_err(|error| cx.map_redfish_error(error))
 }
 
 #[cfg(test)]
@@ -354,7 +388,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::Fixture;
+    use crate::test_support::{Fixture, body, path};
 
     /// A `BootOrder` entry whose boot option the BMC does not list yet, as
     /// after a restart, is not ready rather than an invalid response.
@@ -464,5 +498,71 @@ mod tests {
             with_first(order(&["Boot0001"]), "Boot0003"),
             order(&["Boot0003", "Boot0001"])
         );
+    }
+
+    /// Settings writes go to the settings object the system advertises, and
+    /// to the system itself when it advertises none, with the same body and
+    /// `If-Match: *` either way.
+    #[tokio::test]
+    async fn settings_writes_follow_the_advertised_settings_object() {
+        const SYSTEM: &str = "/redfish/v1/Systems/1";
+        let override_setting = BootUpdate::builder()
+            .with_boot_source_override_target(BootSource::Pxe)
+            .with_boot_source_override_enabled(BootSourceOverrideEnabled::Once)
+            .build();
+        for (advertised, expected_path) in [
+            (Some("/redfish/v1/Systems/1/SD"), "/redfish/v1/Systems/1/SD"),
+            (None, SYSTEM),
+        ] {
+            let mut system = json!({"@odata.id": SYSTEM, "Id": "1", "Name": "System"});
+            if let Some(settings) = advertised {
+                system["@Redfish.Settings"] = json!({"SettingsObject": {"@odata.id": settings}});
+            }
+            let bmc = Fixture::new("NVIDIA", "GB BMC", "1", "1")
+                .document(SYSTEM, system)
+                .build()
+                .await;
+            let cx = bmc.cx().await;
+            cx.stage_boot_order(vec!["Boot0002".to_string(), "Boot0001".to_string()])
+                .await
+                .expect("boot order stages");
+            cx.stage_boot_override(&override_setting, true)
+                .await
+                .expect("override stages");
+            let writes: Vec<_> = bmc
+                .writes()
+                .iter()
+                .map(|request| {
+                    (
+                        path(request).to_string(),
+                        request.headers["if-match"]
+                            .to_str()
+                            .expect("ASCII")
+                            .to_string(),
+                        body(request),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                writes,
+                [
+                    (
+                        expected_path.to_string(),
+                        "*".to_string(),
+                        json!({"Boot": {"BootOrder": ["Boot0002", "Boot0001"]}}),
+                    ),
+                    (
+                        expected_path.to_string(),
+                        "*".to_string(),
+                        json!({"Boot": {
+                            "BootSourceOverrideTarget": "Pxe",
+                            "BootSourceOverrideEnabled": "Once",
+                            "BootSourceOverrideMode": "UEFI",
+                        }}),
+                    ),
+                ],
+                "advertised: {advertised:?}"
+            );
+        }
     }
 }
