@@ -149,10 +149,12 @@ async fn manager_settings(cx: &CheckCx<'_>) -> Checked {
     })
 }
 
-/// Requests an AC power cycle and waits for the BMC to lose power with the
-/// host, then for it to answer again, for the work the request started, and
-/// for the host to be on. A BMC accepts the request before cutting power, so
-/// the cycle is only taken as done once the BMC drops.
+/// Requests an AC power cycle, repeating the request while a platform that
+/// cycles only a powered-off host is still powering off, and waits for the
+/// BMC to lose power with the host, then for it to answer again, for the work
+/// the request started, and for the host to be on. A BMC accepts the request
+/// before cutting power, so the cycle is only taken as done once the BMC
+/// drops.
 async fn ac_cycle(cx: &CheckCx<'_>) -> Step {
     let bmc = cx.bmc();
     let power = bmc.power()?;
@@ -166,11 +168,9 @@ async fn ac_cycle(cx: &CheckCx<'_>) -> Step {
         ));
     }
     let started = Instant::now();
-    let outcome = ops::sent_or_dropped(
-        cx,
-        "power FullPowerCycle",
-        power.set(ResetType::FullPowerCycle),
-    )
+    let outcome = ops::sent_when_ready(cx, "power FullPowerCycle", async || {
+        power.set(ResetType::FullPowerCycle).await
+    })
     .await?;
     ops::wait_for_ac_cycle_down(cx, &outcome)
         .await

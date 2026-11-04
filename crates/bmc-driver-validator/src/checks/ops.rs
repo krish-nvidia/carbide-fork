@@ -377,6 +377,28 @@ pub(super) async fn sent_or_dropped(
     }
 }
 
+/// [`sent_or_dropped`] for a request the driver answers
+/// [`PlatformError::NotReady`] until the host reaches the power state it
+/// needs, such as an AC power cycle on a host not yet off; the request is
+/// repeated until it is sent.
+pub(super) async fn sent_when_ready(
+    cx: &CheckCx<'_>,
+    operation: &'static str,
+    request: impl AsyncFn() -> Result<DriverOutcome, PlatformError>,
+) -> Result<DriverOutcome, Outcome> {
+    let result = poll(
+        cx,
+        POWER_TIMEOUT,
+        QUICK_POLL_INTERVAL,
+        async || match request().await {
+            Err(PlatformError::NotReady { message }) => Attempt::NotYet(message),
+            result => Attempt::Done(result),
+        },
+    )
+    .await?;
+    sent_or_dropped(cx, operation, async { result }).await
+}
+
 /// Leaves the host on: powers it on when it reads off, otherwise waits for
 /// on. Reads are retried while the BMC is still coming back.
 pub(super) async fn power_on(cx: &CheckCx<'_>) -> Result<(), Outcome> {
